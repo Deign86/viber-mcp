@@ -186,3 +186,22 @@ def test_unreadable_highlighted_title_needs_header_check():
 def test_different_client_with_similar_name_is_not_a_match():
     lines = ["Conversations", "LORNA-WH-(300SQM, PASIG)"]
     assert logic.search_says_gc_exists(lines, "LORI-WH-(1200-1350SQM, BULACAN)") == "unknown"
+
+
+def test_done_for_another_client_does_not_hide_a_new_template():
+    # Dave's template was followed by Claudia's DONE (a quote-reply to her older template).
+    claudia = ("🏢 Company Name: Not specified\n👤 Name: Claudia\n🏗️ Type of Property: COMMERCIAL SPACE\n"
+               "📐 Preferred SQM: 380 sqm\n📍 Preferred Location: Pasig\n📱Viber: 09171234567")
+    dave = ("🏢 Company Name:  \n👤 Name: Dave mur\n🏗️ Type of Property: warehouse\n"
+            "📐 Preferred SQM: 177sqm\n💰 Preferred Budget: ~\n📍 Preferred Location: makati\n"
+            "📱Viber: ⁨09178801748⁩\n\nIntern: Ar-jee\n\nListing:\n*Makati, 140 Bangkal")
+    texts = [claudia, dave, "DONE-CLAUDIA-CS-(380SQM, PASIG)"]
+    assert logic.pending_templates(texts) == [1]
+
+
+def test_done_for_another_client_out_of_view_errs_toward_handled():
+    # If the other client's template scrolled out of view, the unnamed DONE covers the nearest
+    # template above it: a skip (reported), never a duplicate GC.
+    dave = ("👤 Name: Dave mur\n🏗️ Type of Property: warehouse\n📐 Preferred SQM: 177sqm\n"
+            "📍 Preferred Location: makati\n📱Viber: 09178801748")
+    assert logic.pending_templates([dave, "DONE-CLAUDIA-CS-(380SQM, PASIG)"]) == []

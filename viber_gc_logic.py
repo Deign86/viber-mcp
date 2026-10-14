@@ -214,27 +214,40 @@ def is_done_line(text: str) -> bool:
     return text.strip().upper().startswith("DONE-")
 
 
+def _done_token(text: str) -> str:
+    """First name part of a DONE line: "DONE-CLAUDIA-CS-(380SQM, PASIG)" → "CLAUDIA"."""
+    rest = text.strip()[5:]
+    return re.split(r"[-(\s]", rest, maxsplit=1)[0].upper()
+
+
 def pending_templates(texts: list[str]) -> list[int]:
     """Indexes of templates (in a chat's messages, oldest first) that still need a GC.
 
-    Staff don't always name GCs after the template's Name (Leah's became DONE-JNT-WH-...), so a
-    template counts as handled when its own DONE line exists OR any DONE line comes after it.
-    The worst case is a skipped template — never a duplicate GC for a client who has one.
+    Each DONE line is matched to a template above it: first to the latest unmatched template
+    whose GC name or first name it carries (DONE-CLAUDIA-… → Claudia's template); a DONE that
+    names no template (staff sometimes use another name, e.g. Leah → DONE-JNT-WH-…) covers the
+    nearest unmatched template above it. Templates left unmatched are pending. When unsure the
+    result errs toward "handled" — a skipped template, never a duplicate GC.
     """
-    done_after = [False] * len(texts)
-    seen_done = False
-    for i in range(len(texts) - 1, -1, -1):
-        done_after[i] = seen_done
-        seen_done = seen_done or is_done_line(texts[i])
-    done_names = {norm(t) for t in texts if is_done_line(t)}
-    pending = []
-    for i, text in enumerate(texts):
-        if not is_template(text) or done_after[i]:
+    templates = {i: gc_name(parse_template(t)) for i, t in enumerate(texts) if is_template(t)}
+    handled: set[int] = set()
+    unnamed_dones = []
+    for d, text in enumerate(texts):
+        if not is_done_line(text):
             continue
-        if norm(done_text(gc_name(parse_template(text))["gc_name"])) in done_names:
-            continue
-        pending.append(i)
-    return pending
+        token = _done_token(text)
+        above = [i for i in templates if i < d and i not in handled]
+        same = [i for i in above if norm(done_text(templates[i]["gc_name"])) == norm(text)
+                or (token and templates[i]["parts"].get("name") == token)]
+        if same:
+            handled.add(max(same))
+        else:
+            unnamed_dones.append(d)
+    for d in unnamed_dones:
+        above = [i for i in templates if i < d and i not in handled]
+        if above:
+            handled.add(max(above))
+    return sorted(i for i in templates if i not in handled)
 
 
 def choose_listing(query: str, listings: list[dict]) -> dict:

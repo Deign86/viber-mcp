@@ -67,7 +67,7 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
     if listing_folder_id:
         listing = {"folder_id": listing_folder_id}
     elif fields.get("listing"):
-        query = fields["listing"].splitlines()[0]
+        query = fields["listing"].splitlines()[0].lstrip("*").strip()
         pick = logic.choose_listing(query, viber_drive.find_listings(query)["listings"])
         listing, candidates = pick["listing"], pick["candidates"][:8]
         if pick["problem"]:
