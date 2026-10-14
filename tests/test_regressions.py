@@ -243,6 +243,27 @@ def test_clear_downloads_without_a_cache_folder_is_harmless(tmp_path):
     assert viber_drive.clear_downloads(tmp_path / "missing")["removed"] == 0
 
 
+def test_prune_downloads_keeps_recent_photos(tmp_path):
+    # Deleting right after send_files raced Viber's upload ("Your last N messages were not sent").
+    import os
+    import time
+
+    import viber_drive
+
+    cache = tmp_path / "drive-cache"
+    cache.mkdir()
+    fresh = cache / "new_1.jpg"
+    fresh.write_bytes(b"jpg")
+    old = cache / "old_1.jpg"
+    old.write_bytes(b"jpg")
+    week_ago = time.time() - 7 * 86400
+    os.utime(old, (week_ago, week_ago))
+    report = viber_drive.prune_downloads(cache, max_age_days=3)
+    assert report["removed"] == 1 and report["kept"] == 1
+    assert fresh.exists() and not old.exists()
+    assert viber_drive.prune_downloads(tmp_path / "missing")["removed"] == 0
+
+
 # ------------------------------------------- picker select circle (Rafael's row didn't tick)
 
 

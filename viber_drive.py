@@ -30,6 +30,9 @@ TOKEN_FILE = _DATA / "google_token.json"
 SERVICE_ACCOUNT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_SERVICE_ACCOUNT",
                                            _DATA / "google_service_account.json"))
 CACHE_DIR = _DATA / "drive-cache"
+# Downloads are kept this long before being pruned. Deleting right after send_files raced
+# Viber's own upload (it reads the file after the click) and left photos "not sent".
+KEEP_DOWNLOADS_DAYS = float(os.environ.get("VIBER_MCP_KEEP_DOWNLOADS_DAYS", "3"))
 LISTINGS_ROOT_NAME = os.environ.get("VIBER_MCP_LISTINGS_FOLDER", "APR LISTING")
 
 FOLDER = "application/vnd.google-apps.folder"
@@ -279,7 +282,7 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Fa
         text_result = viber_send.reply(listing["client_text"])
         files_result = viber_ui.send_files(paths) if paths else {"sent": False, "files": []}
     finally:
-        remove_downloads(paths)  # don't stockpile client photos on this PC
+        prune_downloads()  # keep fresh photos (Viber may still be uploading); drop old ones
     return {"sent": True, "doc": listing["doc"], "text_verified": text_result.get("verified"),
             "photos_sent": len(paths), "photos_verified": files_result.get("verified")}
 
@@ -306,3 +309,15 @@ def clear_downloads(cache_dir: Path | None = None) -> dict:
     files = [str(f) for f in root.iterdir() if f.is_file()] if root.exists() else []
     removed = remove_downloads(files, root)
     return {"removed": removed, "left": len(files) - removed, "folder": str(root)}
+
+
+def prune_downloads(cache_dir: Path | None = None, max_age_days: float | None = None) -> dict:
+    """Delete only cache files older than max_age_days (default KEEP_DOWNLOADS_DAYS)."""
+    root = (cache_dir or CACHE_DIR)
+    days = KEEP_DOWNLOADS_DAYS if max_age_days is None else max_age_days
+    cutoff = time.time() - days * 86400
+    files = [f for f in root.iterdir() if f.is_file()] if root.exists() else []
+    old = [str(f) for f in files if f.stat().st_mtime < cutoff]
+    removed = remove_downloads(old, root)
+    return {"removed": removed, "kept": len(files) - removed, "older_than_days": days,
+            "folder": str(root)}

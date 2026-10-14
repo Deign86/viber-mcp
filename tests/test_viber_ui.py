@@ -146,3 +146,40 @@ def test_invite_count_parses_counter_rows():
 def test_invite_count_none_when_absent_or_outside_left_column():
     assert _invite_count([ocr_row("Invite contacts")]) is None
     assert _invite_count([ocr_row("5/250", x=600)]) is None
+
+
+# ------------------------------------------- photos "not sent" banner (images failing to send)
+
+
+class ClickingBackend:
+    """Shows the not-sent banner until Resend has been clicked `fixes_after` times."""
+
+    def __init__(self, fixes_after):
+        self.fixes_after = fixes_after
+        self.clicks = 0
+
+    def elements(self):
+        if self.clicks >= self.fixes_after:
+            return []
+        return [el("Button", "BannerButton", [968, 155, 1044, 175], name="Resend all")]
+
+    def click_at(self, x, y, button="left"):
+        self.clicks += 1
+
+
+def test_resend_button_found_only_on_not_sent_banner():
+    assert viber_ui._resend_button([el("Button", "BannerButton", [0, 0, 10, 10], name="Resend")])
+    assert viber_ui._resend_button([el("Button", "IconButton", [0, 0, 10, 10], name="Resend")]) is None
+    assert viber_ui._resend_button([]) is None
+
+
+@pytest.mark.parametrize("fixes_after,attempts,unsent", [(0, 0, False), (1, 1, False), (9, 2, True)])
+def test_settle_and_resend_presses_resend_until_banner_clears(monkeypatch, fixes_after, attempts, unsent):
+    import backends
+
+    fake = ClickingBackend(fixes_after)
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_ui.time, "sleep", lambda s: None)
+    report = viber_ui._settle_and_resend(3)
+    assert report == {"attempts": attempts, "still_unsent": unsent}
+    assert fake.clicks == attempts

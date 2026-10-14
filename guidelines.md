@@ -107,8 +107,11 @@ each GC created and each template skipped or failed (with the reason).
   (several photos = one album). Only send what the staff member named.
 - **Listings (Google Drive):** `find_listings` → `send_listing` (see Property listings).
   `drive_sign_in` if Drive isn't signed in; `drive_search` / `drive_download` only for files outside
-  the listings layout, and only when asked — then `clear_downloads` once they're sent
-  (`send_listing` and client GCs clean up themselves).
+  the listings layout, and only when asked. Don't delete downloads right after sending (Viber may
+  still be uploading); `send_listing`, client GCs and `clear_downloads` prune files older than a
+  few days automatically. `send_files` (and so `send_listing` / client GCs) waits for the upload
+  and presses the "not sent" banner's Resend itself (up to 2 tries); if it still returns
+  `verified: false` with a note, send the failed photos again (fresh copies, ≤5 at a time).
 - **Replies:** match the chat's language and tone (English, Filipino, or Taglish as the client uses
   it), polite and professional ("po"/"ma'am"/"sir" where the chat uses them), concise. Don't promise
   prices, availability, schedules, or commitments the staff member didn't give you.

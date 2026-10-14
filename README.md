@@ -227,10 +227,11 @@ can read the shared folder. To cut access, delete the key in Cloud Console or re
    `APR LISTING` drive and approve read-only access.
 
 The per-user token is stored at `%LOCALAPPDATA%\viber-mcp\google_token.json`. Delete it to sign
-in as someone else. Downloaded photos go to `%LOCALAPPDATA%\viber-mcp\drive-cache` only while
-they're being sent: `send_listing` deletes them right after sending, client-GC runs empty the
-folder at the end, and `clear_downloads` empties it on demand (it only ever deletes inside that
-folder), so client photos don't pile up on the PC.
+in as someone else. Downloaded photos go to `%LOCALAPPDATA%\viber-mcp\drive-cache` and are kept
+for a few days (3 by default; set `VIBER_MCP_KEEP_DOWNLOADS_DAYS`), because deleting them right
+after sending pulled them out from under Viber's upload. `send_listing`, client-GC runs and
+`clear_downloads` prune only files older than that; `clear_downloads(everything=True)` empties the
+folder on demand. Nothing outside that folder is ever deleted.
 
 ### Computer use (anything else in Viber)
 

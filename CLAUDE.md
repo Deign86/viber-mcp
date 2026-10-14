@@ -167,7 +167,9 @@ Status:
 - `viber_drive.py` — Google Drive listings (read-only OAuth desktop flow). Client file
   `google_oauth_client.json` next to `server.py` (git-ignored) or env `VIBER_MCP_GOOGLE_CLIENT`;
   token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads go to
-  `%LOCALAPPDATA%\viber-mcp\drive-cache` and are deleted after sending (`remove_downloads` /
+  `%LOCALAPPDATA%\viber-mcp\drive-cache` and are kept ~3 days, then pruned by `prune_downloads`
+  (`VIBER_MCP_KEEP_DOWNLOADS_DAYS`; never delete right after sending — that raced Viber's upload and
+  left photos "not sent"). `remove_downloads` /
   `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`
   (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / `City, sqm Area`
   folder with one Google Doc (title starts with `*`) plus JPGs. The doc is split at the typed dashed

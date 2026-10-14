@@ -382,16 +382,20 @@ def drive_search(query: str, type_contains: str = "") -> dict:
 
 @mcp.tool()
 def drive_download(file_ids: list[str]) -> dict:
-    """Download Drive files to this PC; returns local paths for send_files. Call
-    clear_downloads after sending so client files don't pile up on the PC."""
+    """Download Drive files to this PC; returns local paths for send_files. Don't delete them
+    right after sending (Viber may still be uploading); old downloads are pruned automatically."""
     return {"paths": viber_drive.download(file_ids)}
 
 
 @mcp.tool()
-def clear_downloads() -> dict:
-    """Delete everything in the Drive download folder (send_listing and client-GC runs already
-    clean up after themselves; use this after drive_download + send_files)."""
-    return viber_drive.clear_downloads()
+def clear_downloads(everything: bool = False) -> dict:
+    """Prune the Drive download folder: deletes only files older than a few days (default 3,
+    env VIBER_MCP_KEEP_DOWNLOADS_DAYS) so photos still uploading aren't pulled out from under
+    Viber. everything=True empties the whole folder — only when the staff member asks.
+    send_listing and client-GC runs prune automatically."""
+    if everything:
+        return viber_drive.clear_downloads()
+    return viber_drive.prune_downloads()
 
 
 # ------------------------------------------------------------- computer-use primitives

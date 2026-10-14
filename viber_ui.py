@@ -328,9 +328,39 @@ def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> di
             break
     else:
         raise UIError("The preview is still open — the files may not have been sent. Take a screenshot.")
+    # Viber uploads after the preview closes; failed photos raise a "Your last N messages were
+    # not sent" banner. Wait for it to settle and press its Resend button ourselves.
+    resends = _settle_and_resend(len(files))
     newest = next((m for m in reversed(_messages(b.elements()))), None)
-    return {"sent": True, "files": [f.name for f in files], "caption": caption,
-            "verified": bool(newest and newest["mine"])}
+    result = {"sent": True, "files": [f.name for f in files], "caption": caption,
+              "verified": bool(newest and newest["mine"]) and not resends["still_unsent"],
+              "resend_attempts": resends["attempts"]}
+    if resends["still_unsent"]:
+        result["note"] = ("Viber still shows 'messages were not sent' after resending — send the "
+                          "failed photos again (fresh files, a few at a time).")
+    return result
+
+
+def _resend_button(elements: list[dict]):
+    """The red 'messages were not sent' banner's Resend / Resend all button, or None."""
+    return next((e for e in elements if e["type"] == "Button" and e["class"] == "BannerButton"
+                 and e["name"].lower().startswith("resend")), None)
+
+
+def _settle_and_resend(n_files: int, max_attempts: int = 2) -> dict:
+    """Give the upload time to finish, then press Resend while the not-sent banner shows."""
+    b = _backend()
+    settle = min(4 + 1.5 * n_files, 30)
+    attempts = 0
+    while True:
+        time.sleep(settle)
+        button = _resend_button(b.elements())
+        if button is None:
+            return {"attempts": attempts, "still_unsent": False}
+        if attempts >= max_attempts:
+            return {"attempts": attempts, "still_unsent": True}
+        b.click_at(*_mid(button["rect"]))
+        attempts += 1
 
 
 def _wait_preview():
