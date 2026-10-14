@@ -115,18 +115,21 @@ logic_norm = logic.norm
 
 
 def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
-                     dry_run: bool = True, members: list[str] | None = None,
+                     dry_run: bool = False, members: list[str] | None = None,
                      done_chat: str = "") -> dict:
     """Plan (dry_run) or run the whole client-GC flow for template message n of the OPEN chat."""
     plan = plan_client_gc(template_n, gc_name, listing_folder_id)
+    exists_only = plan["problems"] and all(p.startswith("GC ALREADY EXISTS") for p in plan["problems"])
+    if not dry_run and exists_only:
+        return {"done": False, "existing_client": True, "gc_name": plan["gc_name"],
+                "notice": notify_existing(plan["template_text"], plan["gc_name"])}
     if not dry_run and not plan["ready"]:
         # Fail loudly: nothing is created, and the caller must not loop on it.
         raise GCError("GC NOT CREATED — " + " | ".join(plan["problems"]) +
                       " — Report this to the staff member and stop; do not retry.")
     if dry_run:
         plan.pop("template_text")
-        plan["note"] = ("Nothing was done. Show this plan to the staff member; after a yes, call "
-                        "again with dry_run=false." if plan["ready"] else
+        plan["note"] = ("Preview only — nothing was done." if plan["ready"] else
                         "NOT READY — fix the problems listed (gc_name / listing_folder_id / the "
                         "template's number) before running; do not retry as-is.")
         return plan
@@ -165,6 +168,26 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
         steps["done_reply"] = viber_ui.reply_to_message(target["n"], plan["done_reply"], send=True)
     steps["cleanup"] = viber_drive.clear_downloads()  # no photo stockpile on this PC
     return {"done": True, "gc_name": plan["gc_name"], "steps": steps}
+
+
+def notify_existing(template_text: str, gc_name: str) -> dict:
+    """The template's GC already exists: quote-reply to the template, @mentioning the employee
+    who posted it, starting with DONE-<GC NAME> so later scans treat it as handled."""
+    target = _find_message(template_text)
+    if target is None:
+        return {"notified": False, "note": "template not found to reply to"}
+    done = logic.done_text(gc_name)
+    employee = viber_ui.message_sender(target["n"])
+    tail = " existing client po, GC already created."
+    if employee:
+        try:
+            sent = viber_ui.send_with_mention(f"{done} — ", employee, tail, quote_n=target["n"])
+            return {"notified": True, "employee": employee, "text": sent["text"]}
+        except viber_ui.UIError:
+            pass  # employee not in the mention list: fall back to a plain quote-reply
+    target = _find_message(template_text) or target
+    sent = viber_ui.reply_to_message(target["n"], f"{done} — existing client po, GC already created.")
+    return {"notified": True, "employee": employee or None, "text": sent.get("text")}
 
 
 # ------------------------------------------------------------ autonomous processing
@@ -234,16 +257,16 @@ def _collect_templates_chat(screens: int) -> list[str]:
     return list(reversed(seen))
 
 
-def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = True) -> dict:
+def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = False) -> dict:
     """GCs for every template in the templates chat that has no DONE reply yet. preview=True
-    (default) only lists what would be created; preview=False creates them. Templates that
+    only lists what would be created; preview=False (default) creates them. Templates that
     can't be handled safely are skipped and reported."""
     cfg = _config()
     chat = cfg.get("templates_chat") or "APG CLIENTS"
     viber_send.search_and_open(chat)
     time.sleep(1.0)
     texts = _collect_templates_chat(screens)
-    results, skipped, failed = [], [], []
+    results, skipped, failed, existing = [], [], [], []
     for i in logic.pending_templates(texts):
         text = texts[i]
         if len(results) >= limit:
@@ -266,6 +289,10 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = T
             failed.append({"gc_name": name["gc_name"], "error": f"planning failed: {exc}"})
             continue
         if not plan["ready"]:
+            if any(p.startswith("GC ALREADY EXISTS") for p in plan["problems"]) and not preview:
+                existing.append({"gc_name": plan["gc_name"],
+                                 "notice": notify_existing(text, plan["gc_name"])})
+                continue
             failed.append({"gc_name": plan["gc_name"], "error": " | ".join(plan["problems"])})
             continue
         if preview:
@@ -278,9 +305,8 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = T
         except Exception as exc:  # one template failing must not stop or loop the others
             failed.append({"gc_name": name["gc_name"], "error": str(exc)})
     out = {"would_create" if preview else "created": results, "skipped": skipped,
-           "failed": failed,
-           "note": ("Nothing was created. Show this list to the staff member and run again with "
-                    "preview=false after a yes." if preview else
+           "failed": failed, "existing_clients": existing,
+           "note": ("Preview only — nothing was created." if preview else
                     "Skipped templates need a staff decision (name, listing, or number).")}
     if failed:
         out["STOP"] = (f"{len(failed)} template(s) FAILED (see 'failed'). Report them to the staff "

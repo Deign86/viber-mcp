@@ -83,7 +83,7 @@ def search_and_open(name: str) -> dict:
     OCRs the results, and opens the row that best matches `name` — exact/prefix matches beat
     substrings (so "Ivy" opens "Ivy Cloma-Rosales", not "Divya"). Returns `matched` (the row it
     opened) and `low_confidence` (true if only a weak substring match existed). If
-    `low_confidence` is true, confirm the opened chat is correct before sending.
+    `low_confidence` is true the match is ambiguous: stop and ask which chat is meant.
 
     Args:
         name: the contact or chat name to search for.
@@ -219,7 +219,7 @@ def open_image(n: int = 1) -> list:
 @mcp.tool()
 def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> dict:
     """Send local files (photos, PDFs, videos, docs) to the OPEN chat in one batch, with an
-    optional caption. Confirm the chat and the files with the staff member first.
+    optional caption.
 
     Several photos go out together as one album. With dry_run=True the files and caption are
     left in Viber's send preview for the staff member to check and send themselves.
@@ -233,9 +233,9 @@ def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> di
 
 
 @mcp.tool()
-def reply_to_message(n: int, text: str, send: bool = False) -> dict:
+def reply_to_message(n: int, text: str, send: bool = True) -> dict:
     """Quote-reply to a specific message (n from list_messages) — the client sees which message
-    you're answering. Leaves it as a draft unless send=True (confirm with the staff member first).
+    you're answering. Sends by default; send=False leaves it as a draft.
     """
     return viber_ui.reply_to_message(n, text, send)
 
@@ -243,7 +243,7 @@ def reply_to_message(n: int, text: str, send: bool = False) -> dict:
 @mcp.tool()
 def edit_message(n: int, text: str) -> dict:
     """Edit one of YOUR sent messages (n from list_messages) to `text` and save it.
-    Confirm the new wording with the staff member first."""
+    """
     return viber_ui.edit_message(n, text)
 
 
@@ -258,7 +258,7 @@ def message_action(n: int, action: str) -> dict:
     """Right-click message n and pick an item from Viber's message menu, e.g. "Pin", "Forward",
     "Copy message", "Translate", "Set reminder", "Select". Returns the full menu that was offered.
     (Deleting goes through unsend_message.) After "Forward", use screenshot/list_elements to pick
-    the recipient in Viber's forward dialog — confirm the recipient with the staff member."""
+    the recipient the staff member named in Viber's forward dialog."""
     return viber_ui.message_action(n, action)
 
 
@@ -270,8 +270,8 @@ def close_viewer() -> dict:
 
 @mcp.tool()
 def unsend_message(text: str = "", n: int = 0, for_everyone: bool = True) -> dict:
-    """Delete (unsend) ONE of your own messages in the open chat. Permanent — confirm with the
-    staff member first.
+    """Delete (unsend) ONE of your own messages in the open chat (permanent; other people's
+    messages are refused).
 
     Identify it by `n` from list_messages (preferred) or by its text (exact, or a unique part).
     Refuses other people's messages and ambiguous matches. With for_everyone=True it chooses
@@ -289,13 +289,11 @@ def unsend_message(text: str = "", n: int = 0, for_everyone: bool = True) -> dic
 
 
 @mcp.tool()
-def process_client_templates(limit: int = 5, preview: bool = True) -> dict:
+def process_client_templates(limit: int = 5, preview: bool = False) -> dict:
     """Make client GCs for the templates in the templates chat (APG CLIENTS) that have no
     "DONE-..." reply yet.
 
-    preview=True (default) only lists the GCs it would create and the templates it would skip.
-    Show that list to the staff member; after a clear yes, call again with preview=False to
-    create them. For each: create the group (staff from gc_members.json, then the client's
+    Runs autonomously (preview=True only lists what it would do). For each: create the group (staff from gc_members.json, then the client's
     number), post the client's template (client fields only), the listing (text above the dashed
     line + photos), "Hello @client", then quote-reply DONE-<GC NAME> to the template. Templates
     with an uncertain name, ambiguous/missing/SOLD listing, bad number, an existing chat of that
@@ -310,7 +308,7 @@ def process_client_templates(limit: int = 5, preview: bool = True) -> dict:
 
 @mcp.tool()
 def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
-                     dry_run: bool = True) -> dict:
+                     dry_run: bool = False) -> dict:
     """Make the client GC for ONE specific template (use process_client_templates for "make the
     GCs"). Use it to retry a template that was skipped, with the staff member's gc_name or
     listing_folder_id.
@@ -370,8 +368,7 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Fa
     """Send a listing to the OPEN Viber chat: the client-facing details text, then the photos
     together in one batch. The doc's internal part is never sent.
 
-    Confirm the chat and the listing with the staff member first (or use dry_run=True to preview
-    exactly what would be sent without sending anything).
+    dry_run=True previews exactly what would be sent without sending anything.
     """
     return viber_drive.send_listing(folder_id, max_photos, include_videos, dry_run)
 
@@ -485,34 +482,31 @@ def draft_reply(chat: str, guidance: str = "") -> str:
 
 @mcp.prompt()
 def unsend(chat: str, message: str) -> str:
-    """Unsend one of our messages in a chat, with confirmation."""
+    """Unsend one of our messages in a chat."""
     return (f"Open the Viber chat '{chat}', find our message matching '{message}' with "
-            "list_messages, show me exactly which message (n, text) you'll unsend, and wait for my "
-            "yes before calling unsend_message. Report whether it was verified.")
+            "list_messages and unsend it with unsend_message. If several of our messages match, ask "
+            "me which. Report which message was unsent and whether it was verified.")
 
 
 @mcp.prompt()
 def property_details(chat: str, property: str) -> str:
-    """Send a property listing (text + photos) from Google Drive to a Viber chat, after approval."""
+    """Send a property listing (text + photos) from Google Drive to a Viber chat."""
     return (f"Open the Viber chat '{chat}' (search_and_open; if low_confidence or several similar "
             f"chats, ask me which). Then find_listings for '{property}' (if several match, ask me "
-            "which) and get_listing for the chosen folder_id. Show me the chat name, the client_text "
-            "exactly as it will be sent, and the photo count, then wait for my clear yes before "
-            "calling send_listing. Never send, quote or summarize the internal part of the doc. "
-            "Report whether the text and photos were verified.")
+            "which) and send_listing for that folder_id. Never send, quote or summarize the internal "
+            "part of the doc. Report what was sent and whether the text and photos were verified.")
 
 
 @mcp.prompt()
 def client_gc(client: str = "") -> str:
-    """Make client group chats from the templates in APG CLIENTS (shows the plan first)."""
+    """Make client group chats from the templates in APG CLIENTS."""
     if client:
         return (f"Open APG CLIENTS, find the template for '{client}' with list_messages, and call "
-                "create_client_gc with its n and dry_run=true. Show me the plan; after my yes, call "
-                "it again with dry_run=false and report each step's result.")
-    return ("Call process_client_templates (preview) and show me the GCs it would create and the "
-            "templates it would skip, with reasons. After my yes, call it with preview=false, then "
-            "report each GC created (name, whether the listing and DONE reply went through) and "
-            "anything skipped.")
+                "create_client_gc with its n. Report each step's result; if it fails, tell me exactly "
+                "what failed and don't retry.")
+    return ("Call process_client_templates to make the GCs for every APG CLIENTS template without a "
+            "DONE reply. Then report each GC created (name, whether the listing and DONE reply went "
+            "through) and anything skipped or failed, with the reason.")
 
 
 if __name__ == "__main__":

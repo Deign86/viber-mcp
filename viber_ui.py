@@ -7,6 +7,7 @@ All coordinates exposed to callers are pixels in the image `screenshot()` return
 from __future__ import annotations
 
 import io
+import re
 import time
 from pathlib import Path
 
@@ -397,7 +398,7 @@ def _compose_and_maybe_send(text: str, send: bool) -> dict:
     return {"sent": True, "text": text}
 
 
-def reply_to_message(n: int, text: str, send: bool = False) -> dict:
+def reply_to_message(n: int, text: str, send: bool = True) -> dict:
     """Quote-reply to message n with `text` (draft unless send=True)."""
     if not text:
         raise UIError("Reply text is empty.")
@@ -690,33 +691,75 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
             "client_display_name": client_display}
 
 
-def mention(display_name: str, greeting: str = "Hello") -> dict:
-    """Send '<greeting> @<display_name>' in the open chat, picking the person from Viber's
-    mention list so they get notified."""
+def send_with_mention(before: str, display_name: str, after: str = "",
+                      quote_n: int | None = None) -> dict:
+    """Send "<before>@<display_name><after>" in the open chat, picking the person from Viber's
+    mention list so they're notified. With quote_n, it's sent as a quote-reply to that message."""
     b = _backend()
+    if quote_n is not None:
+        message_action(quote_n, "Reply")
     b.click_compose()
     b.delete()
     # Typing the start of the name filters Viber's mention list (it only shows a few rows).
     first = display_name.split()[0] if display_name.split() else ""
-    b.type_into_focus(f"{greeting} @{first[:4]}")
+    b.type_into_focus(f"{before}@{first[:4]}")
     time.sleep(1.5)
     compose = next(e for e in b.elements() if e["type"] == "Edit" and e["class"].startswith("QQuickTextEdit"))
     top = compose["rect"][1]
     obs = _ocr_px()
-    picks = [o for o in obs if top - 400 < o["y"] < top - 5 and o["x"] > obs[0]["W"] * 0.28
+    picks = [o for o in obs if top - 400 < o["y"] < top - 5 and o["x"] > o.get("SB", o["W"] * 0.28)
              and _norm(o["text"]) == _norm(display_name)] if obs else []
     if not picks:
         b.delete()
         raise UIError(f"'{display_name}' isn't in this chat's mention list.")
     b.click_at(*_ocr_center(max(picks, key=lambda o: o["y"])))  # nearest the box
     time.sleep(0.6)
+    if after:
+        b.type_into_focus(after)
+        time.sleep(0.3)
     value = b._value() if hasattr(b, "_value") else ""
     if "@" not in value or _norm(display_name) not in _norm(value):
         b.delete()
         raise UIError("The mention didn't insert; nothing sent.")
     b.click_send()
     time.sleep(1.2)
-    return {"sent": True, "mentioned": display_name}
+    return {"sent": True, "mentioned": display_name, "text": value}
+
+
+def mention(display_name: str, greeting: str = "Hello") -> dict:
+    """Send '<greeting> @<display_name>' in the open chat (the person is notified)."""
+    return send_with_mention(f"{greeting} ", display_name)
+
+
+def sender_above(lines: list[dict], bubble_rect, floor_y: float) -> str:
+    """The sender name Viber draws at the top of someone else's bubble in group chats, found in
+    OCR lines (pixel rects) between `floor_y` (the previous message's bottom) and the message text.
+    A link card can sit between the name and the text, so the whole gap is searched; the name is
+    the topmost line aligned with the text's left edge (card text is indented). "" if none."""
+    left, top = bubble_rect[0], bubble_rect[1]
+    # Names line up exactly with the text; quoted blocks are indented and hold "Label:" lines.
+    candidates = [o for o in lines if floor_y <= o["y"] < top - 2 and abs(o["x"] - left) <= 5
+                  and ":" not in o["text"]
+                  and len(o["text"]) > 2 and not re.search(r"\d{1,2}:\d{2}", o["text"])
+                  and "http" not in o["text"].lower()]
+    return min(candidates, key=lambda o: o["y"])["text"].strip() if candidates else ""
+
+
+def message_sender(n: int) -> str:
+    """Who posted message n of the open chat ("" for your own messages or when not shown)."""
+    elements = _backend().elements()
+    msgs = _messages(elements)
+    msg = next((m for m in msgs if m["n"] == n), None)
+    if msg is None:
+        raise UIError(f"No visible message n={n}.")
+    if msg["mine"]:
+        return ""
+    earlier = [m["rect"][3] for m in msgs if m["rect"][3] <= msg["rect"][1]]
+    # Never above the chat's header bar (its title would otherwise look like a sender name).
+    pane = next((e for e in elements if e["class"] == "StackView"), None)
+    header_bottom = pane["rect"][1] + 72 if pane else 0
+    floor_y = max([header_bottom] + earlier) if earlier else max(header_bottom, msg["rect"][1] - 220)
+    return sender_above(_ocr_px(), msg["rect"], floor_y)
 
 
 def _named(elements: list[dict], el_type: str, predicate) -> list[dict]:
