@@ -95,6 +95,10 @@ turns it into a client GC:
    Type codes: WH, OS, CS, HOUSE, LOT, CONDO, or `NAME-VIRTUALOFFICE`. Quezon City becomes QC; a
    province wins over the city (Valenzuela, Bulacan → BULACAN).
 2. Creates the group with the staff from `gc_members.json` (in order), then the client's number.
+   Viber's group picker only lists numbers you've chatted with, so if the client's number isn't
+   there yet it first sends them a 1:1 intro (`intro_message` in `gc_members.json`, e.g. "I'm the
+   admin of … I'll be creating a Viber group chat for you shortly"), then adds them. A number with
+   no Viber account stops the run with "GC NOT CREATED".
 3. Posts the client's template with only the client fields (Listings/Intern/date lines removed),
    then the listing (text above the dashed line + photos), then "Hello @client".
 4. Quote-replies `DONE-<GC NAME>` to the template in the templates chat.

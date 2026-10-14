@@ -143,3 +143,22 @@ def test_jump_down_button_is_the_chat_one_not_the_chat_list_one():
     ]
     assert scroll_to_bottom_button(elements)["rect"] == [734, 855, 778, 899]
     assert scroll_to_bottom_button(elements[:1]) is None  # at the bottom: no button
+
+
+# ------------------------------------------- intro message for numbers not in the picker
+
+
+def test_intro_message_uses_clients_first_name():
+    fields = logic.parse_template(NEW)
+    text = logic.intro_message(fields, "Hello po {name}! A GC is coming.")
+    assert text == "Hello po Testclient! A GC is coming."
+
+
+def test_intro_message_default_mentions_the_group_chat():
+    text = logic.intro_message(logic.parse_template(LORI))
+    assert text.startswith("Hello po Lori!")
+    assert "group chat" in text
+
+
+def test_intro_message_without_a_name_reads_cleanly():
+    assert logic.intro_message({"name": ""}, "Hello po {name}! A GC is coming.") == "Hello po! A GC is coming."

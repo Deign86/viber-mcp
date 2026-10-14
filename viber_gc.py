@@ -54,11 +54,13 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
     except ValueError as exc:
         client = ""
         problems.append(f"Client Viber number: {exc}")
+    intro = ""
     if client:
         client_display = viber_ui.number_on_viber(client) or ""
         if not client_display:
-            problems.append(f"NOT ON VIBER: no Viber account found for {client}. Fix the number in "
-                            "the template — do not retry until it's corrected.")
+            # Numbers only show up in the group picker once we've chatted with them, so message
+            # the client 1:1 first (if the number has no Viber account, that send fails loudly).
+            intro = logic.intro_message(fields, cfg.get("intro_message", ""))
 
     listing = None
     candidates = []
@@ -89,6 +91,8 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
         "members_in_order": members + [f"client {client}"],
         "client_number": client,
         "client_viber_name": client_display,
+        # Set when the number isn't in the group picker yet: sent 1:1 to the client first.
+        "intro_message_first": intro,
         "client_message": logic.client_message(text),
         "listing": listing,
         "listing_candidates": candidates if not listing else [],
@@ -121,6 +125,15 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
 
     cfg = _config()
     steps = {}
+    if plan["intro_message_first"]:
+        try:
+            steps["intro"] = viber_send.send_message(plan["client_number"], plan["intro_message_first"])
+        except viber_send.SendError as exc:
+            raise GCError(f"GC NOT CREATED — couldn't message {plan['client_number']} first: {exc} "
+                          "— Report this to the staff member and stop; do not retry.") from exc
+        if not viber_ui.number_on_viber(plan["client_number"]):
+            raise GCError(f"GC NOT CREATED — {plan['client_number']} still isn't in Viber's group "
+                          "picker after the intro message. Report this and stop; do not retry.")
     created = viber_ui.create_group(plan["gc_name"], members if members is not None else cfg["members"],
                                     plan["client_number"], self_name=cfg.get("self", ""))
     if not created["created"]:

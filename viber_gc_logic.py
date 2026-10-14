@@ -251,3 +251,16 @@ def choose_listing(query: str, listings: list[dict]) -> dict:
         return {"listing": active[0], "candidates": active, "problem": None}
     return {"listing": None, "candidates": active,
             "problem": f"Listing '{query}' matched {len(active)} active folders — pass listing_folder_id."}
+
+
+DEFAULT_INTRO = ("Hello po {name}! Our admin will be creating a Viber group chat for you shortly, "
+                 "where we'll send you the property details. Thank you po!")
+
+
+def intro_message(template_fields: dict, configured: str = "") -> str:
+    """The 1:1 message sent to a client whose number isn't in Viber's recent chats yet (so the
+    group picker can't find it): tells them a GC is coming. `configured` may use {name}."""
+    first = (template_fields.get("name") or "").split()
+    name = first[0].capitalize() if first else ""
+    text = (configured or DEFAULT_INTRO).replace("{name}", name)
+    return " ".join(text.replace(" !", "!").split()) if not name else text

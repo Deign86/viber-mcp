@@ -59,6 +59,11 @@ when needed (prompt: `client_gc`). Always report what was created and what was s
   when one is given (Valenzuela, Bulacan → BULACAN). If the plan says a part is uncertain
   (e.g. "Along Sucat Road"), ask the staff member for the name — never guess.
 - **Members, in order:** the staff list in gc_members.json, then the client's Viber number.
+- **Client number not in the group picker yet:** Viber only lists numbers you've chatted with, so
+  the plan sets `intro_message_first` — the client is messaged 1:1 first (introducing yourself as
+  the admin who'll create their GC; wording in gc_members.json), then added. Show that message in
+  the plan.
+  If the number has no Viber account the run fails with GC NOT CREATED — report it, don't retry.
 - **In the new GC only:** the client's template with ONLY the client fields (never the
   Listings/Intern/date lines), then the listing (text above the dashed line + photos), then
   "Hello @client" so the client is notified.

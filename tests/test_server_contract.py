@@ -9,7 +9,7 @@ import server  # noqa: E402
 
 # Identifiers in guidelines.md / prompts that are parameters, fields or file names, not tools.
 NON_TOOL_NAMES = {
-    "client_text", "dry_run", "include_internal", "low_confidence", "confirmation_dialog_buttons",
+    "client_text", "intro_message_first", "dry_run", "include_internal", "low_confidence", "confirmation_dialog_buttons",
     "gc_members.json", "listing_folder_id", "gc_name", "preview", "failed", "verified", "STOP",
     "folder_id",
 }

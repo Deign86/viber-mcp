@@ -5,5 +5,6 @@
     "Staff Member Two",
     "Company Account"
   ],
-  "templates_chat": "CLIENTS GROUP NAME"
+  "templates_chat": "CLIENTS GROUP NAME",
+  "intro_message": "Hello po {name}! Our admin will be creating a Viber group chat for you shortly. Thank you po!"
 }
