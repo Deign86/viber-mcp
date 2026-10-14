@@ -178,3 +178,12 @@ def test_viber_e164(raw, expected):
 def test_viber_e164_invalid(raw):
     with pytest.raises(ValueError):
         viber_e164(raw)
+
+
+def test_listing_after_blank_line():
+    text = ("👤 Name: Testclient\n🏗 Type of Property: Warehouse\n📐 Preferred SQM: 300 sqm\n"
+            "📍 Preferred Location: Quezon City\n📱Viber: ⁨09754659812⁩\n\n"
+            "Intern: Testing\n\nListing:\n\nAntipolo, 520 Cupang")
+    fields = parse_template(text)
+    assert fields["listing"] == "Antipolo, 520 Cupang"
+    assert "Antipolo" not in client_message(text)

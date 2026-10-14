@@ -125,34 +125,47 @@ def _messages(elements: list[dict]) -> list[dict]:
     chat = next((e for e in elements if e["class"] == "StackView"), None)
     if chat is None:
         raise UIError("No chat is open in Viber.")
-    mid_x = (chat["rect"][0] + chat["rect"][2]) / 2
+    own_left = chat["rect"][0] + (chat["rect"][2] - chat["rect"][0]) * 0.25
     by_parent: dict[int, list[dict]] = {}
     for el in elements:
         if el["parent"] is not None:
             by_parent.setdefault(el["parent"], []).append(el)
-    out = []
-    for i, el in enumerate(elements):
-        if el["class"] != "FeedDelegate":
-            continue
-        kids = by_parent.get(i, [])
-        text_el = next((k for k in kids if k["class"].startswith("TextEditItem") and k["text"]), None)
-        image_el = next((k for k in kids if k["class"] == "RemixImageButton"), None)
-        anchor = text_el or image_el
-        if anchor is None:
-            continue  # date separators, system notices without text, etc.
-        rect = anchor["rect"]
-        # Own bubbles are right-aligned; an image's Remix button sits at the bubble's left edge.
-        mine = (rect[2] if text_el else rect[0]) > mid_x
-        # The reaction (heart) button sits beside the bubble as a QQuickLoader child.
-        like = next((k for k in kids if k["class"] == "QQuickLoader"), None)
-        out.append({
+    def make(text_el, image_el, likes):
+        rect = (text_el or image_el)["rect"]
+        # The reaction (heart) button sits beside the bubble, level with it.
+        like = next((k for k in likes if rect[1] - 30 <= _mid(k["rect"])[1] <= rect[3] + 30), None)
+        return {
             "kind": "image" if image_el else "text",
             "text": text_el["text"] if text_el else "",
-            "mine": mine,
+            # Own bubbles are right-aligned: theirs start next to the avatar on the left, ours
+            # start well right of it. (Testing the right edge misfires on wide bubbles.)
+            "mine": rect[0] > own_left,
             "rect": rect,
             "image_rect": image_el["rect"] if image_el else None,
             "like_rect": like["rect"] if like else None,
-        })
+        }
+
+    def is_text(e):
+        return e["class"].startswith("TextEditItem") and e["text"]
+
+    out = []
+    chat_i = elements.index(chat)
+    # Viber exposes messages either wrapped in a FeedDelegate each, or (depending on how the
+    # list was laid out) as direct children of the chat pane. Handle both.
+    for i, el in enumerate(elements):
+        if el["class"] == "FeedDelegate":
+            kids = by_parent.get(i, [])
+            text_el = next((k for k in kids if is_text(k)), None)
+            image_el = next((k for k in kids if k["class"] == "RemixImageButton"), None)
+            if text_el or image_el:  # skip date separators, notices without text
+                out.append(make(text_el, image_el, [k for k in kids if k["class"] == "QQuickLoader"]))
+    direct = by_parent.get(chat_i, [])
+    likes = [k for k in direct if k["class"] == "QQuickLoader"]
+    for el in direct:
+        if is_text(el):
+            out.append(make(el, None, likes))
+        elif el["class"] == "RemixImageButton":
+            out.append(make(None, el, likes))
     out.sort(key=lambda m: m["rect"][1])
     for n, m in enumerate(reversed(out), start=1):
         m["n"] = n  # 1 = newest visible
@@ -457,13 +470,23 @@ def _picker_search(query: str) -> None:
 def _select_member(name: str = "", number: str = "") -> str:
     """Search the new-group picker and tick one contact. Returns the row's display name."""
     _picker_search(number.replace("+63", "0") if number else name)
-    obs = _ocr_px()
-    rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.12] if obs else []
-    if number:
-        digits = number[-10:]
-        hit = next((o for o in rows if digits in "".join(ch for ch in o["text"] if ch.isdigit())), None)
-    else:
-        hit = next((o for o in rows if _norm(o["text"]) == _norm(name)), None)
+    digit_fold = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1", "S": "5", "B": "8"})
+
+    def find(rows):
+        if number:
+            want = number[-10:]
+            return next((o for o in rows if want in "".join(
+                ch for ch in o["text"].translate(digit_fold) if ch.isdigit())), None)
+        return next((o for o in rows if _norm(o["text"]) == _norm(name)), None)
+
+    hit, obs, rows = None, [], []
+    for attempt in range(3):  # results can render a moment late
+        obs = _ocr_px()
+        rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.12] if obs else []
+        hit = find(rows)
+        if hit:
+            break
+        time.sleep(1.0)
     if hit is None:
         raise UIError(f"Couldn't find '{name or number}' in Viber's contacts for the group.")
     # The display name sits on the line above a number; the row is clickable anywhere.
@@ -512,13 +535,24 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
         raise UIError(f"Group name didn't take (got {typed!r}). Nothing was created; close the panel.")
 
     added = []
-    for member in members:
-        if self_name and _norm(member) == _norm(self_name):
-            continue  # the creator is in the group automatically
-        _select_member(name=member)
-        added.append(member)
-    client_display = _select_member(number=client_number)
-    added.append(f"{client_display} ({client_number})")
+    try:
+        for member in members:
+            if self_name and _norm(member) == _norm(self_name):
+                continue  # the creator is in the group automatically
+            _select_member(name=member)
+            added.append(member)
+        client_display = _select_member(number=client_number)
+        added.append(f"{client_display} ({client_number})")
+    except UIError:
+        # Leave the half-filled new-group screen without creating anything.
+        _picker_search("")
+        for _ in range(2):
+            back = next((e for e in b.elements() if e["type"] == "Button"
+                         and e["class"] == "IconButton" and e["rect"][0] < 60 and e["rect"][1] < 80), None)
+            if back:
+                b.click_at(*_mid(back["rect"]))
+                time.sleep(0.8)
+        raise
 
     _picker_search("")
     start = next((e for e in b.elements() if e["type"] == "Button" and e["name"] == "Start chat"), None)
@@ -541,8 +575,10 @@ def mention(display_name: str, greeting: str = "Hello") -> dict:
     b = _backend()
     b.click_compose()
     b.delete()
-    b.type_into_focus(f"{greeting} @")
-    time.sleep(1.2)
+    # Typing the start of the name filters Viber's mention list (it only shows a few rows).
+    first = display_name.split()[0] if display_name.split() else ""
+    b.type_into_focus(f"{greeting} @{first[:4]}")
+    time.sleep(1.5)
     compose = next(e for e in b.elements() if e["type"] == "Edit" and e["class"].startswith("QQuickTextEdit"))
     top = compose["rect"][1]
     obs = _ocr_px()
@@ -554,7 +590,8 @@ def mention(display_name: str, greeting: str = "Hello") -> dict:
     b.click_at(*_ocr_center(max(picks, key=lambda o: o["y"])))  # nearest the box
     time.sleep(0.6)
     value = b._value() if hasattr(b, "_value") else ""
-    if "@" not in value or len(value) <= len(greeting) + 2:
+    if "@" not in value or _norm(display_name) not in _norm(value):
+        b.delete()
         raise UIError("The mention didn't insert; nothing sent.")
     b.click_send()
     time.sleep(1.2)

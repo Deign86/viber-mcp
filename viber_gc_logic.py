@@ -86,7 +86,9 @@ def parse_template(text: str) -> dict:
             fields["date"] = fields["date"] or line.strip()
         elif in_listing:
             if not line.strip():
-                in_listing = False
+                # Blank lines right after "Listing:" are common; a blank line only ends the
+                # section once something has been collected.
+                in_listing = not listing_lines
             elif not _URL_ONLY.match(line):
                 listing_lines.append(line.strip())
     fields["listing"] = "\n".join(listing_lines)
