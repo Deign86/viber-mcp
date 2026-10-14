@@ -122,5 +122,14 @@ class Backend(ABC):
         """[{type, name, class, text, parent, rect:[l,t,r,b]}] in screenshot pixels."""
         self._unsupported("Listing UI elements")
 
+    def file_dialog_open(self) -> bool:
+        self._unsupported("Sending files")
+
+    def file_dialog_choose(self, path: str) -> bool:
+        self._unsupported("Sending files")
+
+    def file_dialog_cancel(self) -> None:
+        self._unsupported("Sending files")
+
     def _unsupported(self, what: str):
         raise NotImplementedError(f"{what} isn't implemented for the {self.name} backend yet.")

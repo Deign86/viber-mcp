@@ -537,6 +537,59 @@ class WindowsBackend(Backend):
             return out
         return _on_uia(run)
 
+    # --- Viber's "Send a file" dialog (a standard Win32 file dialog) -------------------
+    def _file_dialog(self) -> int | None:
+        pids = self._viber_pids()
+        found: list[int] = []
+
+        def cb(h, _):
+            if (win32gui.GetClassName(h) == "#32770" and win32gui.IsWindowVisible(h)
+                    and win32process.GetWindowThreadProcessId(h)[1] in pids):
+                found.append(h)
+            return True
+        win32gui.EnumWindows(cb, None)
+        return found[0] if found else None
+
+    def file_dialog_open(self) -> bool:
+        return self._file_dialog() is not None
+
+    def file_dialog_choose(self, path: str) -> bool:
+        """Put `path` in the dialog's file-name box and press Open — window messages only.
+        Returns whether the dialog closed (file accepted). When it closes Windows re-activates
+        Viber, so the foreground is handed back to the user's window."""
+        prev = win32gui.GetForegroundWindow()
+        dlg = self._file_dialog()
+        if dlg is None:
+            raise OCRError("Viber's file picker isn't open.")
+        children: list[int] = []
+        win32gui.EnumChildWindows(dlg, lambda h, _: children.append(h) or True, None)
+
+        def is_name_box(h: int) -> bool:
+            parent = win32gui.GetParent(h)
+            return (win32gui.GetClassName(h) == "Edit"
+                    and win32gui.GetClassName(parent) == "ComboBox"
+                    and win32gui.GetClassName(win32gui.GetParent(parent)) == "ComboBoxEx32")
+        name_box = next((h for h in children if is_name_box(h)), None)
+        if name_box is None:
+            raise OCRError("Couldn't find the file-name box in Viber's file picker.")
+        win32gui.SendMessage(name_box, win32con.WM_SETTEXT, 0, path)
+        win32gui.PostMessage(dlg, win32con.WM_COMMAND, win32con.IDOK, 0)
+        try:
+            for _ in range(40):
+                time.sleep(0.1)
+                if not win32gui.IsWindow(dlg) or not win32gui.IsWindowVisible(dlg):
+                    return True
+            return False
+        finally:
+            _restore_foreground(prev)
+            time.sleep(0.2)
+            _restore_foreground(prev)
+
+    def file_dialog_cancel(self) -> None:
+        dlg = self._file_dialog()
+        if dlg is not None:
+            win32gui.PostMessage(dlg, win32con.WM_COMMAND, win32con.IDCANCEL, 0)
+
     def debug_info(self) -> dict:
         hwnd = self._hwnd()
 

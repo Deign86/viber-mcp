@@ -27,6 +27,24 @@ sqm/location),
 - **Don't guess.** If OCR text is garbled or a message is cut off, say so, and `scroll_chat` or
   `screenshot` to check, rather than inventing what it says.
 
+## Property listings (client asks for details of a property)
+The listing docs in the company Drive (APR listings) have two parts, split by a typed dashed
+separator line (`--------------------…`):
+- **Above the line = client-facing.** Title, description, area, rent, lease terms, highlights, and
+  the company's inquiry numbers. Send this text as-is (keep the emoji and line breaks; don't
+  rewrite prices or terms).
+- **Below the line = INTERNAL. Never send it, quote it, paraphrase it, or hint at it** — it holds
+  the exact address, the owner's/agent's own contact numbers, and the agent's name. If a client asks
+  for the exact address or the owner's number, say an agent will coordinate the viewing; don't reveal it.
+- If you can't find the dashed line in a doc, **stop and ask** — don't guess where the public part ends.
+
+Flow: `find_listings` (match the property the client asked about: location, type, sqm; ask if
+several fit) → `get_listing` (never `include_internal=True` for anything that goes to a client; its
+output is for staff only) → show the staff member the `client_text`, the photo count and the chat
+name → after a yes, `search_and_open` the chat, then `send_listing`. It sends the text and all
+photos together; use `dry_run` if they want to review first. If `get_listing` can't find the
+dashed line, stop and ask. Never mix photos from a different listing.
+
 ## Background operation (don't disturb the person using this PC)
 - All tools run in the background: they never move the cursor, use the keyboard, touch the
   clipboard, or bring Viber to the front. Keep it that way: don't ask the user to focus Viber.
@@ -47,6 +65,12 @@ sqm/location),
   Coordinates are pixels in the latest screenshot. Click a text field before `type_text`.
   `press_key("escape")` closes menus, dialogs and the image viewer. `press_key("enter")` in the
   message box SENDS — treat it like the send button.
+- **Files/photos:** `send_files(paths, caption, dry_run)` sends local files to the open chat as one
+  batch (several photos = one album). Confirm chat and files first like any send; `dry_run` leaves
+  them in Viber's preview unsent. Don't send anything the staff member didn't name.
+- **Listings (Google Drive):** `find_listings` → `get_listing` → `send_listing` (see Property
+  listings). `drive_sign_in` if Drive isn't signed in; `drive_search` / `drive_download` only for
+  files outside the listings layout, and only when asked.
 - **Replies:** match the chat's language and tone (English, Filipino, or Taglish as the client uses
   it), polite and professional ("po"/"ma'am"/"sir" where the chat uses them), concise. Don't promise
   prices, availability, schedules, or commitments the staff member didn't give you.

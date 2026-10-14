@@ -145,5 +145,23 @@ Status:
   pane's (`StackView`) centre. The context menu, image viewer and dialogs render inside the main
   window. Never click a generic "Delete" *button* — the info panel's "Delete" deletes the chat;
   unsend only uses the context-menu `MenuItem` "Delete".
+- `send_files` (viber_ui.py, Windows) drives Viber's attach flow with window messages only. The
+  attach button is the leftmost `IconButton` on the message-box row; the first click on it is
+  sometimes swallowed, so it retries. The picker is a `#32770` dialog: fill the filename via
+  `WM_SETTEXT` on `ComboBoxEx32 > ComboBox > Edit`, then `WM_COMMAND` `IDOK`. After it closes Windows
+  re-activates Viber, so focus is handed back immediately. The preview overlay: the caption `Edit`
+  (class `TextArea`); the overlay container is the caption's grandparent; send is a `RoundIconButton`
+  child of the overlay; add-more is the `IconButton` child of the overlay just above the caption
+  (NOT the overlay's close X `IconButton` at the top right). `dry_run` stops before send.
+- `viber_drive.py` — Google Drive listings (read-only OAuth desktop flow). Client file
+  `google_oauth_client.json` next to `server.py` (git-ignored) or env `VIBER_MCP_GOOGLE_CLIENT`;
+  token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads cached in
+  `%LOCALAPPDATA%\viber-mcp\drive-cache`; root folder name from `VIBER_MCP_LISTINGS_FOLDER`
+  (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / `City, sqm Area`
+  folder with one Google Doc (title starts with `*`) plus JPGs. The doc is split at the typed dashed
+  line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in
+  code unless `get_listing(include_internal=True)`. `send_listing` sends the text, then the photos via
+  `send_files`; never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
+  `send_listing`, `drive_search`, `drive_download`.
 - Test any tool with `uv run client.py call <tool> '<json>'`; element ids from `list_elements`
   only live within one server process (each `client.py` call starts a new one).

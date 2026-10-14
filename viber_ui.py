@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import time
+from pathlib import Path
 
 from backends import get_backend
 
@@ -180,10 +181,125 @@ def open_image(n: int = 1) -> bytes:
 
 
 def close_viewer() -> dict:
-    """Close the image viewer / any menu or dialog (Escape)."""
-    _backend().press_key("escape")
-    time.sleep(0.5)
-    return {"closed": True}
+    """Close the image viewer, a file-send preview (discarding its files), or a menu/dialog."""
+    b = _backend()
+    preview = _preview(b.elements())
+    if preview and preview[3]:
+        b.click_at(*_mid(preview[3]["rect"]))  # Escape doesn't dismiss the send preview
+    else:
+        b.press_key("escape")
+    time.sleep(0.6)
+    return {"closed": _preview(b.elements()) is None}
+
+
+def _mid(rect) -> tuple[float, float]:
+    return (rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2
+
+
+def _preview(elements: list[dict]):
+    """(caption box, send button, add-more button) of Viber's file-preview overlay, or None."""
+    caption = next((e for e in elements if e["type"] == "Edit" and e["class"] == "TextArea"), None)
+    if caption is None or caption["parent"] is None:
+        return None
+    overlay = elements[caption["parent"]]["parent"]  # caption → ScrollView → overlay
+    cy = _mid(caption["rect"])[1]
+    send = next((e for e in elements if e["type"] == "Button" and e["class"] == "RoundIconButton"
+                 and e["parent"] == overlay and abs(_mid(e["rect"])[1] - cy) < 30), None)
+    # The "+" (add more files) sits just above the caption, right of the delete-file button.
+    # (The overlay's close ✕ is also an IconButton, far up in the top-right corner.)
+    add = max((e for e in elements if e["type"] == "Button" and e["class"] == "IconButton"
+               and e["parent"] == overlay and e["rect"][3] <= caption["rect"][1]
+               and caption["rect"][1] - e["rect"][3] < 120),
+              key=lambda e: e["rect"][0], default=None)
+    close = min((e for e in elements if e["type"] == "Button" and e["class"] == "IconButton"
+                 and e["parent"] == overlay), key=lambda e: e["rect"][1], default=None)
+    return caption, send, add, close
+
+
+def _attach_button(elements: list[dict]):
+    """The "+" (attach) button: leftmost icon button on the message box's row."""
+    compose = next((e for e in elements if e["type"] == "Edit" and e["class"].startswith("QQuickTextEdit")), None)
+    if compose is None:
+        raise UIError("No chat is open in Viber (no message box).")
+    cy = _mid(compose["rect"])[1]
+    row = [e for e in elements if e["type"] == "Button" and e["class"].startswith("IconButton")
+           and abs(_mid(e["rect"])[1] - cy) < 20 and e["rect"][2] <= compose["rect"][0]]
+    if not row:
+        raise UIError("Couldn't find Viber's attach (+) button.")
+    return min(row, key=lambda e: e["rect"][0])
+
+
+def _open_picker(button: dict) -> None:
+    """Click `button` until Viber's file picker opens. The first click is sometimes swallowed
+    (e.g. it only ends an active search), so retry a few times."""
+    b = _backend()
+    for _ in range(3):
+        b.click_at(*_mid(button["rect"]))
+        for _ in range(10):
+            time.sleep(0.2)
+            if b.file_dialog_open():
+                return
+    raise UIError("Viber's file picker didn't open.")
+
+
+def _pick_file(path: str) -> None:
+    """Fill the open "Send a file" dialog with `path` and confirm it."""
+    b = _backend()
+    if not b.file_dialog_choose(path):
+        b.file_dialog_cancel()
+        raise UIError(f"Viber didn't accept the file: {path}")
+
+
+def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> dict:
+    """Attach local files to the open chat and send them together (photos, PDFs, videos, ...)."""
+    files = [Path(p).expanduser().resolve() for p in paths]
+    if not files:
+        raise UIError("No files given.")
+    missing = [str(f) for f in files if not f.is_file()]
+    if missing:
+        raise UIError(f"File(s) not found: {', '.join(missing)}")
+    b = _backend()
+    if _preview(b.elements()):
+        raise UIError("A file preview is already open in Viber — send or close it first (close_viewer).")
+
+    _open_picker(_attach_button(b.elements()))
+    _pick_file(str(files[0]))
+    for f in files[1:]:
+        preview = _wait_preview()
+        if preview[2] is None:
+            raise UIError("Couldn't find the preview's add-more (+) button.")
+        _open_picker(preview[2])
+        _pick_file(str(f))
+
+    caption_box, send, _, _ = _wait_preview()
+    if caption:
+        b.click_at(*_mid(caption_box["rect"]))
+        b.type_into_focus(caption)
+    if dry_run:
+        return {"sent": False, "files": [f.name for f in files], "caption": caption,
+                "note": "The files are in Viber's send preview, unsent. Click its send button or "
+                        "close_viewer to cancel."}
+    if send is None:
+        raise UIError("Couldn't find the preview's send button; nothing was sent.")
+    b.click_at(*_mid(send["rect"]))
+    for _ in range(30):
+        time.sleep(0.3)
+        if _preview(b.elements()) is None:
+            break
+    else:
+        raise UIError("The preview is still open — the files may not have been sent. Take a screenshot.")
+    newest = next((m for m in reversed(_messages(b.elements()))), None)
+    return {"sent": True, "files": [f.name for f in files], "caption": caption,
+            "verified": bool(newest and newest["mine"])}
+
+
+def _wait_preview():
+    for _ in range(30):
+        preview = _preview(_backend().elements())
+        if preview:
+            return preview
+        time.sleep(0.3)
+    raise UIError("Viber's file preview didn't appear.")
 
 
 def _named(elements: list[dict], el_type: str, predicate) -> list[dict]:

@@ -103,11 +103,87 @@ The server also offers ready-made prompts, which show up as slash commands in Cl
 | `put_draft(text)` | Type `text` into the open chat's message box **without sending**, for you to review. |
 | `reply(text)` | Send `text` to the open chat. |
 | `send_message(to, text, dry_run=False)` | Open a chat by number or name, send, and verify it was sent. `dry_run` fills the box only. |
+| `send_files(paths, caption="", dry_run=False)` | Send local files to the **open** chat as one batch (several photos become one album) through Viber's attach (+) button and the Windows "Send a file" dialog, driven with window messages. `dry_run` leaves the files in Viber's preview, unsent. |
 | `save_to_my_notes(text)` / `open_my_notes()` | Use Viber's private "My Notes" chat. |
 | `list_contacts()` | The aliases in `contacts.json`. |
 
 `to` is an E.164 number (`+639171234567`) or a name from `contacts.json`. Unknown names are
 rejected instead of guessed. For anyone not in `contacts.json`, use `search_and_open(name)`.
+
+When the file picker closes, Windows re-activates Viber; focus is handed straight back.
+
+### Property listings from Google Drive
+
+Staff can ask for a property by location, type or size; Claude finds it in the company Drive and
+sends the details and photos to a client's chat. Read-only access to Drive.
+
+| Tool | What it does |
+|------|--------------|
+| `drive_sign_in()` | Sign in to Google (opens a browser the first time). Other Drive tools do this automatically. |
+| `find_listings(query, category, deal)` | Search the listings tree by text, category (e.g. `WAREHOUSE`) and deal (`FOR LEASE/RENT` or `FOR SALE`). |
+| `get_listing(folder_id, include_internal=False)` | The client-facing text and photo count of one listing. `include_internal=True` also returns the internal part, for staff eyes only. |
+| `send_listing(folder_id, max_photos=20, include_videos=False, dry_run=False)` | Send the client text, then all photos together, to the open chat. |
+| `drive_search(query, type_contains)` / `drive_download(file_ids)` | General Drive search and download (to the local cache) for anything outside the listings layout. |
+
+Expected Drive layout:
+
+```
+APR LISTING / CATEGORY / FOR LEASE/RENT or FOR SALE / "City, sqm Area" / listing doc + photos
+```
+
+Categories include `WAREHOUSE`, `OFFICE SPACE`, `COMMERCIAL SPACE`, `CONDO` / `HOUSE AND LOT` and `LOT`.
+Each property folder holds one Google Doc (its title starts with `*`) and the JPG photos.
+
+**The separator rule.** In the doc, the client-facing text is **above** a typed dashed line
+(`------`). Everything **below** it is internal: the exact address, owner and agent numbers, the
+agent's name. The code splits the doc at that line and withholds the lower part; `send_listing`
+only ever sends the upper text. If a doc has no dashed line, the tools report an error instead of
+guessing.
+
+```
+You:     Mitch's client wants the Cabuyao warehouse for lease, send the details to Mitch
+Claude:  (find_listings → get_listing) Found "Cabuyao, 1,200 sqm Warehouse". Here is the text, 9 photos,
+         going to the chat "Mitch Kim". Send?
+You:     yes
+Claude:  (search_and_open → send_listing) Sent the text and 9 photos.
+```
+
+Set `VIBER_MCP_LISTINGS_FOLDER` to use a root folder name other than `APR LISTING`.
+
+### Google Drive setup (admin, one time)
+
+**Option A, gcloud (no OAuth client needed).** On a PC with the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install):
+
+```powershell
+gcloud projects create <project-id> --account=<company account>
+gcloud services enable drive.googleapis.com --project=<project-id> --account=<company account>
+gcloud auth application-default login --scopes="openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.readonly"
+gcloud auth application-default set-quota-project <project-id>
+move "%APPDATA%\gcloud\application_default_credentials.json" "%LOCALAPPDATA%\viber-mcp\google_gcloud_credentials.json"
+```
+
+Sign in with the company account in the browser that opens. Moving the file keeps the Drive
+login private to this tool, so other tools don't pick it up as their default credentials.
+
+**Option B, OAuth client (staff PCs without gcloud):**
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create or select a project.
+2. **APIs & Services → Library**: enable the **Google Drive API**.
+3. **APIs & Services → OAuth consent screen**: User type **External**, app name e.g.
+   `APG Viber Assistant`, your support email. Add the scope
+   `https://www.googleapis.com/auth/drive.readonly`.
+4. Set Publishing status to **In production**. In *Testing* mode Google expires every sign-in after
+   7 days. An unverified production app shows "Google hasn't verified this app": staff click
+   **Advanced → Go to (app name)**. Unverified apps are limited to 100 users.
+5. **APIs & Services → Credentials → Create credentials → OAuth client ID**, Application type
+   **Desktop app**. Download the JSON.
+6. Save it as `google_oauth_client.json` next to `server.py` on each staff PC (or point
+   `VIBER_MCP_GOOGLE_CLIENT` at it). It is git-ignored; keep it out of git and chat.
+7. The first Drive tool use opens a browser. Sign in with a Google account that can see the
+   `APR LISTING` drive and approve read-only access.
+
+The per-user token is stored at `%LOCALAPPDATA%\viber-mcp\google_token.json` and downloads are
+cached in `%LOCALAPPDATA%\viber-mcp\drive-cache`. Delete the token to sign in as someone else.
 
 ### Computer use (anything else in Viber)
 
@@ -199,7 +275,9 @@ window, not fullscreen. If the toggle is on but you still get error 1002, run
 | `guidelines.md` | The staff operating rules (served to every client) |
 | `viber_send.py` | Platform-neutral logic: recipient resolution, send pipeline, search scoring, verification |
 | `viber_ocr.py` | Formats OCR output into tool results; scrolling |
-| `viber_ui.py` | Computer-use primitives, plus messages, image viewer and unsend built on them |
+| `viber_ui.py` | Computer-use primitives, plus messages, image viewer, unsend and `send_files` built on them |
+| `viber_drive.py` | Google Drive listings: OAuth sign-in, search, listing text/photo split, download cache |
+| `google_oauth_client.json` | OAuth client for Drive (git-ignored; see Google Drive setup) |
 | `backends/windows.py` | Windows backend: PrintWindow + OCR, UI Automation, posted input |
 | `backends/macos.py` | macOS backend: Quartz/Vision/AppKit |
 | `backends/base.py` | The `Backend` interface each platform implements |

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP, Image
 
+import viber_drive
 import viber_ocr
 import viber_send
 import viber_ui
@@ -207,6 +208,22 @@ def open_image(n: int = 1) -> list:
 
 
 @mcp.tool()
+def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> dict:
+    """Send local files (photos, PDFs, videos, docs) to the OPEN chat in one batch, with an
+    optional caption. Confirm the chat and the files with the staff member first.
+
+    Several photos go out together as one album. With dry_run=True the files and caption are
+    left in Viber's send preview for the staff member to check and send themselves.
+
+    Args:
+        paths: full paths of the files on this PC, in the order to send them.
+        caption: optional text sent with the files.
+        dry_run: True = stop at the preview, don't send.
+    """
+    return viber_ui.send_files(paths, caption=caption, dry_run=dry_run)
+
+
+@mcp.tool()
 def close_viewer() -> dict:
     """Close the image viewer, or any open menu/dialog in Viber (presses Escape)."""
     return viber_ui.close_viewer()
@@ -227,6 +244,65 @@ def unsend_message(text: str = "", n: int = 0, for_everyone: bool = True) -> dic
         for_everyone: True = unsend for everyone; False = delete only on this account.
     """
     return viber_ui.unsend_message(text=text or None, n=n or None, for_everyone=for_everyone)
+
+
+# ------------------------------------------------------------- Google Drive listings
+
+
+@mcp.tool()
+def drive_sign_in() -> dict:
+    """Sign in to Google Drive for property listings (opens a browser the first time on this PC).
+    Other Drive tools do this automatically when needed."""
+    return viber_drive.sign_in()
+
+
+@mcp.tool()
+def find_listings(query: str = "", category: str = "", deal: str = "") -> dict:
+    """Find property listings in the APR LISTING Drive.
+
+    Property folders are named "City, sqm Area" (e.g. "Rizal, 1000, 2000 Taytay").
+    Matches folders containing every word of `query`, newest first.
+
+    Args:
+        query: words to match, e.g. "Taytay", "Makati 260", "Quezon City".
+        category: optional, e.g. "WAREHOUSE", "OFFICE SPACE", "COMMERCIAL SPACE", "LOT",
+            "CONDO / HOUSE AND LOT".
+        deal: optional, "LEASE" or "SALE".
+    """
+    return viber_drive.find_listings(query, category, deal)
+
+
+@mcp.tool()
+def get_listing(folder_id: str, include_internal: bool = False) -> dict:
+    """Read a listing: the client-facing details (the doc's text ABOVE the dashed line) and its
+    photos/videos. The part below the line is internal and withheld unless include_internal=True —
+    and even then it must NEVER be sent to a client."""
+    return viber_drive.get_listing(folder_id, include_internal)
+
+
+@mcp.tool()
+def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = False,
+                 dry_run: bool = False) -> dict:
+    """Send a listing to the OPEN Viber chat: the client-facing details text, then the photos
+    together in one batch. The doc's internal part is never sent.
+
+    Confirm the chat and the listing with the staff member first (or use dry_run=True to preview
+    exactly what would be sent without sending anything).
+    """
+    return viber_drive.send_listing(folder_id, max_photos, include_videos, dry_run)
+
+
+@mcp.tool()
+def drive_search(query: str, type_contains: str = "") -> dict:
+    """Search Google Drive by file name (any folder). type_contains filters the MIME type,
+    e.g. "image/", "pdf", "folder"."""
+    return {"files": viber_drive.search(query, type_contains)}
+
+
+@mcp.tool()
+def drive_download(file_ids: list[str]) -> dict:
+    """Download Drive files to this PC; returns local paths for send_files."""
+    return {"paths": viber_drive.download(file_ids)}
 
 
 # ------------------------------------------------------------- computer-use primitives
@@ -319,6 +395,17 @@ def unsend(chat: str, message: str) -> str:
     return (f"Open the Viber chat '{chat}', find our message matching '{message}' with "
             "list_messages, show me exactly which message (n, text) you'll unsend, and wait for my "
             "yes before calling unsend_message. Report whether it was verified.")
+
+
+@mcp.prompt()
+def property_details(chat: str, property: str) -> str:
+    """Send a property listing (text + photos) from Google Drive to a Viber chat, after approval."""
+    return (f"Open the Viber chat '{chat}' (search_and_open; if low_confidence or several similar "
+            f"chats, ask me which). Then find_listings for '{property}' (if several match, ask me "
+            "which) and get_listing for the chosen folder_id. Show me the chat name, the client_text "
+            "exactly as it will be sent, and the photo count, then wait for my clear yes before "
+            "calling send_listing. Never send, quote or summarize the internal part of the doc. "
+            "Report whether the text and photos were verified.")
 
 
 if __name__ == "__main__":

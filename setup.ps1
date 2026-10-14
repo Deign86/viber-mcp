@@ -12,6 +12,10 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 Write-Host "Installing dependencies..."
 uv sync
 
+if (-not (Test-Path google_oauth_client.json)) {
+    Write-Host "Note: google_oauth_client.json is missing. The Google Drive listing tools need it (see README -> Google Drive setup)."
+}
+
 if (-not (Test-Path contacts.json)) {
     Copy-Item contacts.example.json contacts.json
     Write-Host "Created contacts.json with PLACEHOLDER numbers - edit it, or just use full +63... numbers."
