@@ -144,3 +144,107 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
     else:
         steps["done_reply"] = viber_ui.reply_to_message(target["n"], plan["done_reply"], send=True)
     return {"done": True, "gc_name": plan["gc_name"], "steps": steps}
+
+
+# ------------------------------------------------------------ autonomous processing
+
+
+def _is_template(text: str) -> bool:
+    f = logic.parse_template(text)
+    return bool(f.get("name") and f.get("viber") and (f.get("property_type") or f.get("sqm")))
+
+
+def _gc_exists(name: str) -> bool:
+    """Does a chat whose title starts like `name` already exist? (Viber search, then cleared.)"""
+    b = viber_ui._backend()
+    b.click_search()
+    b.delete()
+    b.type_text(name[:18])
+    time.sleep(1.8)
+    head = viber_ui._norm(name)[:12]
+    try:
+        obs = viber_ui._left_column(viber_ui._ocr_px())
+        return any(viber_ui._norm(o["text"]).startswith(head) for o in obs[2:])  # skip search box
+    finally:
+        b.click_search()
+        b.delete()
+        b.press_key("escape")
+        time.sleep(0.6)
+
+
+def _collect_templates_chat(screens: int) -> list[str]:
+    """Texts of the templates chat's recent messages, oldest first (scrolls up, then back)."""
+    b = viber_ui._backend()
+    seen: list[str] = []
+    for _ in range(screens):
+        for m in reversed(viber_ui._messages(b.elements())):  # newest → oldest on screen
+            if m["text"] and m["text"] not in seen:
+                seen.append(m["text"])
+        b.scroll("chat", 10)
+        time.sleep(1.0)
+    b.scroll("chat", -50)
+    time.sleep(1.0)
+    return list(reversed(seen))
+
+
+def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = True) -> dict:
+    """GCs for every template in the templates chat that has no DONE reply yet. preview=True
+    (default) only lists what would be created; preview=False creates them. Templates that
+    can't be handled safely are skipped and reported."""
+    cfg = _config()
+    chat = cfg.get("templates_chat") or "APG CLIENTS"
+    viber_send.search_and_open(chat)
+    time.sleep(1.0)
+    texts = _collect_templates_chat(screens)
+    is_done = [t.strip().upper().startswith("DONE-") for t in texts]
+    done_lines = {logic_norm(t) for t, d in zip(texts, is_done) if d}
+
+    results, skipped = [], []
+    for i, text in enumerate(texts):
+        if not _is_template(text):
+            continue
+        if len(results) >= limit:
+            skipped.append({"template": text[:80], "reason": f"limit of {limit} GCs per run"})
+            continue
+        name = logic.gc_name(logic.parse_template(text))
+        # Staff don't always name GCs by the template's Name (e.g. Leah → DONE-JNT-WH-...), so a
+        # template counts as handled if its DONE matches OR any DONE was posted after it. Worst
+        # case a template is skipped — never a duplicate GC for a client who already has one.
+        if logic_norm(logic.done_text(name["gc_name"])) in done_lines or any(is_done[i + 1:]):
+            continue
+        if name["uncertain"]:
+            skipped.append({"gc_name": name["gc_name"], "reason": "; ".join(name["uncertain"])})
+            continue
+        if _gc_exists(name["gc_name"]):
+            skipped.append({"gc_name": name["gc_name"],
+                            "reason": "a chat with this name already exists (no DONE reply yet)"})
+            continue
+        if preview:
+            results.append({"would_create": name["gc_name"], "template": text})
+            continue
+        # Re-open the templates chat and locate this template by its exact text.
+        viber_send.search_and_open(chat)
+        time.sleep(1.0)
+        target = None
+        for _ in range(screens + 2):
+            msgs = viber_ui._messages(viber_ui._backend().elements())
+            target = next((m for m in reversed(msgs) if m["text"] == text), None)
+            if target:
+                break
+            viber_ui._backend().scroll("chat", 10)
+            time.sleep(1.0)
+        if target is None:
+            skipped.append({"gc_name": name["gc_name"], "reason": "template scrolled out of reach"})
+            continue
+        try:
+            plan = plan_client_gc(target["n"])
+            if not plan["ready"]:
+                skipped.append({"gc_name": plan["gc_name"], "reason": "; ".join(plan["problems"])})
+                continue
+            results.append(create_client_gc(target["n"], dry_run=False))
+        except Exception as exc:  # report and carry on with the next template
+            skipped.append({"gc_name": name["gc_name"], "reason": f"failed: {exc}"})
+    return {"would_create" if preview else "created": results, "skipped": skipped,
+            "note": ("Nothing was created. Show this list to the staff member and run again with "
+                     "preview=false after a yes." if preview else
+                     "Skipped templates need a staff decision (name, listing, or number).")}

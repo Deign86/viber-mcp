@@ -281,17 +281,37 @@ def unsend_message(text: str = "", n: int = 0, for_everyone: bool = True) -> dic
 
 
 @mcp.tool()
+def process_client_templates(limit: int = 5, preview: bool = True) -> dict:
+    """Make client GCs for the templates in the templates chat (APG CLIENTS) that have no
+    "DONE-..." reply yet.
+
+    preview=True (default) only lists the GCs it would create and the templates it would skip.
+    Show that list to the staff member; after a clear yes, call again with preview=False to
+    create them. For each: create the group (staff from gc_members.json, then the client's
+    number), post the client's template (client fields only), the listing (text above the dashed
+    line + photos), "Hello @client", then quote-reply DONE-<GC NAME> to the template. Templates
+    with an uncertain name, ambiguous/missing/SOLD listing, bad number, an existing chat of that
+    name, or any DONE reply after them are skipped — report those.
+
+    Args:
+        limit: max GCs to create in one run (each takes about a minute).
+        preview: True = list only; False = create.
+    """
+    return viber_gc.process_client_templates(limit, preview=preview)
+
+
+@mcp.tool()
 def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
                      dry_run: bool = True) -> dict:
-    """Turn a staff template in the templates chat (e.g. APG CLIENTS) into a client group chat.
+    """Make the client GC for ONE specific template (use process_client_templates for "make the
+    GCs"). Use it to retry a template that was skipped, with the staff member's gc_name or
+    listing_folder_id.
 
-    Open the templates chat first and pass the template's n from list_messages. With
-    dry_run=True (default) it only returns the plan: GC name (e.g. "LORI-WH-(1200-1350SQM,
-    BULACAN)"), staff members in order + the client's number, the client message (template
-    fields only — no listing/intern/date lines), the listing it will send, and the DONE reply.
-    Show the plan to the staff member; only after a clear yes call again with dry_run=False,
-    which: creates the group → posts the client's template → sends the listing (details above the
-    dashed line + photos) → "Hello @client" → quote-replies "DONE-<GC NAME>" to the template.
+    Open the templates chat first and pass the template's n from list_messages. dry_run=True
+    returns the plan (GC name, members, client number, client message, listing, DONE reply);
+    dry_run=False runs it: create group → client's template → listing (above the dashed line +
+    photos) → "Hello @client" → quote-reply "DONE-<GC NAME>" to the template. Show the plan and
+    get the staff member's yes before dry_run=False.
 
     Args:
         template_n: the template message's n (from list_messages in the templates chat).
@@ -468,13 +488,15 @@ def property_details(chat: str, property: str) -> str:
 
 @mcp.prompt()
 def client_gc(client: str = "") -> str:
-    """Create a client group chat from a staff template in APG CLIENTS (with confirmation)."""
-    who = f"the template for '{client}'" if client else "the newest template that has no DONE reply yet"
-    return (f"Open the templates chat (APG CLIENTS) and use list_messages to find {who}. Call "
-            "create_client_gc with its n and dry_run=true. Show me the plan: GC name, members in "
-            "order, client number, the client message, the listing, and the DONE reply. If it "
-            "reports problems (uncertain name part, several listings), ask me. Only after my clear "
-            "yes, call create_client_gc again with dry_run=false, then report each step's result.")
+    """Make client group chats from the templates in APG CLIENTS (shows the plan first)."""
+    if client:
+        return (f"Open APG CLIENTS, find the template for '{client}' with list_messages, and call "
+                "create_client_gc with its n and dry_run=true. Show me the plan; after my yes, call "
+                "it again with dry_run=false and report each step's result.")
+    return ("Call process_client_templates (preview) and show me the GCs it would create and the "
+            "templates it would skip, with reasons. After my yes, call it with preview=false, then "
+            "report each GC created (name, whether the listing and DONE reply went through) and "
+            "anything skipped.")
 
 
 if __name__ == "__main__":

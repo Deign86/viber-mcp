@@ -345,8 +345,18 @@ def _search_open(name: str) -> tuple[str, int]:
     backend.type_text(name)
     time.sleep(1.6)                 # let results populate
 
-    match = _find_result_row(name, backend.observe())
+    obs = backend.observe()
+    match = _find_result_row(name, obs)
     if match is None:
+        # Viber renders the matching result's name in highlighted bold that OCR often can't
+        # read. Open the first result under a section header and confirm by the chat header.
+        header = next((o for o in obs if o["x"] < 0.35 and o["text"].strip().lower()
+                       in ("conversations", "contacts", "groups")), None)
+        if header is not None:
+            backend.click_result(header["y"] + 0.05)
+            time.sleep(1.2)
+            if _header_matches(name):
+                return name, 2
         raise SendError(
             f"No matching contact/chat found for '{name}' in Viber search. Try a fuller name "
             "or use a phone number with open_chat."
@@ -355,6 +365,17 @@ def _search_open(name: str) -> tuple[str, int]:
     backend.click_result(norm_y)
     time.sleep(1.2)
     return matched_text, score
+
+
+def _header_matches(name: str) -> bool:
+    """Is the open chat's header title `name` (allowing truncation and OCR look-alikes)?"""
+    want = _ocr_fold(re.sub(r"[^a-z0-9]", "", name.lower()))
+    for o in backend.observe():
+        if 0.3 <= o["x"] < 0.6 and o["y"] < 0.12:
+            got = _ocr_fold(re.sub(r"[^a-z0-9]", "", o["text"].lower()))
+            if len(got) >= 4 and (want.startswith(got) or got.startswith(want)):
+                return True
+    return False
 
 
 def search_and_open(name: str) -> dict:
@@ -373,6 +394,9 @@ def search_and_open(name: str) -> dict:
         raise SendError("Viber is not running. Launch and sign in to Viber first.")
 
     backend.focus()
+    if _header_matches(name):  # already open
+        return {"query": name, "matched": name, "low_confidence": False, "opened": True,
+                "text": viber_ocr.read_open_chat()["text"]}
     matched_text, score = _search_open(name)
     result = _wait_for_sendable_chat(number=name, name=name, timeout=8.0)
     return {

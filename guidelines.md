@@ -48,8 +48,11 @@ dashed line, stop and ask. Never mix photos from a different listing.
 ## Client group chats (templates in APG CLIENTS)
 Staff post a client template (Company Name, Type of Property, Name, Preferred SQM, Budget,
 Location, Viber, then "Listings:", "Intern:", date) in the templates chat. For each one a client GC
-is made with `create_client_gc` (prompt: `client_gc`): open the templates chat, find the template's
-`n` with `list_messages`, and pass it.
+is made. "Make the GCs" → `process_client_templates` (preview) → show the staff member the GCs it
+would create and what it would skip → after a clear yes, `process_client_templates(preview=False)`.
+For one specific or previously skipped template: `create_client_gc(n)` (plan) → yes →
+`create_client_gc(n, dry_run=False)`, passing the staff member's `gc_name` / `listing_folder_id`
+when needed (prompt: `client_gc`). Always report what was created and what was skipped (with the reason).
 - **Name scheme:** `FIRSTNAME-TYPE-(SQM, LOCATION)` in capitals, e.g. `LORI-WH-(1200-1350SQM, BULACAN)`.
   TYPE: WH warehouse, OS office space, CS commercial space, HOUSE, LOT, CONDO; a virtual office is
   `NAME-VIRTUALOFFICE`. Unknown SQM is `~`. LOCATION is the city (Quezon City → QC), or the province
@@ -60,8 +63,9 @@ is made with `create_client_gc` (prompt: `client_gc`): open the templates chat, 
   Listings/Intern/date lines), then the listing (text above the dashed line + photos), then
   "Hello @client" so the client is notified.
 - **Then** quote-reply `DONE-<GC NAME>` to the original template in the templates chat.
-- Always run it with dry_run first and get a clear yes on the plan. Never create a GC for a
-  template that already has a DONE reply, and never use a SOLD listing.
+- Never create a GC for a template that already has a DONE reply or whose GC already exists, and
+  never use a SOLD listing. When a name part is uncertain or the listing is ambiguous, skip it and
+  ask — don't guess.
 
 ## Background operation (don't disturb the person using this PC)
 - All tools run in the background: they never move the cursor, use the keyboard, touch the
