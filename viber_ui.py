@@ -172,6 +172,29 @@ def _messages(elements: list[dict]) -> list[dict]:
     return out
 
 
+def scroll_to_bottom_button(elements: list[dict]):
+    """The chat's round "↓" jump-to-newest button (only shown when scrolled up), or None.
+    (Not the chat list's ScrollToTopItem.)"""
+    return next((e for e in elements if e["type"] == "Button" and e["class"] == "ScrollToBottomItem"), None)
+
+
+def jump_to_latest() -> dict:
+    """Show the newest messages of the open chat. Wheel-scrolling alone can't get there from far
+    up (Viber loads history in chunks), so click the "↓" button while it's showing."""
+    b = _backend()
+    clicked = False
+    for _ in range(4):
+        button = scroll_to_bottom_button(b.elements())
+        if button is None:
+            break
+        b.click_at(*_mid(button["rect"]))
+        clicked = True
+        time.sleep(1.0)
+    b.scroll("chat", -60)  # settle at the very bottom
+    time.sleep(0.6)
+    return {"at_latest": scroll_to_bottom_button(b.elements()) is None, "used_button": clicked}
+
+
 def list_messages() -> dict:
     msgs = _messages(_backend().elements())
     return {

@@ -127,3 +127,19 @@ def test_client_message_drops_listing_and_intern_for_new_layout():
     message = logic.client_message(NEW)
     assert "Antipolo" not in message and "Intern" not in message and "Listing" not in message
     assert "👤 Name: Testclient" in message
+
+
+# ----------------------------------------------------------- jump to newest
+
+
+def test_jump_down_button_is_the_chat_one_not_the_chat_list_one():
+    from viber_ui import scroll_to_bottom_button
+
+    elements = [
+        {"type": "Button", "name": "", "class": "ScrollToTopItem", "text": "", "parent": 1,
+         "rect": [252, 895, 296, 939]},   # chat list's "↑"
+        {"type": "Button", "name": "", "class": "ScrollToBottomItem", "text": "", "parent": 31,
+         "rect": [734, 855, 778, 899]},   # chat's "↓" (shown when scrolled up)
+    ]
+    assert scroll_to_bottom_button(elements)["rect"] == [734, 855, 778, 899]
+    assert scroll_to_bottom_button(elements[:1]) is None  # at the bottom: no button

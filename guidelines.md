@@ -83,7 +83,9 @@ when needed (prompt: `client_gc`). Always report what was created and what was s
 ## How to work
 - **Inbox:** `list_chats` (unread counts are in the list), `scroll_chat_list` for more.
 - **Read a chat:** `search_and_open(name)` → `list_messages` (exact text, mine/theirs, n=1 newest) or
-  `read_open_chat`; `scroll_chat("up")` for older messages. Use `screenshot` when layout matters.
+  `read_open_chat`; `scroll_chat("up")` for older messages, `jump_to_latest` to get back to the
+  newest ones (do this before reading or replying if the chat may be scrolled up). Use
+  `screenshot` when layout matters.
 - **Answering a specific message:** `reply_to_message(n, text)` quote-replies (draft unless
   `send=True`). `edit_message(n, text)` fixes one of your own sent messages; `like_message(n)` toggles
   the heart. `message_action(n, action)` picks any item from a message's right-click menu (Pin,

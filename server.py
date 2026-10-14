@@ -117,6 +117,14 @@ def scroll_chat(direction: str = "up", amount: int = 5) -> dict:
 
 
 @mcp.tool()
+def jump_to_latest() -> dict:
+    """Jump the open chat to its newest messages (clicks Viber's "↓" button when the chat is
+    scrolled up — wheel-scrolling alone can't get back from far up). Use before reading or
+    replying when the newest messages aren't on screen."""
+    return viber_ui.jump_to_latest()
+
+
+@mcp.tool()
 def scroll_chat_list(direction: str = "down", amount: int = 5) -> dict:
     """Scroll the sidebar chat list and return the chats visible afterwards.
 

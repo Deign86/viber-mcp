@@ -170,9 +170,7 @@ def _find_message(text: str, screens: int = 6):
     """Locate the visible message with this exact text: jump to the newest, then scroll up."""
     b = viber_ui._backend()
     want = logic_norm(text)
-    for _ in range(3):
-        b.scroll("chat", -60)
-        time.sleep(0.8)
+    viber_ui.jump_to_latest()
     for _ in range(screens + 1):
         msgs = viber_ui._messages(b.elements())
         hit = next((m for m in reversed(msgs) if logic_norm(m["text"]) == want), None)
@@ -188,17 +186,14 @@ def _collect_templates_chat(screens: int) -> list[str]:
     b = viber_ui._backend()
     seen: list[str] = []
     # Start from the newest message, whatever the chat was scrolled to before.
-    for _ in range(3):
-        b.scroll("chat", -60)
-        time.sleep(0.8)
+    viber_ui.jump_to_latest()
     for _ in range(screens):
         for m in reversed(viber_ui._messages(b.elements())):  # newest → oldest on screen
             if m["text"] and m["text"] not in seen:
                 seen.append(m["text"])
         b.scroll("chat", 10)
         time.sleep(1.0)
-    b.scroll("chat", -50)
-    time.sleep(1.0)
+    viber_ui.jump_to_latest()
     return list(reversed(seen))
 
 
