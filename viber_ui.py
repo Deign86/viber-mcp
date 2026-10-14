@@ -504,9 +504,8 @@ def _select_member(name: str = "", number: str = "") -> str:
     return display
 
 
-def create_group(gc_name: str, members: list[str], client_number: str, self_name: str = "") -> dict:
-    """Create a Viber group named `gc_name` with `members` (contact names, in order) and then
-    the client's number. Leaves the new group open."""
+def _open_new_group() -> None:
+    """Open Viber's New group screen (pencil → New group)."""
     b = _backend()
     els = b.elements()
     search = next((e for e in els if e["class"] == "SearchItem"), None)
@@ -523,6 +522,51 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
         raise UIError("Viber's 'New group' option didn't appear.")
     b.click_at(*_ocr_center(hits[0]))
     time.sleep(1.2)
+
+
+def _close_new_group() -> None:
+    """Leave the New group screen without creating anything."""
+    b = _backend()
+    _picker_search("")
+    for _ in range(2):
+        back = next((e for e in b.elements() if e["type"] == "Button"
+                     and e["class"] == "IconButton" and e["rect"][0] < 60 and e["rect"][1] < 80), None)
+        if back:
+            b.click_at(*_mid(back["rect"]))
+            time.sleep(0.8)
+
+
+def number_on_viber(number: str) -> str | None:
+    """Does this phone number have a Viber account? Checked in the New group picker (the main
+    search offers "Start a conversation" for any number, so it can't tell). Returns the
+    account's display name, or None. Creates nothing."""
+    _open_new_group()
+    try:
+        _picker_search(number.replace("+63", "0"))
+        fold = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1", "S": "5", "B": "8"})
+        want = number[-10:]
+        for _ in range(3):
+            obs = _ocr_px()
+            rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.2] if obs else []
+            if any("no results" in o["text"].lower() for o in rows):
+                return None
+            hit = next((o for o in rows if want in "".join(
+                ch for ch in o["text"].translate(fold) if ch.isdigit())), None)
+            if hit:
+                above = [o for o in rows if o["y"] < hit["y"] and hit["y"] - o["y"] < hit["h"] * 3
+                         and abs(o["x"] - hit["x"]) < 30 and len(o["text"]) > 1]
+                return max(above, key=lambda o: o["y"])["text"] if above else number
+            time.sleep(1.0)
+        return None
+    finally:
+        _close_new_group()
+
+
+def create_group(gc_name: str, members: list[str], client_number: str, self_name: str = "") -> dict:
+    """Create a Viber group named `gc_name` with `members` (contact names, in order) and then
+    the client's number. Check the number with number_on_viber first. Leaves the new group open."""
+    b = _backend()
+    _open_new_group()
 
     name_box = next((e for e in b.elements() if e["type"] == "Edit" and e["class"] == "TextField"), None)
     if name_box is None:
@@ -544,14 +588,7 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
         client_display = _select_member(number=client_number)
         added.append(f"{client_display} ({client_number})")
     except UIError:
-        # Leave the half-filled new-group screen without creating anything.
-        _picker_search("")
-        for _ in range(2):
-            back = next((e for e in b.elements() if e["type"] == "Button"
-                         and e["class"] == "IconButton" and e["rect"][0] < 60 and e["rect"][1] < 80), None)
-            if back:
-                b.click_at(*_mid(back["rect"]))
-                time.sleep(0.8)
+        _close_new_group()  # leave the half-filled screen without creating anything
         raise
 
     _picker_search("")

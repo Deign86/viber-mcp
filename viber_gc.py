@@ -48,11 +48,17 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
     naming = logic.gc_name(fields)
     name = gc_name.strip() or naming["gc_name"]
     problems = [] if gc_name.strip() else list(naming["uncertain"])
+    client_display = ""
     try:
         client = logic.viber_e164(fields.get("viber") or "")
     except ValueError as exc:
         client = ""
         problems.append(f"Client Viber number: {exc}")
+    if client:
+        client_display = viber_ui.number_on_viber(client) or ""
+        if not client_display:
+            problems.append(f"NOT ON VIBER: no Viber account found for {client}. Fix the number in "
+                            "the template — do not retry until it's corrected.")
 
     listing = None
     candidates = []
@@ -87,6 +93,7 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
         "done_reply": logic.done_text(name),
         "members_in_order": members + [f"client {client}"],
         "client_number": client,
+        "client_viber_name": client_display,
         "client_message": logic.client_message(text),
         "listing": listing,
         "listing_candidates": candidates if not listing else [],
@@ -106,11 +113,16 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
                      done_chat: str = "") -> dict:
     """Plan (dry_run) or run the whole client-GC flow for template message n of the OPEN chat."""
     plan = plan_client_gc(template_n, gc_name, listing_folder_id)
-    if dry_run or not plan["ready"]:
+    if not dry_run and not plan["ready"]:
+        # Fail loudly: nothing is created, and the caller must not loop on it.
+        raise GCError("GC NOT CREATED — " + " | ".join(plan["problems"]) +
+                      " — Report this to the staff member and stop; do not retry.")
+    if dry_run:
         plan.pop("template_text")
         plan["note"] = ("Nothing was done. Show this plan to the staff member; after a yes, call "
                         "again with dry_run=false." if plan["ready"] else
-                        "Fix the problems listed (pass gc_name / listing_folder_id), then retry.")
+                        "NOT READY — fix the problems listed (gc_name / listing_folder_id / the "
+                        "template's number) before running; do not retry as-is.")
         return plan
 
     cfg = _config()
@@ -213,7 +225,7 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = T
     is_done = [t.strip().upper().startswith("DONE-") for t in texts]
     done_lines = {logic_norm(t) for t, d in zip(texts, is_done) if d}
 
-    results, skipped = [], []
+    results, skipped, failed = [], [], []
     for i, text in enumerate(texts):
         if not _is_template(text):
             continue
@@ -233,9 +245,6 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = T
             skipped.append({"gc_name": name["gc_name"],
                             "reason": "a chat with this name already exists (no DONE reply yet)"})
             continue
-        if preview:
-            results.append({"would_create": name["gc_name"], "template": text})
-            continue
         # Re-open the templates chat and locate this template by its exact text.
         viber_send.search_and_open(chat)
         time.sleep(1.0)
@@ -244,14 +253,28 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = T
             skipped.append({"gc_name": name["gc_name"], "reason": "template scrolled out of reach"})
             continue
         try:
-            plan = plan_client_gc(target["n"])
-            if not plan["ready"]:
-                skipped.append({"gc_name": plan["gc_name"], "reason": "; ".join(plan["problems"])})
-                continue
+            plan = plan_client_gc(target["n"])  # includes the Viber lookup of the client number
+        except Exception as exc:
+            failed.append({"gc_name": name["gc_name"], "error": f"planning failed: {exc}"})
+            continue
+        if not plan["ready"]:
+            failed.append({"gc_name": plan["gc_name"], "error": " | ".join(plan["problems"])})
+            continue
+        if preview:
+            results.append({"would_create": plan["gc_name"], "client": plan["client_number"],
+                            "client_viber_name": plan["client_viber_name"],
+                            "listing": (plan["listing"] or {}).get("name"), "template": text})
+            continue
+        try:
             results.append(create_client_gc(target["n"], dry_run=False))
-        except Exception as exc:  # report and carry on with the next template
-            skipped.append({"gc_name": name["gc_name"], "reason": f"failed: {exc}"})
-    return {"would_create" if preview else "created": results, "skipped": skipped,
-            "note": ("Nothing was created. Show this list to the staff member and run again with "
-                     "preview=false after a yes." if preview else
-                     "Skipped templates need a staff decision (name, listing, or number).")}
+        except Exception as exc:  # one template failing must not stop or loop the others
+            failed.append({"gc_name": name["gc_name"], "error": str(exc)})
+    out = {"would_create" if preview else "created": results, "skipped": skipped,
+           "failed": failed,
+           "note": ("Nothing was created. Show this list to the staff member and run again with "
+                    "preview=false after a yes." if preview else
+                    "Skipped templates need a staff decision (name, listing, or number).")}
+    if failed:
+        out["STOP"] = (f"{len(failed)} template(s) FAILED (see 'failed'). Report them to the staff "
+                       "member and stop. Do not retry them until the template is fixed.")
+    return out

@@ -63,6 +63,9 @@ when needed (prompt: `client_gc`). Always report what was created and what was s
   Listings/Intern/date lines), then the listing (text above the dashed line + photos), then
   "Hello @client" so the client is notified.
 - **Then** quote-reply `DONE-<GC NAME>` to the original template in the templates chat.
+- **On a failure, report and stop — never retry on your own.** If a GC tool returns an error, a
+  `failed` list, `STOP`, or `NOT ON VIBER`, tell the staff member exactly what failed and wait. Don't
+  re-run the same template until they've fixed it (e.g. corrected the Viber number).
 - Never create a GC for a template that already has a DONE reply or whose GC already exists, and
   never use a SOLD listing. When a name part is uncertain or the listing is ambiguous, skip it and
   ask — don't guess.
