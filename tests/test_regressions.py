@@ -205,3 +205,39 @@ def test_done_for_another_client_out_of_view_errs_toward_handled():
     dave = ("👤 Name: Dave mur\n🏗️ Type of Property: warehouse\n📐 Preferred SQM: 177sqm\n"
             "📍 Preferred Location: makati\n📱Viber: 09178801748")
     assert logic.pending_templates([dave, "DONE-CLAUDIA-CS-(380SQM, PASIG)"]) == []
+
+
+# ------------------------------------------------------- download cleanup
+
+
+def test_remove_downloads_only_deletes_inside_the_cache(tmp_path):
+    import viber_drive
+
+    cache = tmp_path / "drive-cache"
+    cache.mkdir()
+    photo = cache / "abc_1.jpg"
+    photo.write_bytes(b"jpg")
+    outside = tmp_path / "keep.jpg"
+    outside.write_bytes(b"jpg")
+    removed = viber_drive.remove_downloads([str(photo), str(outside)], cache)
+    assert removed == 1
+    assert not photo.exists()
+    assert outside.exists()  # never touched
+
+
+def test_clear_downloads_empties_the_cache(tmp_path):
+    import viber_drive
+
+    cache = tmp_path / "drive-cache"
+    cache.mkdir()
+    for n in range(3):
+        (cache / f"id{n}_photo.jpg").write_bytes(b"jpg")
+    report = viber_drive.clear_downloads(cache)
+    assert report["removed"] == 3 and report["left"] == 0
+    assert list(cache.iterdir()) == []
+
+
+def test_clear_downloads_without_a_cache_folder_is_harmless(tmp_path):
+    import viber_drive
+
+    assert viber_drive.clear_downloads(tmp_path / "missing")["removed"] == 0

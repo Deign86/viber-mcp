@@ -161,6 +161,7 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
                                f"'{plan['done_reply']}' to it manually."}
     else:
         steps["done_reply"] = viber_ui.reply_to_message(target["n"], plan["done_reply"], send=True)
+    steps["cleanup"] = viber_drive.clear_downloads()  # no photo stockpile on this PC
     return {"done": True, "gc_name": plan["gc_name"], "steps": steps}
 
 

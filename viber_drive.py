@@ -275,7 +275,34 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Fa
         return {"sent": False, "would_send": plan,
                 "note": "Nothing sent. Check the chat and the text, then call again without dry_run."}
     paths = download([m["id"] for m in media])  # download first so a Drive error sends nothing
-    text_result = viber_send.reply(listing["client_text"])
-    files_result = viber_ui.send_files(paths) if paths else {"sent": False, "files": []}
+    try:
+        text_result = viber_send.reply(listing["client_text"])
+        files_result = viber_ui.send_files(paths) if paths else {"sent": False, "files": []}
+    finally:
+        remove_downloads(paths)  # don't stockpile client photos on this PC
     return {"sent": True, "doc": listing["doc"], "text_verified": text_result.get("verified"),
             "photos_sent": len(paths), "photos_verified": files_result.get("verified")}
+
+
+def remove_downloads(paths: list[str], cache_dir: Path | None = None) -> int:
+    """Delete downloaded files — only ones inside the download cache folder. Returns the count."""
+    root = (cache_dir or CACHE_DIR).resolve()
+    removed = 0
+    for p in paths:
+        path = Path(p).resolve()
+        if path.parent != root or not path.is_file():
+            continue  # never touch anything outside the cache
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass  # still open in Viber's upload; clear_downloads gets it later
+    return removed
+
+
+def clear_downloads(cache_dir: Path | None = None) -> dict:
+    """Empty the download cache folder (files only; nothing outside it)."""
+    root = (cache_dir or CACHE_DIR)
+    files = [str(f) for f in root.iterdir() if f.is_file()] if root.exists() else []
+    removed = remove_downloads(files, root)
+    return {"removed": removed, "left": len(files) - removed, "folder": str(root)}

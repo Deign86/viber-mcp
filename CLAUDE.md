@@ -166,8 +166,9 @@ Status:
   (NOT the overlay's close X `IconButton` at the top right). `dry_run` stops before send.
 - `viber_drive.py` — Google Drive listings (read-only OAuth desktop flow). Client file
   `google_oauth_client.json` next to `server.py` (git-ignored) or env `VIBER_MCP_GOOGLE_CLIENT`;
-  token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads cached in
-  `%LOCALAPPDATA%\viber-mcp\drive-cache`; root folder name from `VIBER_MCP_LISTINGS_FOLDER`
+  token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads go to
+  `%LOCALAPPDATA%\viber-mcp\drive-cache` and are deleted after sending (`remove_downloads` /
+  `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`
   (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / `City, sqm Area`
   folder with one Google Doc (title starts with `*`) plus JPGs. The doc is split at the typed dashed
   line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in

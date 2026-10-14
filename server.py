@@ -385,8 +385,16 @@ def drive_search(query: str, type_contains: str = "") -> dict:
 
 @mcp.tool()
 def drive_download(file_ids: list[str]) -> dict:
-    """Download Drive files to this PC; returns local paths for send_files."""
+    """Download Drive files to this PC; returns local paths for send_files. Call
+    clear_downloads after sending so client files don't pile up on the PC."""
     return {"paths": viber_drive.download(file_ids)}
+
+
+@mcp.tool()
+def clear_downloads() -> dict:
+    """Delete everything in the Drive download folder (send_listing and client-GC runs already
+    clean up after themselves; use this after drive_download + send_files)."""
+    return viber_drive.clear_downloads()
 
 
 # ------------------------------------------------------------- computer-use primitives
