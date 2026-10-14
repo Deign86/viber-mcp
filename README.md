@@ -1,7 +1,11 @@
 # Viber MCP (macOS + Windows)
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI assistant (e.g. Claude) **send and
-read Viber messages** by driving your already-running, signed-in **Viber Desktop** app on macOS.
+read Viber messages** by driving your already-running, signed-in **Viber Desktop** app on
+Windows (in the background — no cursor, focus or clipboard takeover) or macOS.
+
+Maintained by [Deign Lazaro](https://github.com/Deign86), who built the background Windows backend.
+Based on the original macOS viber-mcp by Wawi del Mundo (MIT).
 
 Viber has no local/public API and its message database is encrypted, so this works entirely through
 UI automation:

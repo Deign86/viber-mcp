@@ -3,6 +3,7 @@ name = "viber-mcp"
 version = "0.1.0"
 description = "MCP server to send and read Viber Desktop messages on macOS and Windows via UI automation"
 readme = "README.md"
+authors = [{ name = "Deign Lazaro" }, { name = "Wawi del Mundo" }]
 requires-python = ">=3.14"
 dependencies = [
     "mcp[cli]>=1.28.1",
