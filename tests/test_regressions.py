@@ -264,3 +264,37 @@ def test_select_circle_needs_the_search_box():
     from viber_ui import select_circle_point
 
     assert select_circle_point([], {"y": 257, "h": 20}, False) is None
+
+
+# ------------------------------------------- New group screen (pencil toggles the panel)
+
+
+def test_new_group_screen_state_reads_the_sidebar():
+    from viber_ui import new_group_screen_state
+
+    assert new_group_screen_state(["Rakuten Viber", "Q Search...", "Chats", "Unread"]) == "chats"
+    assert new_group_screen_state(["Q Search name or number", "New group", "New Community"]) == "menu"
+    assert new_group_screen_state(["Q Search name or number", "Group name*", "Invite contacts", "0/250"]) == "group_form"
+
+
+# ------------------- chat-pane banner must not be mistaken for the picker row (Rafael)
+
+
+def test_banner_running_into_the_chat_pane_is_not_sidebar_text():
+    from viber_ui import _left_column, find_number_row
+
+    def line(text, x, y, w):
+        return {"text": text, "x": x, "y": y, "w": w, "h": 20, "W": 1101, "H": 967, "SB": 308}
+
+    obs = [
+        line("Invite contacts", 20, 176, 92),
+        # the open 1:1 chat's banner: starts at x=325 (old 30% cutoff was 330) and runs right
+        line("Rafael Luijie Esquivel +639175177830 is not in your contact list - save it", 325, 159, 600),
+        line("Rafael Luijie Esquivel", 80, 257, 132),
+        line("+639175177830", 81, 278, 105),
+    ]
+    rows = _left_column(obs)
+    assert all(r["x"] + r["w"] <= 312 for r in rows)
+    hit, display = find_number_row(rows, "+639175177830")
+    assert (hit["x"], hit["y"]) == (81, 278)  # the picker row, not the banner
+    assert display == "Rafael Luijie Esquivel"

@@ -434,15 +434,23 @@ def like_message(n: int) -> dict:
 # ------------------------------------------------------------------ group chats
 
 
+def _sidebar_right(elements: list[dict], width: float) -> float:
+    """Right edge of Viber's left sidebar: where the chat pane (SplitView) begins."""
+    pane = next((e for e in elements if e["class"] == "SplitView"), None)
+    return pane["rect"][0] if pane else width * 0.28
+
+
 def _ocr_px() -> list[dict]:
-    """OCR observations with pixel rects (screenshot coordinates)."""
+    """OCR observations with pixel rects (screenshot coordinates). Each carries SB, the sidebar's
+    right edge, so sidebar text can be told apart from the chat pane's."""
     b = _backend()
     img = b.screenshot()
+    sidebar_right = _sidebar_right(b.elements(), img.width)
     out = []
     for o in b.observe():
         out.append({"text": o["text"].strip(), "x": o["x"] * img.width, "y": o["y"] * img.height,
                     "w": o["w"] * img.width, "h": o["h"] * img.height, "W": img.width,
-                    "H": img.height})
+                    "H": img.height, "SB": sidebar_right})
     return out
 
 
@@ -457,7 +465,11 @@ def _norm(s: str) -> str:
 
 
 def _left_column(obs: list[dict]) -> list[dict]:
-    return [o for o in obs if o["x"] < o["W"] * 0.3]
+    """Only text that lies entirely inside the sidebar. A chat-pane banner like "Rafael …
+    +639175177830 is not in your contact list" starts near the edge but runs into the chat pane —
+    matching it instead of the picker row is how the client never got selected."""
+    return [o for o in obs
+            if o["x"] + o["w"] <= o.get("SB", o["W"] * 0.28) + 4]
 
 
 def _wait_ocr(predicate, timeout: float = 6.0, left_only: bool = True):
@@ -555,28 +567,49 @@ def select_circle_point(elements: list[dict], line: dict, line_is_number: bool):
     return search["rect"][2] - 5, center_y + (-15 if line_is_number else 6)
 
 
+def new_group_screen_state(left_texts: list[str]) -> str:
+    """What the sidebar shows: "group_form" (New group screen with "Group name*"), "menu" (the
+    new-chat panel with its "New group" option), or "chats" (anything else)."""
+    low = [t.strip().lower() for t in left_texts]
+    if any(t.startswith("group name") for t in low):
+        return "group_form"
+    if "new group" in low:
+        return "menu"
+    return "chats"
+
+
 def _open_new_group() -> None:
-    """Open Viber's New group screen (pencil → New group)."""
+    """Open Viber's New group screen (pencil → New group). Looks at the screen before each click,
+    because the pencil TOGGLES the new-chat panel: clicking it while the panel is already open
+    (e.g. left over from an earlier attempt) closes it."""
     b = _backend()
-    els = b.elements()
-    search = next((e for e in els if e["class"] == "SearchItem"), None)
-    if search is None:
-        raise UIError("Viber's main chat list isn't showing (close any panel first).")
-    sy = _mid(search["rect"])[1]
-    pencil = min((e for e in els if e["type"] == "Button" and e["rect"][0] >= search["rect"][2] - 2
-                  and abs(_mid(e["rect"])[1] - sy) < 15), key=lambda e: e["rect"][0], default=None)
-    if pencil is None:
-        raise UIError("Couldn't find Viber's new-chat (pencil) button.")
-    hits = []
-    for _ in range(3):  # the first click is sometimes swallowed (e.g. right after a chat opens)
+    texts: list[str] = []
+    for _ in range(4):
+        obs = _left_column(_ocr_px())
+        texts = [o["text"] for o in obs]
+        state = new_group_screen_state(texts)
+        if state == "group_form":
+            return
+        if state == "menu":
+            option = next(o for o in obs if o["text"].strip().lower() == "new group")
+            b.click_at(*_ocr_center(option))
+            time.sleep(1.2)
+            continue
+        els = b.elements()
+        search = next((e for e in els if e["class"] == "SearchItem"), None)
+        if search is None:
+            b.press_key("escape")  # some panel/dialog is covering the chat list
+            time.sleep(0.6)
+            continue
+        sy = _mid(search["rect"])[1]
+        pencil = min((e for e in els if e["type"] == "Button" and e["rect"][0] >= search["rect"][2] - 2
+                      and abs(_mid(e["rect"])[1] - sy) < 15), key=lambda e: e["rect"][0], default=None)
+        if pencil is None:
+            raise UIError("Couldn't find Viber's new-chat (pencil) button.")
         b.click_at(*_mid(pencil["rect"]))
-        hits, _ = _wait_ocr(lambda t: t.lower() == "new group", timeout=3.0)
-        if hits:
-            break
-    if not hits:
-        raise UIError("Viber's 'New group' option didn't appear.")
-    b.click_at(*_ocr_center(hits[0]))
-    time.sleep(1.2)
+        _wait_ocr(lambda t: t.lower() == "new group", timeout=3.0)
+    raise UIError("Couldn't open Viber's New group screen. The sidebar showed: "
+                  + " | ".join(texts[:8]))
 
 
 def _close_new_group() -> None:
@@ -613,8 +646,8 @@ def number_on_viber(number: str) -> str | None:
 
 
 def create_group(gc_name: str, members: list[str], client_number: str, self_name: str = "") -> dict:
-    """Create a Viber group named `gc_name` with `members` (contact names, in order) and then
-    the client's number. Check the number with number_on_viber first. Leaves the new group open."""
+    """Create a Viber group named `gc_name`: the client's number first, then `members` (contact
+    names, in order). Check the number with number_on_viber first. Leaves the new group open."""
     b = _backend()
     _open_new_group()
 
@@ -630,13 +663,14 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
 
     added = []
     try:
+        # Client first: if their number can't be added, stop before touching the staff.
+        client_display = _select_member(number=client_number)
+        added.append(f"{client_display} ({client_number})")
         for member in members:
             if self_name and _norm(member) == _norm(self_name):
                 continue  # the creator is in the group automatically
             _select_member(name=member)
             added.append(member)
-        client_display = _select_member(number=client_number)
-        added.append(f"{client_display} ({client_number})")
     except UIError:
         _close_new_group()  # leave the half-filled screen without creating anything
         raise

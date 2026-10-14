@@ -58,7 +58,7 @@ when needed (prompt: `client_gc`). Always report what was created and what was s
   `NAME-VIRTUALOFFICE`. Unknown SQM is `~`. LOCATION is the city (Quezon City → QC), or the province
   when one is given (Valenzuela, Bulacan → BULACAN). If the plan says a part is uncertain
   (e.g. "Along Sucat Road"), ask the staff member for the name — never guess.
-- **Members, in order:** the staff list in gc_members.json, then the client's Viber number.
+- **Members:** the client's Viber number first, then the staff list in gc_members.json (in order).
 - **Client number not in the group picker yet:** Viber only lists numbers you've chatted with, so
   the plan sets `intro_message_first` — the client is messaged 1:1 first (introducing yourself as
   the admin who'll create their GC; wording in gc_members.json), then added. Show that message in

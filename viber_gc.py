@@ -95,7 +95,7 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
     return {
         "gc_name": name,
         "done_reply": logic.done_text(name),
-        "members_in_order": members + [f"client {client}"],
+        "members_in_order": [f"client {client}"] + members,
         "client_number": client,
         "client_viber_name": client_display,
         # Set when the number isn't in the group picker yet: sent 1:1 to the client first.
