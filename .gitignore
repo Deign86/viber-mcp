@@ -25,3 +25,6 @@ layout.windows.json
 # Google OAuth client (per company) and downloads
 google_oauth_client.json
 tool_image_*.png
+
+# Staff list for client GCs (copy gc_members.example.json)
+gc_members.json

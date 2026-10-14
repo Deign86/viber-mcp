@@ -286,12 +286,20 @@ _PHONE_RE = re.compile(r"^[+\d][\d\s()\-]+$")
 _COUNT_RE = re.compile(r"^\d+\s+contacts?$")
 
 
+_OCR_FOLD = str.maketrans({"l": "i", "1": "i", "|": "i", "0": "o"})
+
+
+def _ocr_fold(s: str) -> str:
+    return s.translate(_OCR_FOLD)
+
+
 def _score_result(query: str, text: str) -> int:
     """Rank how well an OCR'd result row matches `query`. Higher = better; <=0 = reject."""
-    q = query.lower().strip()
     t = text.lower().strip()
     if not t or t in _RESULT_SKIP or _PHONE_RE.match(t) or _COUNT_RE.match(t):
         return -1
+    # OCR confuses I/l/1 and O/0 (e.g. "TESTCLlENT"); compare with those folded together.
+    q, t = _ocr_fold(query.lower().strip()), _ocr_fold(t)
     if t == q:
         return 4
     if t.startswith(q):

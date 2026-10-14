@@ -548,6 +548,18 @@ class WindowsBackend(Backend):
             return out
         return _on_uia(run)
 
+    # --- focus protection for actions where Viber activates itself (e.g. new group) ----
+    def foreground(self) -> int:
+        return win32gui.GetForegroundWindow()
+
+    def hold_foreground(self, prev: int, seconds: float) -> None:
+        """Keep handing the foreground back to `prev` for `seconds`."""
+        end = time.time() + seconds
+        while time.time() < end:
+            if win32gui.GetForegroundWindow() != prev:
+                _restore_foreground(prev)
+            time.sleep(0.02)
+
     # --- Viber's "Send a file" dialog (a standard Win32 file dialog) -------------------
     def _file_dialog(self) -> int | None:
         pids = self._viber_pids()

@@ -122,6 +122,12 @@ class Backend(ABC):
         """[{type, name, class, text, parent, rect:[l,t,r,b]}] in screenshot pixels."""
         self._unsupported("Listing UI elements")
 
+    def foreground(self) -> int:
+        return 0
+
+    def hold_foreground(self, prev: int, seconds: float) -> None:
+        """Keep the user's window in front for `seconds` (no-op where not needed)."""
+
     def file_dialog_open(self) -> bool:
         self._unsupported("Sending files")
 

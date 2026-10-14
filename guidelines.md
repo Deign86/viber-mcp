@@ -45,6 +45,23 @@ name → after a yes, `search_and_open` the chat, then `send_listing`. It sends 
 photos together; use `dry_run` if they want to review first. If `get_listing` can't find the
 dashed line, stop and ask. Never mix photos from a different listing.
 
+## Client group chats (templates in APG CLIENTS)
+Staff post a client template (Company Name, Type of Property, Name, Preferred SQM, Budget,
+Location, Viber, then "Listings:", "Intern:", date) in the templates chat. For each one a client GC
+is made with `create_client_gc` (prompt: `client_gc`):
+- **Name scheme:** `FIRSTNAME-TYPE-(SQM, LOCATION)` in capitals, e.g. `LORI-WH-(1200-1350SQM, BULACAN)`.
+  TYPE: WH warehouse, OS office space, CS commercial space, HOUSE, LOT, CONDO; a virtual office is
+  `NAME-VIRTUALOFFICE`. Unknown SQM is `~`. LOCATION is the city (Quezon City → QC), or the province
+  when one is given (Valenzuela, Bulacan → BULACAN). If the plan says a part is uncertain
+  (e.g. "Along Sucat Road"), ask the staff member for the name — never guess.
+- **Members, in order:** the staff list in gc_members.json, then the client's Viber number.
+- **In the new GC only:** the client's template with ONLY the client fields (never the
+  Listings/Intern/date lines), then the listing (text above the dashed line + photos), then
+  "Hello @client" so the client is notified.
+- **Then** quote-reply `DONE-<GC NAME>` to the original template in the templates chat.
+- Always run it with dry_run first and get a clear yes on the plan. Never create a GC for a
+  template that already has a DONE reply, and never use a SOLD listing.
+
 ## Background operation (don't disturb the person using this PC)
 - All tools run in the background: they never move the cursor, use the keyboard, touch the
   clipboard, or bring Viber to the front. Keep it that way: don't ask the user to focus Viber.

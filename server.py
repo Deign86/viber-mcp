@@ -10,6 +10,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP, Image
 
 import viber_drive
+import viber_gc
 import viber_ocr
 import viber_send
 import viber_ui
@@ -276,6 +277,31 @@ def unsend_message(text: str = "", n: int = 0, for_everyone: bool = True) -> dic
     return viber_ui.unsend_message(text=text or None, n=n or None, for_everyone=for_everyone)
 
 
+# ------------------------------------------------------------------- client GCs
+
+
+@mcp.tool()
+def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
+                     dry_run: bool = True) -> dict:
+    """Turn a staff template in the templates chat (e.g. APG CLIENTS) into a client group chat.
+
+    Open the templates chat first and pass the template's n from list_messages. With
+    dry_run=True (default) it only returns the plan: GC name (e.g. "LORI-WH-(1200-1350SQM,
+    BULACAN)"), staff members in order + the client's number, the client message (template
+    fields only — no listing/intern/date lines), the listing it will send, and the DONE reply.
+    Show the plan to the staff member; only after a clear yes call again with dry_run=False,
+    which: creates the group → posts the client's template → sends the listing (details above the
+    dashed line + photos) → "Hello @client" → quote-replies "DONE-<GC NAME>" to the template.
+
+    Args:
+        template_n: the template message's n (from list_messages in the templates chat).
+        gc_name: override the derived name (required when the plan reports it's uncertain).
+        listing_folder_id: override/choose the listing folder (from find_listings), or "none".
+        dry_run: True = plan only.
+    """
+    return viber_gc.create_client_gc(template_n, gc_name, listing_folder_id, dry_run)
+
+
 # ------------------------------------------------------------- Google Drive listings
 
 
@@ -436,6 +462,17 @@ def property_details(chat: str, property: str) -> str:
             "exactly as it will be sent, and the photo count, then wait for my clear yes before "
             "calling send_listing. Never send, quote or summarize the internal part of the doc. "
             "Report whether the text and photos were verified.")
+
+
+@mcp.prompt()
+def client_gc(client: str = "") -> str:
+    """Create a client group chat from a staff template in APG CLIENTS (with confirmation)."""
+    who = f"the template for '{client}'" if client else "the newest template that has no DONE reply yet"
+    return (f"Open the templates chat (APG CLIENTS) and use list_messages to find {who}. Call "
+            "create_client_gc with its n and dry_run=true. Show me the plan: GC name, members in "
+            "order, client number, the client message, the listing, and the DONE reply. If it "
+            "reports problems (uncertain name part, several listings), ask me. Only after my clear "
+            "yes, call create_client_gc again with dry_run=false, then report each step's result.")
 
 
 if __name__ == "__main__":

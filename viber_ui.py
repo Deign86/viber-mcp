@@ -395,6 +395,172 @@ def like_message(n: int) -> dict:
     return {"toggled_like": n, "message": msg["text"] or "(image)"}
 
 
+# ------------------------------------------------------------------ group chats
+
+
+def _ocr_px() -> list[dict]:
+    """OCR observations with pixel rects (screenshot coordinates)."""
+    b = _backend()
+    img = b.screenshot()
+    out = []
+    for o in b.observe():
+        out.append({"text": o["text"].strip(), "x": o["x"] * img.width, "y": o["y"] * img.height,
+                    "w": o["w"] * img.width, "h": o["h"] * img.height, "W": img.width,
+                    "H": img.height})
+    return out
+
+
+def _ocr_center(o: dict) -> tuple[float, float]:
+    return o["x"] + o["w"] / 2, o["y"] + o["h"] / 2
+
+
+def _norm(s: str) -> str:
+    """Lowercase alphanumerics with OCR look-alikes folded (I/l/1 → i, 0 → o)."""
+    s = "".join(ch for ch in s.lower() if ch.isalnum())
+    return s.translate(str.maketrans({"l": "i", "1": "i", "0": "o"}))
+
+
+def _left_column(obs: list[dict]) -> list[dict]:
+    return [o for o in obs if o["x"] < o["W"] * 0.3]
+
+
+def _wait_ocr(predicate, timeout: float = 6.0, left_only: bool = True):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        obs = _ocr_px()
+        hits = [o for o in (_left_column(obs) if left_only else obs) if predicate(o["text"])]
+        if hits:
+            return hits, obs
+        time.sleep(0.5)
+    return [], []
+
+
+def _invite_count(obs: list[dict]) -> int | None:
+    for o in _left_column(obs):
+        t = o["text"].replace(" ", "")
+        if "/250" in t:
+            digits = t.split("/250")[0][-3:]
+            num = "".join(ch for ch in digits if ch.isdigit())
+            return int(num) if num else None
+    return None
+
+
+def _picker_search(query: str) -> None:
+    """Type `query` into the new-group screen's "Search name or number" box."""
+    b = _backend()
+    b.click_search()
+    b.delete()
+    b.type_into_focus(query)
+    time.sleep(1.6)
+
+
+def _select_member(name: str = "", number: str = "") -> str:
+    """Search the new-group picker and tick one contact. Returns the row's display name."""
+    _picker_search(number.replace("+63", "0") if number else name)
+    obs = _ocr_px()
+    rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.12] if obs else []
+    if number:
+        digits = number[-10:]
+        hit = next((o for o in rows if digits in "".join(ch for ch in o["text"] if ch.isdigit())), None)
+    else:
+        hit = next((o for o in rows if _norm(o["text"]) == _norm(name)), None)
+    if hit is None:
+        raise UIError(f"Couldn't find '{name or number}' in Viber's contacts for the group.")
+    # The display name sits on the line above a number; the row is clickable anywhere.
+    display = name
+    if number:
+        above = [o for o in rows if o["y"] < hit["y"] and hit["y"] - o["y"] < hit["h"] * 3
+                 and abs(o["x"] - hit["x"]) < 30 and len(o["text"]) > 1]  # not the ○ tick
+        display = max(above, key=lambda o: o["y"])["text"] if above else number
+    before = _invite_count(obs)
+    _backend().click_at(*_ocr_center(hit))
+    time.sleep(0.8)
+    after = _invite_count(_ocr_px())
+    if before is not None and after is not None and after != before + 1:
+        raise UIError(f"Selecting '{name or number}' didn't register (invited {before} → {after}).")
+    return display
+
+
+def create_group(gc_name: str, members: list[str], client_number: str, self_name: str = "") -> dict:
+    """Create a Viber group named `gc_name` with `members` (contact names, in order) and then
+    the client's number. Leaves the new group open."""
+    b = _backend()
+    els = b.elements()
+    search = next((e for e in els if e["class"] == "SearchItem"), None)
+    if search is None:
+        raise UIError("Viber's main chat list isn't showing (close any panel first).")
+    sy = _mid(search["rect"])[1]
+    pencil = min((e for e in els if e["type"] == "Button" and e["rect"][0] >= search["rect"][2] - 2
+                  and abs(_mid(e["rect"])[1] - sy) < 15), key=lambda e: e["rect"][0], default=None)
+    if pencil is None:
+        raise UIError("Couldn't find Viber's new-chat (pencil) button.")
+    b.click_at(*_mid(pencil["rect"]))
+    hits, _ = _wait_ocr(lambda t: t.lower() == "new group")
+    if not hits:
+        raise UIError("Viber's 'New group' option didn't appear.")
+    b.click_at(*_ocr_center(hits[0]))
+    time.sleep(1.2)
+
+    name_box = next((e for e in b.elements() if e["type"] == "Edit" and e["class"] == "TextField"), None)
+    if name_box is None:
+        raise UIError("The new-group 'Group name' box didn't appear.")
+    b.click_at(*_mid(name_box["rect"]))
+    b.type_into_focus(gc_name)
+    time.sleep(0.4)
+    typed = next((e["text"] for e in b.elements() if e["type"] == "Edit" and e["class"] == "TextField"), "")
+    if typed != gc_name:
+        raise UIError(f"Group name didn't take (got {typed!r}). Nothing was created; close the panel.")
+
+    added = []
+    for member in members:
+        if self_name and _norm(member) == _norm(self_name):
+            continue  # the creator is in the group automatically
+        _select_member(name=member)
+        added.append(member)
+    client_display = _select_member(number=client_number)
+    added.append(f"{client_display} ({client_number})")
+
+    _picker_search("")
+    start = next((e for e in b.elements() if e["type"] == "Button" and e["name"] == "Start chat"), None)
+    if start is None:
+        raise UIError("Couldn't find 'Start chat'. Nothing was created; close the panel.")
+    prev = b.foreground()
+    b.click_at(*_mid(start["rect"]))
+    b.hold_foreground(prev, 3.0)  # Viber activates itself when the group is created
+    # Header and chat-list titles are truncated ("TESTCLIENT-WH-(300S..."), so compare a prefix.
+    head = _norm(gc_name)[:10]
+    hits, _ = _wait_ocr(lambda t: bool(head) and _norm(t).startswith(head), timeout=25,
+                        left_only=False)
+    return {"created": bool(hits), "gc_name": gc_name, "members_added": added,
+            "client_display_name": client_display}
+
+
+def mention(display_name: str, greeting: str = "Hello") -> dict:
+    """Send '<greeting> @<display_name>' in the open chat, picking the person from Viber's
+    mention list so they get notified."""
+    b = _backend()
+    b.click_compose()
+    b.delete()
+    b.type_into_focus(f"{greeting} @")
+    time.sleep(1.2)
+    compose = next(e for e in b.elements() if e["type"] == "Edit" and e["class"].startswith("QQuickTextEdit"))
+    top = compose["rect"][1]
+    obs = _ocr_px()
+    picks = [o for o in obs if top - 400 < o["y"] < top - 5 and o["x"] > obs[0]["W"] * 0.28
+             and _norm(o["text"]) == _norm(display_name)] if obs else []
+    if not picks:
+        b.delete()
+        raise UIError(f"'{display_name}' isn't in this chat's mention list.")
+    b.click_at(*_ocr_center(max(picks, key=lambda o: o["y"])))  # nearest the box
+    time.sleep(0.6)
+    value = b._value() if hasattr(b, "_value") else ""
+    if "@" not in value or len(value) <= len(greeting) + 2:
+        raise UIError("The mention didn't insert; nothing sent.")
+    b.click_send()
+    time.sleep(1.2)
+    return {"sent": True, "mentioned": display_name}
+
+
 def _named(elements: list[dict], el_type: str, predicate) -> list[dict]:
     return [e for e in elements if e["type"] == el_type and e["name"] and predicate(e["name"].lower())]
 
