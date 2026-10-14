@@ -66,6 +66,8 @@ Then add the server to your client, pointing at the project's own Python:
 |------|--------------|
 | `list_chats()` | Inbox overview: the sidebar's chat names, previews, times and unread counts. |
 | `read_open_chat()` | Text of the conversation currently open in Viber. |
+| `scroll_chat(direction="up", amount=5)` | Scroll the open conversation (`up` = older messages) and return what's visible afterwards. |
+| `scroll_chat_list(direction="down", amount=5)` | Scroll the chat list to see more chats and return them. |
 | `search_and_open(name)` | Find any contact or group by name and open it. Exact and prefix matches beat substrings; returns `low_confidence` when only a weak match was found. |
 | `open_and_read(to)` | Open a chat by number or `contacts.json` name and return its text. |
 | `open_chat(to)` | Open a chat by number or `contacts.json` name. |
@@ -105,8 +107,9 @@ Two cases briefly hand Viber the foreground and then give it straight back (unde
   restored without taking focus.
 - **Don't use Viber at the same moment.** The tools switch chats inside Viber's window, so your own
   clicks there can collide with them.
-- **It only sees what's on screen.** `list_chats` covers the visible part of the sidebar and
-  `read_open_chat` the visible messages; scroll Viber for more. OCR can garble small text and emoji.
+- **It reads what's on screen.** `list_chats` and `read_open_chat` return the visible part; use
+  `scroll_chat_list` / `scroll_chat` to go further (scrolling is posted to Viber's window too, so
+  your cursor stays put). OCR can garble small text and emoji. Scrolling is Windows-only for now.
 - **`verified` is best-effort.** `true` = seen on screen, `false` = not seen, `null` = couldn't check.
 - If Viber runs **as Administrator**, run the server elevated too.
 - After a Viber update, run `uv run windows_selftest.py`. It reports which controls it can't find
@@ -118,6 +121,8 @@ Two cases briefly hand Viber the foreground and then give it straight back (unde
 uv run client.py list                          # list tools
 uv run client.py chats                         # inbox overview
 uv run client.py read                          # text of the open chat
+uv run client.py scroll up 10                  # older messages in the open chat
+uv run client.py scrolllist down 5             # more chats in the sidebar
 uv run client.py search "Mitch"                # open a chat by name
 uv run client.py draft "a reply to review"     # fill the message box, don't send
 uv run client.py send "+639171234567" "hello" --dry-run

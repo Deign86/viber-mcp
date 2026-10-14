@@ -375,6 +375,23 @@ class WindowsBackend(Backend):
     def click_panel_close(self) -> None:
         pass  # side panels don't matter: the send button is found by identity, not position
 
+    def scroll(self, area: str, notches: int) -> None:
+        """Post WM_MOUSEWHEEL over the chat list or the conversation (cursor stays put)."""
+        hwnd = self._hwnd()
+        l, t, r, b = win32gui.GetWindowRect(hwnd)
+        anchor, fallback_x = (_is_search, 0.15) if area == "chats" else (_is_compose, 0.65)
+        try:
+            el_l, _, el_r, _ = self._rect(anchor, "")
+            x = (el_l + el_r) / 2
+        except OCRError:
+            x = l + (r - l) * fallback_x
+        y = t + (b - t) * 0.55
+        lp = win32api.MAKELONG(int(x) & 0xFFFF, int(y) & 0xFFFF)
+        step = 1 if notches > 0 else -1
+        for _ in range(abs(notches)):
+            win32gui.PostMessage(hwnd, win32con.WM_MOUSEWHEEL, ((120 * step) & 0xFFFF) << 16, lp)
+            time.sleep(0.03)
+
     def debug_info(self) -> dict:
         hwnd = self._hwnd()
 

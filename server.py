@@ -95,6 +95,34 @@ def list_chats() -> dict:
 
 
 @mcp.tool()
+def scroll_chat(direction: str = "up", amount: int = 5) -> dict:
+    """Scroll the currently open conversation and return its visible text afterwards.
+
+    Use "up" to load older messages (read_open_chat only sees what is on screen), "down" to
+    go back toward the newest. Repeat to go further. Runs in the background on Windows.
+
+    Args:
+        direction: "up" (older messages) or "down" (newer).
+        amount: mouse-wheel notches, 1-50 (about 3 lines each; 5 ≈ a third of a screen).
+    """
+    return viber_ocr.scroll_and_read("chat", direction, amount)
+
+
+@mcp.tool()
+def scroll_chat_list(direction: str = "down", amount: int = 5) -> dict:
+    """Scroll the sidebar chat list and return the chats visible afterwards.
+
+    Use "down" to see older/more chats beyond what list_chats showed, "up" to return to the
+    top. Repeat to go further. Runs in the background on Windows.
+
+    Args:
+        direction: "down" (more/older chats) or "up" (back toward the top).
+        amount: mouse-wheel notches, 1-50 (about one chat row each).
+    """
+    return viber_ocr.scroll_and_read("chats", direction, amount)
+
+
+@mcp.tool()
 def put_draft(text: str) -> dict:
     """Paste `text` into the currently-open Viber chat's compose box WITHOUT sending.
 

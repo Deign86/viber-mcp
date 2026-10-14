@@ -95,3 +95,8 @@ class Backend(ABC):
     @abstractmethod
     def click_panel_close(self) -> None:
         """Click the ✕ that closes the right-side info/settings panel."""
+
+    def scroll(self, area: str, notches: int) -> None:
+        """Scroll `area` ("chat" = open conversation, "chats" = sidebar list) by mouse-wheel
+        `notches`; positive scrolls up (older messages / top of list)."""
+        raise NotImplementedError(f"Scrolling isn't implemented for the {self.name} backend yet.")

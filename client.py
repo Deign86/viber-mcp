@@ -10,6 +10,8 @@ Usage:
   uv run client.py search   "Marianne"
   uv run client.py openread "Marianne"
   uv run client.py chats
+  uv run client.py scroll     up 5      # scroll the open chat (up = older), then read it
+  uv run client.py scrolllist down 5    # scroll the chat list, then read it
   uv run client.py read
   uv run client.py contacts
 """
@@ -58,6 +60,12 @@ async def _run(argv: list[str]) -> None:
                 result = await session.call_tool("search_and_open", {"name": rest[0]})
             elif cmd == "note":
                 result = await session.call_tool("save_to_my_notes", {"text": rest[0]})
+            elif cmd in ("scroll", "scrolllist"):
+                args = {"direction": rest[0]} if rest else {}
+                if len(rest) > 1:
+                    args["amount"] = int(rest[1])
+                tool = "scroll_chat" if cmd == "scroll" else "scroll_chat_list"
+                result = await session.call_tool(tool, args)
             elif cmd == "chats":
                 result = await session.call_tool("list_chats", {})
             elif cmd == "openread":
