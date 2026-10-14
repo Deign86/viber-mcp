@@ -28,9 +28,15 @@ uv run client.py chats | read | contacts
 claude mcp add --transport stdio --scope user viber -- uv --directory "$(pwd)" run server.py
 ```
 
-There is no test suite, linter, or build step. **Verify changes by driving the real app** with
-`client.py` and screenshotting the Viber window (`viber_ocr.capture_window`) to confirm the outcome —
-the returned `verified` flag is best-effort and gives false negatives.
+**Tests:** `uv run --with pytest pytest tests -q` (no Viber needed; CI runs it on windows-latest via
+`.github/workflows/tests.yml`). Pure decision logic lives in `viber_gc_logic.py` (template parsing,
+naming, `pending_templates`, `choose_listing`) and pure helpers in `viber_ui.py` (`_messages`,
+`_preview`, `find_number_row`, ...) so it can be tested with fixture data; UI-structure tests inject a
+fake backend via `backends._backend` (no module mocking). **Every bug found on the live app gets a
+regression test** in `tests/test_regressions.py` (or the matching test file) before/with the fix.
+
+Then **verify on the real app** with `client.py` (or `client.py call <tool> '<json>'`) and screenshots —
+the returned `verified` flag is best-effort and gives false negatives. Only test writes in My Notes.
 
 After editing server code, the **registered** MCP server keeps running the old code until reconnected
 (`/mcp` → reconnect `viber`, or restart Claude Code); `client.py` always runs fresh code.

@@ -262,6 +262,19 @@ Two cases briefly hand Viber the foreground and then give it straight back (unde
 - After a Viber update, run `uv run windows_selftest.py`. It reports which controls it can't find
   and saves `viber_capture.png`, showing what the server sees.
 
+## Tests
+
+```powershell
+uv run --with pytest pytest tests -q
+```
+
+The suite needs no Viber: it covers template parsing and GC naming, the client-message privacy
+whitelist, the dashed-line split, pending-template detection, listing choice (never SOLD), message
+reading in both of Viber's UI layouts (and that other people's messages are never treated as yours),
+the send-preview controls, OCR-tolerant name/number matching, and that every tool the staff rules
+mention exists. Bugs found on the live app get a regression test in `tests/test_regressions.py`.
+GitHub Actions runs it on every push (`.github/workflows/tests.yml`, Windows).
+
 ## Test without Claude
 
 ```powershell

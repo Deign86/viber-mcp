@@ -197,3 +197,57 @@ def gc_name(fields: dict) -> dict:
 
 def done_text(gc_name_: str) -> str:
     return "DONE-" + gc_name_
+
+
+def norm(s: str) -> str:
+    """Lowercase alphanumerics only — for comparing names and DONE lines."""
+    return "".join(ch for ch in s.lower() if ch.isalnum())
+
+
+def is_template(text: str) -> bool:
+    """A client template has at least a name, a Viber number and a type or size."""
+    f = parse_template(text)
+    return bool(f.get("name") and f.get("viber") and (f.get("property_type") or f.get("sqm")))
+
+
+def is_done_line(text: str) -> bool:
+    return text.strip().upper().startswith("DONE-")
+
+
+def pending_templates(texts: list[str]) -> list[int]:
+    """Indexes of templates (in a chat's messages, oldest first) that still need a GC.
+
+    Staff don't always name GCs after the template's Name (Leah's became DONE-JNT-WH-...), so a
+    template counts as handled when its own DONE line exists OR any DONE line comes after it.
+    The worst case is a skipped template — never a duplicate GC for a client who has one.
+    """
+    done_after = [False] * len(texts)
+    seen_done = False
+    for i in range(len(texts) - 1, -1, -1):
+        done_after[i] = seen_done
+        seen_done = seen_done or is_done_line(texts[i])
+    done_names = {norm(t) for t in texts if is_done_line(t)}
+    pending = []
+    for i, text in enumerate(texts):
+        if not is_template(text) or done_after[i]:
+            continue
+        if norm(done_text(gc_name(parse_template(text))["gc_name"])) in done_names:
+            continue
+        pending.append(i)
+    return pending
+
+
+def choose_listing(query: str, listings: list[dict]) -> dict:
+    """Pick the listing folder for a template's "Listings:" line.
+
+    Sold properties are never offered. A unique exact folder-name match wins; otherwise a single
+    remaining candidate; otherwise no pick and a problem to report.
+    """
+    active = [c for c in listings if "SOLD" not in c.get("category", "").upper()]
+    exact = [c for c in active if norm(c["name"]) == norm(query)]
+    if len(exact) == 1:
+        return {"listing": exact[0], "candidates": active, "problem": None}
+    if len(active) == 1:
+        return {"listing": active[0], "candidates": active, "problem": None}
+    return {"listing": None, "candidates": active,
+            "problem": f"Listing '{query}' matched {len(active)} active folders — pass listing_folder_id."}

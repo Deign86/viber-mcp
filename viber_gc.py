@@ -66,15 +66,10 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
         listing = {"folder_id": listing_folder_id}
     elif fields.get("listing"):
         query = fields["listing"].splitlines()[0]
-        found = viber_drive.find_listings(query)
-        # Sold properties are never offered to clients.
-        candidates = [c for c in found["listings"] if "SOLD" not in c["category"].upper()][:8]
-        exact = [c for c in candidates if logic_norm(c["name"]) == logic_norm(query)]
-        if len(exact) == 1 or len(candidates) == 1:
-            listing = (exact or candidates)[0]
-        else:
-            problems.append(f"Listing '{query}' matched {len(candidates)} active folders — "
-                            "pass listing_folder_id.")
+        pick = logic.choose_listing(query, viber_drive.find_listings(query)["listings"])
+        listing, candidates = pick["listing"], pick["candidates"][:8]
+        if pick["problem"]:
+            problems.append(pick["problem"])
     else:
         problems.append("The template has no 'Listings:' line — pass listing_folder_id, or "
                         "listing_folder_id='none' to skip the listing.")
@@ -104,8 +99,7 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
     }
 
 
-def logic_norm(s: str) -> str:
-    return "".join(ch for ch in s.lower() if ch.isalnum())
+logic_norm = logic.norm
 
 
 def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
@@ -152,11 +146,6 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
 
 
 # ------------------------------------------------------------ autonomous processing
-
-
-def _is_template(text: str) -> bool:
-    f = logic.parse_template(text)
-    return bool(f.get("name") and f.get("viber") and (f.get("property_type") or f.get("sqm")))
 
 
 def _gc_exists(name: str) -> bool:
@@ -222,22 +211,13 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = T
     viber_send.search_and_open(chat)
     time.sleep(1.0)
     texts = _collect_templates_chat(screens)
-    is_done = [t.strip().upper().startswith("DONE-") for t in texts]
-    done_lines = {logic_norm(t) for t, d in zip(texts, is_done) if d}
-
     results, skipped, failed = [], [], []
-    for i, text in enumerate(texts):
-        if not _is_template(text):
-            continue
+    for i in logic.pending_templates(texts):
+        text = texts[i]
         if len(results) >= limit:
             skipped.append({"template": text[:80], "reason": f"limit of {limit} GCs per run"})
             continue
         name = logic.gc_name(logic.parse_template(text))
-        # Staff don't always name GCs by the template's Name (e.g. Leah → DONE-JNT-WH-...), so a
-        # template counts as handled if its DONE matches OR any DONE was posted after it. Worst
-        # case a template is skipped — never a duplicate GC for a client who already has one.
-        if logic_norm(logic.done_text(name["gc_name"])) in done_lines or any(is_done[i + 1:]):
-            continue
         if name["uncertain"]:
             skipped.append({"gc_name": name["gc_name"], "reason": "; ".join(name["uncertain"])})
             continue

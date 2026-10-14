@@ -467,20 +467,34 @@ def _picker_search(query: str) -> None:
     time.sleep(1.6)
 
 
+_DIGIT_FOLD = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1", "S": "5", "B": "8"})
+
+
+def find_number_row(rows: list[dict], number: str):
+    """In OCR rows of a contact list, find the row showing `number` (tolerating O/0, I/l/1 OCR
+    slips) and the display name on the line above it (ignoring the ○ select tick).
+    Returns (row, display_name) or (None, "")."""
+    want = number[-10:]
+    hit = next((o for o in rows if want in "".join(
+        ch for ch in o["text"].translate(_DIGIT_FOLD) if ch.isdigit())), None)
+    if hit is None:
+        return None, ""
+    above = [o for o in rows if o["y"] < hit["y"] and hit["y"] - o["y"] < hit["h"] * 3
+             and abs(o["x"] - hit["x"]) < 30 and len(o["text"]) > 1]
+    return hit, (max(above, key=lambda o: o["y"])["text"] if above else number)
+
+
 def _select_member(name: str = "", number: str = "") -> str:
     """Search the new-group picker and tick one contact. Returns the row's display name."""
     _picker_search(number.replace("+63", "0") if number else name)
-    digit_fold = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1", "S": "5", "B": "8"})
 
     def find(rows):
         if number:
-            want = number[-10:]
-            return next((o for o in rows if want in "".join(
-                ch for ch in o["text"].translate(digit_fold) if ch.isdigit())), None)
+            return find_number_row(rows, number)[0]
         return next((o for o in rows if _norm(o["text"]) == _norm(name)), None)
 
     hit, obs, rows = None, [], []
-    for attempt in range(3):  # results can render a moment late
+    for _ in range(3):  # results can render a moment late
         obs = _ocr_px()
         rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.12] if obs else []
         hit = find(rows)
@@ -489,12 +503,7 @@ def _select_member(name: str = "", number: str = "") -> str:
         time.sleep(1.0)
     if hit is None:
         raise UIError(f"Couldn't find '{name or number}' in Viber's contacts for the group.")
-    # The display name sits on the line above a number; the row is clickable anywhere.
-    display = name
-    if number:
-        above = [o for o in rows if o["y"] < hit["y"] and hit["y"] - o["y"] < hit["h"] * 3
-                 and abs(o["x"] - hit["x"]) < 30 and len(o["text"]) > 1]  # not the ○ tick
-        display = max(above, key=lambda o: o["y"])["text"] if above else number
+    display = find_number_row(rows, number)[1] if number else name
     before = _invite_count(obs)
     _backend().click_at(*_ocr_center(hit))
     time.sleep(0.8)
@@ -543,19 +552,14 @@ def number_on_viber(number: str) -> str | None:
     _open_new_group()
     try:
         _picker_search(number.replace("+63", "0"))
-        fold = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1", "S": "5", "B": "8"})
-        want = number[-10:]
         for _ in range(3):
             obs = _ocr_px()
             rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.2] if obs else []
             if any("no results" in o["text"].lower() for o in rows):
                 return None
-            hit = next((o for o in rows if want in "".join(
-                ch for ch in o["text"].translate(fold) if ch.isdigit())), None)
+            hit, display = find_number_row(rows, number)
             if hit:
-                above = [o for o in rows if o["y"] < hit["y"] and hit["y"] - o["y"] < hit["h"] * 3
-                         and abs(o["x"] - hit["x"]) < 30 and len(o["text"]) > 1]
-                return max(above, key=lambda o: o["y"])["text"] if above else number
+                return display
             time.sleep(1.0)
         return None
     finally:
