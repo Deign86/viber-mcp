@@ -440,9 +440,11 @@ def inbox_triage() -> str:
 def draft_reply(chat: str, guidance: str = "") -> str:
     """Draft (not send) a reply in a Viber chat for review."""
     return (f"Open the Viber chat '{chat}' (search_and_open; if low_confidence or several similar "
-            "chats, ask me which). Read the recent messages, then write a reply in the chat's "
-            f"language and tone. Guidance: {guidance or 'none — infer from context'}. Show me the "
-            "reply and what it answers, then put it in the message box with put_draft. Do NOT send.")
+            "chats, ask me which). Read the recent messages with list_messages (open_image for photos, "
+            "then close_viewer), then write a reply in the chat's language and tone. Guidance: "
+            f"{guidance or 'none — infer from context'}. Show me the reply and what it answers. Put it "
+            "in the message box with put_draft — or, if it answers a specific earlier message, with "
+            "reply_to_message(n, text) so it's quoted. Do NOT send.")
 
 
 @mcp.prompt()

@@ -83,6 +83,26 @@ The server also offers ready-made prompts, which show up as slash commands in Cl
 | `inbox_triage` | Reads unread chats (including photos) and summarizes who needs what. Doesn't reply. |
 | `draft_reply(chat, guidance)` | Opens a chat, writes a reply in its tone, and puts it in the message box unsent. |
 | `unsend(chat, message)` | Finds one of our messages, shows it, and unsends it after you say yes. |
+| `property_details(chat, property)` | Finds the listing in Drive, shows you the client-facing text and photo count, and sends it after you say yes. |
+| `client_gc(client)` | Turns a template in APG CLIENTS into a client group chat (plan first, runs after you say yes). |
+
+## Client group chats
+
+Staff post a client template in the templates chat (APG CLIENTS). `create_client_gc(template_n)`
+turns it into a client GC:
+
+1. Names it from the template: `FIRSTNAME-TYPE-(SQM, LOCATION)`, e.g. `LORI-WH-(1200-1350SQM, BULACAN)`.
+   Type codes: WH, OS, CS, HOUSE, LOT, CONDO, or `NAME-VIRTUALOFFICE`. Quezon City becomes QC; a
+   province wins over the city (Valenzuela, Bulacan → BULACAN).
+2. Creates the group with the staff from `gc_members.json` (in order), then the client's number.
+3. Posts the client's template with only the client fields (Listings/Intern/date lines removed),
+   then the listing (text above the dashed line + photos), then "Hello @client".
+4. Quote-replies `DONE-<GC NAME>` to the template in the templates chat.
+
+It plans first (`dry_run=True`) and refuses when the name is uncertain, several active listings
+match, the listing is SOLD, or the template already has a DONE reply. Copy
+`gc_members.example.json` to `gc_members.json` (git-ignored) and list the staff to add; `"self"` is
+the PC's own Viber name, which is skipped because the creator is added automatically.
 
 ## Tools
 

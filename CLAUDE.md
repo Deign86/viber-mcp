@@ -137,7 +137,12 @@ Status:
 
 - `guidelines.md` is the staff operating rulebook; `server.py` serves it as MCP server
   `instructions`, so every client gets it automatically. Change rules there, not in tool docs.
-- MCP prompts (`inbox_triage`, `draft_reply`, `unsend`) are the slash-command workflows.
+- MCP prompts (`inbox_triage`, `draft_reply`, `unsend`, `property_details`, `client_gc`) are the
+  slash-command workflows.
+- Client GCs: `viber_gc_logic.py` (pure: template parsing, client-field whitelist, naming rules,
+  tested) + `viber_gc.py` (plan/run) + `viber_ui.create_group` / `mention`. The new-group picker
+  and the mention list aren't in the UIA tree — rows are found by OCR; OCR confuses I/l/1 and O/0,
+  so names are compared after folding those (`_norm`, `viber_send._ocr_fold`).
 - `viber_ui.py` holds the computer-use primitives (screenshot/click/type/key/scroll/elements)
   and the actions built on them (`list_messages`, `open_image`, `unsend_message`). On Windows,
   messages are `FeedDelegate` elements; text is the child `TextEditItem` edit's value, images
