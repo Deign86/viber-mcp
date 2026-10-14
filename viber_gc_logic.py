@@ -4,21 +4,24 @@ import unicodedata
 
 _INVISIBLE = dict.fromkeys(map(ord, "⁨⁩‎‏﻿"))
 
+# Staff type these templates by hand, so each field accepts the label variants seen in practice
+# ("Viber No:", "Contact #:", "Size:", "Location:", ...). Order matters: first match wins.
+_NO = r"(?:\s*(?:number|no\.?|num\.?|#))?"
 _LABELS = [
-    ("company", r"company\s*name"),
-    ("name", r"name"),
-    ("property_type", r"type\s+of\s+property|property"),
-    ("sqm", r"preferred\s+sqm"),
-    ("budget", r"preferred\s+budget"),
-    ("location", r"preferred\s+location"),
-    ("viber", r"viber(?:\s+number)?"),
+    ("company", r"company(?:\s*name)?|business\s*name"),
+    ("name", r"(?:client\s*|contact\s*)?name"),
+    ("property_type", r"type\s+of\s+property|property\s+type|property|type"),
+    ("sqm", r"preferred\s+(?:sqm|size|area|floor\s+area)|sqm|size|floor\s+area"),
+    ("budget", r"(?:preferred\s+)?budget"),
+    ("location", r"(?:preferred\s+)?location|area"),
+    ("viber", rf"viber{_NO}|contact{_NO}|mobile{_NO}|cell(?:phone)?{_NO}|cp{_NO}|phone{_NO}"),
     ("intended_use", r"intended\s+use"),
-    ("line_of_business", r"line\s+of\s+business"),
+    ("line_of_business", r"line\s+of\s+business|business"),
     ("listing", r"listings?"),
-    ("intern", r"intern"),
-    ("date", r"date"),
+    ("intern", r"intern|agent"),
+    ("date", r"date(?:\s+listed)?"),
 ]
-_LABEL_RES = [(k, re.compile(rf"(?:{p})\s*:\s*(.*)$", re.I)) for k, p in _LABELS]
+_LABEL_RES = [(k, re.compile(rf"(?:{p})\s*[:\-–]\s*(.*)$", re.I)) for k, p in _LABELS]
 
 # Privacy: only these fields are ever forwarded to the client GC.
 _CLIENT_FIELDS = (
@@ -29,6 +32,7 @@ _CLIENT_FIELDS = (
 _BARE_DATE = re.compile(
     r"^\s*(?:[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{4}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*$"
 )
+_MOBILE = re.compile(r"(?:\+?63|0)\s*9\d{2}[\s-]?\d{3}[\s-]?\d{4}")
 _URL_ONLY = re.compile(r"^\s*(?:https?://|www\.)\S+\s*$", re.I)
 
 PROVINCES = {
@@ -70,17 +74,22 @@ def parse_template(text: str) -> dict:
     fields = {k: "" for k, _ in _LABELS}
     in_listing = False
     listing_lines: list[str] = []
+    client_lines: list[str] = []
     for line in clean(text).split("\n"):
         label = _label_of(line)
         if label:
             key, value = label
             in_listing = key == "listing"
+            if key in _CLIENT_FIELDS:
+                client_lines.append(line)
             if in_listing:
                 if value and not _URL_ONLY.match(value):
                     listing_lines.append(value)
             elif not fields[key]:
                 fields[key] = value
             continue
+        if not in_listing and not _URL_ONLY.match(line):
+            client_lines.append(line)
         if _BARE_DATE.match(line):
             in_listing = False
             fields["date"] = fields["date"] or line.strip()
@@ -92,6 +101,11 @@ def parse_template(text: str) -> dict:
             elif not _URL_ONLY.match(line):
                 listing_lines.append(line.strip())
     fields["listing"] = "\n".join(listing_lines)
+    if not _MOBILE.search(fields["viber"] or ""):
+        # No usable number label: take the PH mobile number from the client's own lines —
+        # never from the listing section, links, or intern/date lines.
+        found = next((m.group(0) for line in client_lines for m in [_MOBILE.search(line)] if m), "")
+        fields["viber"] = found or fields["viber"]
     return fields
 
 
@@ -140,26 +154,34 @@ def _sqm_part(text: str):
 
 
 def _location_part(text: str):
-    """Return (LOC, uncertain_reason_or_None)."""
-    raw = (text or "").strip()
-    if re.match(r"(?i)(along|near|around)\b", raw):
-        return "?", f"location not a recognizable place: {raw!r}"
-    raw = raw.split("(")[0]
-    raw = re.split(r"(?i)\bprefer(?:r)?ably\b|\bnear\b", raw)[0]
-    parts = [re.sub(r"\s+", " ", p).strip().upper() for p in raw.split(",")]
-    parts = [p for p in parts if p]
-    if not parts:
-        return "?", f"location missing or unrecognizable: {text!r}"
+    """Return (LOC, uncertain_reason_or_None). Takes the first real place from free text like
+    "Pasig or along C5", "Makati / BGC", "Valenzuela, Bulacan", "Pasig City, preferably near Ortigas"."""
+    original = (text or "").strip()
 
     def norm(p: str) -> str:
         if p in ("QC", "QUEZON CITY"):
             return "QC"
         return re.sub(r"\s+CITY$", "", p)
 
-    chosen = norm(parts[-1]) if len(parts) > 1 and norm(parts[-1]) in PROVINCES else norm(parts[0])
-    if chosen in _NO_PLACE or _ROAD_WORDS.search(chosen) or re.search(r"\d", chosen):
-        return "?", f"location not a recognizable place: {text!r}"
-    return chosen, None
+    def is_place(p: str) -> bool:
+        return bool(p) and p not in _NO_PLACE and not _ROAD_WORDS.search(p) and not re.search(r"\d", p)
+
+    raw = original.split("(")[0]
+    raw = re.split(r"(?i)\bprefer(?:r)?ably\b", raw)[0]
+    segments = re.split(r"(?i)\s+or\s+|\s*/\s*|\s+and\s+|\s*&\s*|\s*;\s*", raw)
+    for segment in segments:
+        segment = segment.strip()
+        if not segment or re.match(r"(?i)(along|near|around|within|beside)\b", segment):
+            continue  # a road or landmark, not the place itself
+        segment = re.split(r"(?i)\bnear\b|\balong\b", segment)[0]
+        parts = [re.sub(r"\s+", " ", p).strip().upper() for p in segment.split(",")]
+        parts = [p for p in parts if p]
+        if not parts:
+            continue
+        chosen = norm(parts[-1]) if len(parts) > 1 and norm(parts[-1]) in PROVINCES else norm(parts[0])
+        if is_place(chosen):
+            return chosen, None
+    return "?", f"location not a recognizable place: {original!r}"
 
 
 def gc_name(fields: dict) -> dict:

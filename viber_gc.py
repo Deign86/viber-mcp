@@ -64,6 +64,7 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
 
     listing = None
     candidates = []
+    listing_note = ""
     if listing_folder_id:
         listing = {"folder_id": listing_folder_id}
     elif fields.get("listing"):
@@ -73,11 +74,11 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
         if pick["problem"]:
             problems.append(pick["problem"])
     else:
-        problems.append("The template has no 'Listings:' line — pass listing_folder_id, or "
-                        "listing_folder_id='none' to skip the listing.")
+        # Not a blocker: the GC is still made (template + mention); a listing can be passed.
+        listing_note = ("The template names no listing — the GC will be created without one. "
+                        "Pass listing_folder_id (from find_listings) to include a listing.")
     if listing and listing.get("folder_id") == "none":
         listing = None
-        problems = [p for p in problems if "Listings:" not in p]
 
     done = logic.done_text(name)
     visible = viber_ui._messages(viber_ui._backend().elements())
@@ -102,6 +103,7 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
         "client_message": logic.client_message(text),
         "listing": listing,
         "listing_candidates": candidates if not listing else [],
+        "listing_note": listing_note,
         "templates_chat": cfg.get("templates_chat", ""),
         "template_text": text,
         "problems": problems,
