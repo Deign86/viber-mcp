@@ -156,20 +156,25 @@ Set `VIBER_MCP_LISTINGS_FOLDER` to use a root folder name other than `APR LISTIN
 
 ### Google Drive setup (admin, one time)
 
-**Option A, gcloud (no OAuth client needed).** On a PC with the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install):
+**Option A, service account via gcloud (recommended, no per-person sign-in).** With the
+[Google Cloud CLI](https://cloud.google.com/sdk/docs/install), signed in as the company account:
 
 ```powershell
 gcloud projects create <project-id> --account=<company account>
 gcloud services enable drive.googleapis.com --project=<project-id> --account=<company account>
-gcloud auth application-default login --scopes="openid,https://www.googleapis.com/auth/userinfo.email,https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/drive.readonly"
-gcloud auth application-default set-quota-project <project-id>
-move "%APPDATA%\gcloud\application_default_credentials.json" "%LOCALAPPDATA%\viber-mcp\google_gcloud_credentials.json"
+gcloud iam service-accounts create viber-drive-reader --project=<project-id> --account=<company account>
+gcloud iam service-accounts keys create "%LOCALAPPDATA%\viber-mcp\google_service_account.json" --iam-account=viber-drive-reader@<project-id>.iam.gserviceaccount.com --account=<company account>
 ```
 
-Sign in with the company account in the browser that opens. Moving the file keeps the Drive
-login private to this tool, so other tools don't pick it up as their default credentials.
+Then in Google Drive, **Share** the `APR LISTING` folder with
+`viber-drive-reader@<project-id>.iam.gserviceaccount.com`. The tool only requests read-only
+access, whatever role you give it. Copy the key file to the same path on each staff PC, or
+point `VIBER_MCP_GOOGLE_SERVICE_ACCOUNT` at it. Treat the key like a password: anyone with it
+can read the shared folder. To cut access, delete the key in Cloud Console or remove the share.
 
-**Option B, OAuth client (staff PCs without gcloud):**
+(gcloud's own `auth application-default login` can't be used: Google blocks it for Drive.)
+
+**Option B, OAuth client (each staff member signs in with their own Google account):**
 
 1. In the [Google Cloud console](https://console.cloud.google.com/), create or select a project.
 2. **APIs & Services → Library**: enable the **Google Drive API**.
