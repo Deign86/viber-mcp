@@ -112,6 +112,11 @@ each GC created and each template skipped or failed (with the reason).
   few days automatically. `send_files` (and so `send_listing` / client GCs) waits for the upload
   and presses the "not sent" banner's Resend itself (up to 2 tries); if it still returns
   `verified: false` with a note, send the failed photos again (fresh copies, ≤5 at a time).
+- **Backread before every send.** Scroll up through the whole conversation (and the client's
+  template in the templates chat) before replying or sending a listing: property type, size,
+  budget, location, what coworkers already answered, what was already sent. Recommend only
+  listings of the inquiry's property type (office → OFFICE SPACE); if none fit, tell the staff
+  member instead of substituting another type.
 - **Replies — write like a real agent texting, not a bot:**
   - **Short.** 1–2 sentences per message; answer the question first, then stop. No "Regarding
     your question…" openers, no restating what the client said, no repeated sign-offs ("Thank you
