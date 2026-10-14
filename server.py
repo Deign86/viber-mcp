@@ -5,12 +5,18 @@ Transport: stdio. Register with Claude Code via `claude mcp add` (see README).
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP, Image
 
 import viber_ocr
 import viber_send
+import viber_ui
 
-mcp = FastMCP("viber")
+# The staff operating rules ship with the server: MCP clients add them to Claude's context.
+GUIDELINES = Path(__file__).with_name("guidelines.md").read_text(encoding="utf-8")
+
+mcp = FastMCP("viber", instructions=GUIDELINES)
 
 
 @mcp.tool()
@@ -171,6 +177,148 @@ def read_open_chat() -> dict:
 def list_contacts() -> dict:
     """List the known contact name -> phone number aliases from contacts.json."""
     return {"contacts": viber_send.load_contacts()}
+
+
+# ---------------------------------------------------------------- message-level actions
+
+
+@mcp.tool()
+def list_messages() -> dict:
+    """List the messages visible in the open chat, read exactly from Viber's UI (not OCR).
+
+    Each has n (1 = newest visible), from ("me"/"them"), kind ("text"/"image") and text.
+    Use the n values with unsend_message / open_image. Scroll with scroll_chat for older ones.
+    """
+    return viber_ui.list_messages()
+
+
+@mcp.tool()
+def open_image(n: int = 1) -> list:
+    """Open the n-th newest visible image in the open chat full-size and return what it shows.
+
+    Use to read photos/screenshots people sent (listings, floor plans, receipts).
+    Always call close_viewer afterwards.
+
+    Args:
+        n: 1 = newest visible image, 2 = the one before it, ...
+    """
+    png = viber_ui.open_image(n)
+    return [Image(data=png, format="png"), "Image viewer is open — call close_viewer when done."]
+
+
+@mcp.tool()
+def close_viewer() -> dict:
+    """Close the image viewer, or any open menu/dialog in Viber (presses Escape)."""
+    return viber_ui.close_viewer()
+
+
+@mcp.tool()
+def unsend_message(text: str = "", n: int = 0, for_everyone: bool = True) -> dict:
+    """Delete (unsend) ONE of your own messages in the open chat. Permanent — confirm with the
+    staff member first.
+
+    Identify it by `n` from list_messages (preferred) or by its text (exact, or a unique part).
+    Refuses other people's messages and ambiguous matches. With for_everyone=True it chooses
+    "Delete for everyone"; if Viber only allows "for myself" (message too old) nothing is deleted.
+
+    Args:
+        text: the message text (or a unique part of it).
+        n: the message number from list_messages (1 = newest visible).
+        for_everyone: True = unsend for everyone; False = delete only on this account.
+    """
+    return viber_ui.unsend_message(text=text or None, n=n or None, for_everyone=for_everyone)
+
+
+# ------------------------------------------------------------- computer-use primitives
+
+
+@mcp.tool()
+def screenshot() -> Image:
+    """Screenshot of the Viber window (taken in the background, even if Viber is covered).
+
+    Coordinates for click/scroll are pixels in this image. Take a new one after actions that
+    change the screen.
+    """
+    return Image(data=viber_ui.screenshot(), format="png")
+
+
+@mcp.tool()
+def list_elements(query: str = "") -> str:
+    """List Viber's on-screen controls and texts with ids and click points (screenshot pixels).
+
+    More precise than reading a screenshot: names of buttons/menu items, message texts, input
+    boxes. Use the id with click_element. Ids change whenever the screen changes.
+
+    Args:
+        query: optional filter, e.g. "delete", "menuitem", "button", or part of a message.
+    """
+    return viber_ui.list_elements(query or None)
+
+
+@mcp.tool()
+def click_element(element_id: int, button: str = "left", double: bool = False) -> dict:
+    """Click an element from the latest list_elements (left/right/middle, optional double-click).
+    Right-click a message to get its menu (Reply, Edit, Copy, Forward, Pin, Delete, ...)."""
+    return viber_ui.click_element(element_id, button=button, double=double)
+
+
+@mcp.tool()
+def click(x: int, y: int, button: str = "left", double: bool = False) -> dict:
+    """Click at (x, y) in the latest screenshot. button: "left", "right" or "middle".
+    Runs in the background — the real mouse cursor doesn't move."""
+    return viber_ui.click(x, y, button=button, double=double)
+
+
+@mcp.tool()
+def type_text(text: str) -> dict:
+    """Type text into the field you last clicked in Viber (search box, message box, edit box).
+    Does NOT send — sending is a separate click on the send button or press_key("enter")."""
+    return viber_ui.type_text(text)
+
+
+@mcp.tool()
+def press_key(key: str, repeat: int = 1) -> dict:
+    """Press a key in Viber: escape, enter, backspace, delete, tab, space, up, down, left, right,
+    pageup, pagedown, home, end. Ctrl/Alt shortcuts aren't available in the background.
+    Careful: "enter" in a message box sends the message."""
+    return viber_ui.press_key(key, repeat)
+
+
+@mcp.tool()
+def scroll(x: int, y: int, direction: str = "down", amount: int = 5) -> dict:
+    """Scroll whatever is under (x, y) in the latest screenshot. direction "up"/"down",
+    amount = wheel notches (1-50)."""
+    return viber_ui.scroll(x, y, direction, amount)
+
+
+# ---------------------------------------------------------------------------- prompts
+
+
+@mcp.prompt()
+def inbox_triage() -> str:
+    """Summarize the Viber inbox: who is waiting for a reply and what they need."""
+    return ("Check the Viber inbox with list_chats (scroll_chat_list for more). For each chat with "
+            "unread messages, open it (search_and_open), read the recent messages (list_messages, "
+            "open_image for photos — then close_viewer), and summarize: who, what they need, how "
+            "urgent. Don't reply to anyone. End with a short prioritized list of suggested replies "
+            "for me to approve.")
+
+
+@mcp.prompt()
+def draft_reply(chat: str, guidance: str = "") -> str:
+    """Draft (not send) a reply in a Viber chat for review."""
+    return (f"Open the Viber chat '{chat}' (search_and_open; if low_confidence or several similar "
+            "chats, ask me which). Read the recent messages, then write a reply in the chat's "
+            f"language and tone. Guidance: {guidance or 'none — infer from context'}. Show me the "
+            "reply and what it answers, then put it in the message box with put_draft. Do NOT send.")
+
+
+@mcp.prompt()
+def unsend(chat: str, message: str) -> str:
+    """Unsend one of our messages in a chat, with confirmation."""
+    return (f"Open the Viber chat '{chat}', find our message matching '{message}' with "
+            "list_messages, show me exactly which message (n, text) you'll unsend, and wait for my "
+            "yes before calling unsend_message. Report whether it was verified.")
 
 
 if __name__ == "__main__":

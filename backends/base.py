@@ -99,4 +99,28 @@ class Backend(ABC):
     def scroll(self, area: str, notches: int) -> None:
         """Scroll `area` ("chat" = open conversation, "chats" = sidebar list) by mouse-wheel
         `notches`; positive scrolls up (older messages / top of list)."""
-        raise NotImplementedError(f"Scrolling isn't implemented for the {self.name} backend yet.")
+        self._unsupported("Scrolling")
+
+    # --- computer-use primitives (x/y = pixels in the screenshot image) ----------------
+    def screenshot(self):
+        """The Viber window as a PIL image."""
+        self._unsupported("Screenshots")
+
+    def click_at(self, x: float, y: float, button: str = "left", double: bool = False) -> None:
+        self._unsupported("Clicking by coordinates")
+
+    def press_key(self, key: str, repeat: int = 1) -> None:
+        self._unsupported("Key presses")
+
+    def type_into_focus(self, text: str) -> None:
+        self._unsupported("Typing")
+
+    def scroll_at(self, x: float, y: float, notches: int) -> None:
+        self._unsupported("Scrolling")
+
+    def elements(self) -> list[dict]:
+        """[{type, name, class, text, parent, rect:[l,t,r,b]}] in screenshot pixels."""
+        self._unsupported("Listing UI elements")
+
+    def _unsupported(self, what: str):
+        raise NotImplementedError(f"{what} isn't implemented for the {self.name} backend yet.")

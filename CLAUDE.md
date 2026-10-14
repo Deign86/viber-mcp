@@ -21,6 +21,7 @@ uv run client.py send  "<to>" "<text>" [--dry-run]
 uv run client.py reply "<text>"            # into the currently-open chat
 uv run client.py draft "<text>"            # paste into open chat, do NOT send
 uv run client.py note  "<text>"            # save to My Notes
+uv run client.py call  <tool> '<json>'     # any tool (images saved as tool_image_N.png)
 uv run client.py chats | read | contacts
 
 # Register with Claude Code (user scope):
@@ -132,7 +133,17 @@ Status:
   to send keystrokes") despite the toggle being on — fix with
   `tccutil reset Accessibility <bundle-id>` (e.g. `com.googlecode.iterm2`) and relaunch.
 
-## Slash command
+## Staff rules, prompts, computer use
 
-`commands/viber-reply.md` (copy to `~/.claude/commands/`) reads the open chat and drafts a reply into
-the compose box via `read_open_chat` + `put_draft` — it never sends.
+- `guidelines.md` is the staff operating rulebook; `server.py` serves it as MCP server
+  `instructions`, so every client gets it automatically. Change rules there, not in tool docs.
+- MCP prompts (`inbox_triage`, `draft_reply`, `unsend`) are the slash-command workflows.
+- `viber_ui.py` holds the computer-use primitives (screenshot/click/type/key/scroll/elements)
+  and the actions built on them (`list_messages`, `open_image`, `unsend_message`). On Windows,
+  messages are `FeedDelegate` elements; text is the child `TextEditItem` edit's value, images
+  have a `RemixImageButton` child just under the picture; own messages are right of the chat
+  pane's (`StackView`) centre. The context menu, image viewer and dialogs render inside the main
+  window. Never click a generic "Delete" *button* — the info panel's "Delete" deletes the chat;
+  unsend only uses the context-menu `MenuItem` "Delete".
+- Test any tool with `uv run client.py call <tool> '<json>'`; element ids from `list_elements`
+  only live within one server process (each `client.py` call starts a new one).

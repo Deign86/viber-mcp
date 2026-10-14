@@ -23,6 +23,7 @@ import asyncio
 import ctypes
 import io
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -114,6 +115,42 @@ def _find_desc(root, predicate, max_depth: int = 6):
                 nxt.append(child)
         level = nxt
     return None
+
+
+_QML_SUFFIX = re.compile(r"(_QMLTYPE_\d+|_QML_\d+)+$")
+_KEYS = {
+    "escape": win32con.VK_ESCAPE, "esc": win32con.VK_ESCAPE, "enter": win32con.VK_RETURN,
+    "return": win32con.VK_RETURN, "backspace": win32con.VK_BACK, "delete": win32con.VK_DELETE,
+    "tab": win32con.VK_TAB, "space": win32con.VK_SPACE, "up": win32con.VK_UP,
+    "down": win32con.VK_DOWN, "left": win32con.VK_LEFT, "right": win32con.VK_RIGHT,
+    "pageup": win32con.VK_PRIOR, "pagedown": win32con.VK_NEXT, "home": win32con.VK_HOME,
+    "end": win32con.VK_END,
+}
+_BUTTONS = {
+    "left": (win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP, win32con.WM_LBUTTONDBLCLK,
+             win32con.MK_LBUTTON),
+    "right": (win32con.WM_RBUTTONDOWN, win32con.WM_RBUTTONUP, win32con.WM_RBUTTONDBLCLK,
+              win32con.MK_RBUTTON),
+    "middle": (win32con.WM_MBUTTONDOWN, win32con.WM_MBUTTONUP, win32con.WM_MBUTTONDBLCLK,
+               win32con.MK_MBUTTON),
+}
+
+
+def _short_class(cls: str) -> str:
+    """'RemixImageButton_QMLTYPE_475' -> 'RemixImageButton' (the numbers change between runs)."""
+    return _QML_SUFFIX.sub("", cls)
+
+
+def _walk(root, max_depth: int = 9):
+    """Yield (control, parent_control) breadth-first."""
+    level = [(root, None)]
+    for _ in range(max_depth):
+        nxt = []
+        for ctrl, _parent in level:
+            for child in ctrl.GetChildren():
+                yield child, ctrl
+                nxt.append((child, ctrl))
+        level = nxt
 
 
 def _restore_foreground(prev: int) -> None:
@@ -391,6 +428,114 @@ class WindowsBackend(Backend):
         for _ in range(abs(notches)):
             win32gui.PostMessage(hwnd, win32con.WM_MOUSEWHEEL, ((120 * step) & 0xFFFF) << 16, lp)
             time.sleep(0.03)
+
+    # --- computer-use primitives (coordinates = pixels in the screenshot image) --------
+    def screenshot(self):
+        """The Viber window as a PIL image (rendered off-screen; Viber may be covered)."""
+        return self.grab()[0]
+
+    def _to_screen(self, x: float, y: float) -> tuple[float, float]:
+        l, t, _, _ = win32gui.GetWindowRect(self._hwnd())
+        return l + x, t + y
+
+    def click_at(self, x: float, y: float, button: str = "left", double: bool = False) -> None:
+        if button not in _BUTTONS:
+            raise ValueError("button must be 'left', 'right' or 'middle'")
+        down, up, dbl, mk = _BUTTONS[button]
+        hwnd = self._hwnd()
+        sx, sy = self._to_screen(x, y)
+        self._last_click = (sx, sy)
+        cx, cy = win32gui.ScreenToClient(hwnd, (int(sx), int(sy)))
+        lp = win32api.MAKELONG(cx & 0xFFFF, cy & 0xFFFF)
+        win32gui.PostMessage(hwnd, win32con.WM_MOUSEMOVE, 0, lp)
+        win32gui.PostMessage(hwnd, down, mk, lp)
+        time.sleep(0.05)
+        win32gui.PostMessage(hwnd, up, 0, lp)
+        if double:
+            time.sleep(0.05)
+            win32gui.PostMessage(hwnd, dbl, mk, lp)
+            time.sleep(0.05)
+            win32gui.PostMessage(hwnd, up, 0, lp)
+
+    def press_key(self, key: str, repeat: int = 1) -> None:
+        vk = _KEYS.get(key.strip().lower())
+        if vk is None:
+            raise ValueError(f"Unknown key {key!r}. Supported: {', '.join(sorted(_KEYS))}. "
+                             "Modifier shortcuts (Ctrl+...) can't be sent in the background.")
+        for _ in range(max(1, min(int(repeat), 100))):
+            self._post_key(vk)
+            time.sleep(0.03)
+
+    def type_into_focus(self, text: str) -> None:
+        """Type into whatever field has Viber's (internal) focus — click it first. Characters
+        posting can't produce (non-BMP emoji, newlines) go through UIA on the clicked field."""
+        hwnd = self._hwnd()
+        if "\n" not in text and "\r" not in text and all(ord(c) <= 0xFFFF for c in text):
+            for ch in text:
+                win32gui.PostMessage(hwnd, win32con.WM_CHAR, ord(ch), 1)
+            time.sleep(0.2 + len(text) / 400)
+            return
+        point = getattr(self, "_last_click", None)
+        if point is None:
+            raise OCRError("Click the text field first, then type (needed for emoji/newlines).")
+        prev = win32gui.GetForegroundWindow()
+
+        def run():
+            el = auto.ControlFromPoint(int(point[0]), int(point[1]))
+            pattern = el.GetPattern(auto.PatternId.ValuePattern) if el else None
+            if pattern is None:
+                raise OCRError("The last-clicked spot isn't a text field; click the field first.")
+            pattern.SetValue(pattern.Value + text)
+        try:
+            _on_uia(run)
+        finally:
+            for _ in range(20):
+                time.sleep(0.05)
+                if win32gui.GetForegroundWindow() != prev:
+                    break
+            _restore_foreground(prev)
+            time.sleep(0.3)
+            _restore_foreground(prev)
+
+    def scroll_at(self, x: float, y: float, notches: int) -> None:
+        sx, sy = self._to_screen(x, y)
+        lp = win32api.MAKELONG(int(sx) & 0xFFFF, int(sy) & 0xFFFF)
+        step = 1 if notches > 0 else -1
+        for _ in range(abs(int(notches))):
+            win32gui.PostMessage(self._hwnd(), win32con.WM_MOUSEWHEEL,
+                                 ((120 * step) & 0xFFFF) << 16, lp)
+            time.sleep(0.03)
+
+    def elements(self) -> list[dict]:
+        """Visible UI elements: type, name, short class, text (edits), parent index, and
+        rect in screenshot pixels, in tree order (parents before children)."""
+        hwnd = self._hwnd()
+
+        def run():
+            l, t, r, b = win32gui.GetWindowRect(hwnd)
+            out, index_of, alive = [], {}, []  # `alive` keeps id() keys from being reused
+            for ctrl, parent in _walk(auto.ControlFromHandle(hwnd)):
+                alive.append(ctrl)
+                rect = ctrl.BoundingRectangle
+                if rect.right <= rect.left or rect.bottom <= rect.top:
+                    continue
+                if rect.right < l or rect.left > r or rect.bottom < t or rect.top > b:
+                    continue  # scrolled out of view
+                text = ""
+                if ctrl.ControlTypeName == "EditControl":
+                    pattern = ctrl.GetPattern(auto.PatternId.ValuePattern)
+                    text = pattern.Value if pattern else ""
+                index_of[id(ctrl)] = len(out)
+                out.append({
+                    "type": ctrl.ControlTypeName.removesuffix("Control"),
+                    "name": ctrl.Name,
+                    "class": _short_class(ctrl.ClassName),
+                    "text": text,
+                    "parent": index_of.get(id(parent)),
+                    "rect": [rect.left - l, rect.top - t, rect.right - l, rect.bottom - t],
+                })
+            return out
+        return _on_uia(run)
 
     def debug_info(self) -> dict:
         hwnd = self._hwnd()

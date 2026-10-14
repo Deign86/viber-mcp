@@ -14,11 +14,14 @@ Usage:
   uv run client.py scrolllist down 5    # scroll the chat list, then read it
   uv run client.py read
   uv run client.py contacts
+  uv run client.py call <tool> '<json args>'   # any tool, e.g. call list_messages
+                                              #   images are saved as tool_image_N.png
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import sys
 from pathlib import Path
@@ -34,12 +37,16 @@ async def _run(argv: list[str]) -> None:
     params = StdioServerParameters(command=sys.executable, args=[SERVER])
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
-            await session.initialize()
+            init = await session.initialize()
 
             if not argv or argv[0] == "list":
                 tools = await session.list_tools()
                 for t in tools.tools:
                     print(f"- {t.name}: {t.description.splitlines()[0] if t.description else ''}")
+                prompts = await session.list_prompts()
+                print("prompts:", ", ".join(p.name for p in prompts.prompts))
+                first = (init.instructions or "(none)").splitlines()[0]
+                print(f"instructions: {first} ({len(init.instructions or '')} chars)")
                 return
 
             cmd, rest = argv[0], argv[1:]
@@ -74,17 +81,28 @@ async def _run(argv: list[str]) -> None:
                 result = await session.call_tool("read_open_chat", {})
             elif cmd == "contacts":
                 result = await session.call_tool("list_contacts", {})
+            elif cmd == "call":
+                result = await session.call_tool(rest[0], json.loads(rest[1]) if len(rest) > 1 else {})
             else:
                 print(f"Unknown command: {cmd}")
                 print(__doc__)
                 return
 
-            # Structured content when available, else the text blocks.
+            if result.isError:
+                print("ERROR:", " ".join(getattr(b, "text", "") for b in result.content))
+                return
+            # Images are saved to files; structured content when available, else the text blocks.
+            images = [b for b in result.content if b.type == "image"]
+            for i, block in enumerate(images):
+                out = Path(f"tool_image_{i}.png")
+                out.write_bytes(base64.b64decode(block.data))
+                print(f"[image saved to {out}]")
             if result.structuredContent is not None:
                 print(json.dumps(result.structuredContent, indent=2, ensure_ascii=False))
             else:
                 for block in result.content:
-                    print(getattr(block, "text", block))
+                    if block.type == "text":
+                        print(block.text)
 
 
 def main() -> None:
