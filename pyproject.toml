@@ -1,0 +1,25 @@
+[project]
+name = "viber-mcp"
+version = "0.1.0"
+description = "MCP server to send and read Viber Desktop messages on macOS and Windows via UI automation"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "mcp[cli]>=1.28.1",
+    # macOS backend
+    "pyobjc-framework-cocoa>=12.2.1 ; sys_platform == 'darwin'",
+    "pyobjc-framework-quartz>=12.2.1 ; sys_platform == 'darwin'",
+    "pyobjc-framework-vision>=12.2.1 ; sys_platform == 'darwin'",
+    # Windows backend
+    "pywin32>=311 ; sys_platform == 'win32'",
+    "psutil>=7.0 ; sys_platform == 'win32'",
+    "pillow>=11 ; sys_platform == 'win32'",
+    "winrt-runtime>=3.2 ; sys_platform == 'win32'",
+    "winrt-Windows.Foundation>=3.2 ; sys_platform == 'win32'",
+    "winrt-Windows.Foundation.Collections>=3.2 ; sys_platform == 'win32'",
+    "winrt-Windows.Globalization>=3.2 ; sys_platform == 'win32'",
+    "winrt-Windows.Graphics.Imaging>=3.2 ; sys_platform == 'win32'",
+    "winrt-Windows.Media.Ocr>=3.2 ; sys_platform == 'win32'",
+    "winrt-Windows.Storage.Streams>=3.2 ; sys_platform == 'win32'",
+    "uiautomation>=2.0.20 ; sys_platform == 'win32'",
+]

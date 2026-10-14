@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# macOS
+.DS_Store
+
+# Personal data — real phone numbers, do not commit (use contacts.example.json as a template)
+contacts.json
+
+# Scratch / captures
+*.png
+scratchpad/
+
+# Windows layout overrides
+layout.windows.json
