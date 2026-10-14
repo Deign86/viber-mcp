@@ -224,6 +224,36 @@ def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> di
 
 
 @mcp.tool()
+def reply_to_message(n: int, text: str, send: bool = False) -> dict:
+    """Quote-reply to a specific message (n from list_messages) — the client sees which message
+    you're answering. Leaves it as a draft unless send=True (confirm with the staff member first).
+    """
+    return viber_ui.reply_to_message(n, text, send)
+
+
+@mcp.tool()
+def edit_message(n: int, text: str) -> dict:
+    """Edit one of YOUR sent messages (n from list_messages) to `text` and save it.
+    Confirm the new wording with the staff member first."""
+    return viber_ui.edit_message(n, text)
+
+
+@mcp.tool()
+def like_message(n: int) -> dict:
+    """Toggle the heart reaction on message n (from list_messages)."""
+    return viber_ui.like_message(n)
+
+
+@mcp.tool()
+def message_action(n: int, action: str) -> dict:
+    """Right-click message n and pick an item from Viber's message menu, e.g. "Pin", "Forward",
+    "Copy message", "Translate", "Set reminder", "Select". Returns the full menu that was offered.
+    (Deleting goes through unsend_message.) After "Forward", use screenshot/list_elements to pick
+    the recipient in Viber's forward dialog — confirm the recipient with the staff member."""
+    return viber_ui.message_action(n, action)
+
+
+@mcp.tool()
 def close_viewer() -> dict:
     """Close the image viewer, or any open menu/dialog in Viber (presses Escape)."""
     return viber_ui.close_viewer()

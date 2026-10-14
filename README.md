@@ -95,6 +95,10 @@ The server also offers ready-made prompts, which show up as slash commands in Cl
 | `list_messages()` | Exact messages in the open chat from Viber's UI: `n` (1 = newest), from me/them, text or image. |
 | `open_image(n=1)` / `close_viewer()` | Open an image full-size and return it so Claude can read it, then close the viewer. |
 | `unsend_message(text or n, for_everyone=True)` | Unsend one of **your own** messages. Refuses others' messages and ambiguous matches; verifies it's gone. |
+| `reply_to_message(n, text, send=False)` | Quote-reply to a specific message, so the client sees what you're answering. Draft unless `send=True`. |
+| `edit_message(n, text)` | Edit one of **your own** sent messages; verifies the new text. |
+| `like_message(n)` | Toggle the heart reaction on a message. |
+| `message_action(n, action)` | Any item from a message's right-click menu: Pin, Forward, Copy message, Translate, Set reminder, Select. Reports confirmation dialogs that appear. |
 | `scroll_chat(direction="up", amount=5)` | Scroll the open conversation (`up` = older messages) and return what's visible afterwards. |
 | `scroll_chat_list(direction="down", amount=5)` | Scroll the chat list to see more chats and return them. |
 | `search_and_open(name)` | Find any contact or group by name and open it. Exact and prefix matches beat substrings; returns `low_confidence` when only a weak match was found. |

@@ -143,12 +143,15 @@ def _messages(elements: list[dict]) -> list[dict]:
         rect = anchor["rect"]
         # Own bubbles are right-aligned; an image's Remix button sits at the bubble's left edge.
         mine = (rect[2] if text_el else rect[0]) > mid_x
+        # The reaction (heart) button sits beside the bubble as a QQuickLoader child.
+        like = next((k for k in kids if k["class"] == "QQuickLoader"), None)
         out.append({
             "kind": "image" if image_el else "text",
             "text": text_el["text"] if text_el else "",
             "mine": mine,
             "rect": rect,
             "image_rect": image_el["rect"] if image_el else None,
+            "like_rect": like["rect"] if like else None,
         })
     out.sort(key=lambda m: m["rect"][1])
     for n, m in enumerate(reversed(out), start=1):
@@ -300,6 +303,96 @@ def _wait_preview():
             return preview
         time.sleep(0.3)
     raise UIError("Viber's file preview didn't appear.")
+
+
+def _press_point(m: dict) -> tuple[float, float]:
+    """Where to click/right-click a message: its text, or the picture above "Remix image"."""
+    if m["kind"] == "image" and not m["text"]:
+        l, t, _, _ = m["image_rect"]
+        return l + 60, t - 60
+    return _mid(m["rect"])
+
+
+def _message(n: int) -> dict:
+    msg = next((m for m in _messages(_backend().elements()) if m["n"] == n), None)
+    if msg is None:
+        raise UIError(f"No visible message n={n}. Call list_messages to see the numbers.")
+    return msg
+
+
+def message_action(n: int, action: str) -> dict:
+    """Right-click message n and choose `action` from Viber's menu (Reply, Edit, Forward, Pin,
+    Copy message, Translate, Set reminder, Select, ...). Returns the menu that was offered."""
+    if action.strip().lower() == "delete":
+        raise UIError("Use unsend_message to delete — it checks ownership and confirms the choice.")
+    b = _backend()
+    b.click_at(*_press_point(_message(n)), button="right")
+    time.sleep(0.8)
+    items = [e for e in b.elements() if e["type"] == "MenuItem" and e["name"] != "System"]
+    names = [e["name"] for e in items]
+    choice = next((e for e in items if e["name"].lower() == action.strip().lower()), None)
+    if choice is None:
+        b.press_key("escape")
+        raise UIError(f"'{action}' isn't offered for that message. Available: {', '.join(names)}")
+    before = {e["name"] for e in b.elements() if e["type"] == "Button" and e["name"]}
+    b.click_at(*_mid(choice["rect"]))
+    time.sleep(0.8)
+    result = {"message": n, "chose": choice["name"], "menu": names}
+    # Some actions (e.g. Pin) open a confirmation dialog; surface its buttons.
+    dialog = sorted({e["name"] for e in b.elements() if e["type"] == "Button" and e["name"]} - before)
+    if dialog:
+        result["confirmation_dialog_buttons"] = dialog
+        result["note"] = ("Viber is asking for confirmation. Click one of these buttons with "
+                          "list_elements/click_element (or close_viewer to cancel).")
+    return result
+
+
+def _compose_and_maybe_send(text: str, send: bool) -> dict:
+    """Replace the message box content with `text`; click send if asked."""
+    b = _backend()
+    b.clipboard_set(text)
+    b.click_compose()
+    b.delete()
+    b.paste()
+    if not send:
+        return {"sent": False, "drafted": text}
+    b.click_send()
+    time.sleep(1.2)
+    return {"sent": True, "text": text}
+
+
+def reply_to_message(n: int, text: str, send: bool = False) -> dict:
+    """Quote-reply to message n with `text` (draft unless send=True)."""
+    if not text:
+        raise UIError("Reply text is empty.")
+    quoted = _message(n)
+    message_action(n, "Reply")
+    result = _compose_and_maybe_send(text, send)
+    result["replying_to"] = quoted["text"] or "(image)"
+    return result
+
+
+def edit_message(n: int, text: str) -> dict:
+    """Change the text of one of MY sent messages (n from list_messages) and save it."""
+    if not text:
+        raise UIError("New text is empty.")
+    target = _message(n)
+    if not target["mine"]:
+        raise UIError("That message isn't yours — only your own messages can be edited.")
+    message_action(n, "Edit")
+    _compose_and_maybe_send(text, send=True)
+    after = next((m for m in _messages(_backend().elements()) if m["mine"] and m["text"] == text), None)
+    return {"edited": True, "from": target["text"], "to": text, "verified": after is not None}
+
+
+def like_message(n: int) -> dict:
+    """Toggle the heart reaction on message n."""
+    msg = _message(n)
+    if msg["like_rect"] is None:
+        raise UIError("That message has no reaction button.")
+    _backend().click_at(*_mid(msg["like_rect"]))
+    time.sleep(0.6)
+    return {"toggled_like": n, "message": msg["text"] or "(image)"}
 
 
 def _named(elements: list[dict], el_type: str, predicate) -> list[dict]:

@@ -2,8 +2,9 @@
 download its photos, and send them to the open Viber chat.
 
 Auth (read-only Drive), first match wins:
-1. %LOCALAPPDATA%\\viber-mcp\\google_gcloud_credentials.json — gcloud application-default
-   credentials created with the Drive scope (see README → Google Drive setup → gcloud).
+1. A read-only service account key at %LOCALAPPDATA%\\viber-mcp\\google_service_account.json
+   (or VIBER_MCP_GOOGLE_SERVICE_ACCOUNT); the listings folder must be shared with its email.
+   (gcloud's own application-default login can't be used: Google blocks it for Drive.)
 2. OAuth "desktop app" sign-in, once per Windows user, using `google_oauth_client.json` next to
    this file (git-ignored) or VIBER_MCP_GOOGLE_CLIENT; token kept in google_token.json there.
 
@@ -26,7 +27,8 @@ _HERE = Path(__file__).resolve().parent
 _DATA = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "viber-mcp"
 CLIENT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_CLIENT", _HERE / "google_oauth_client.json"))
 TOKEN_FILE = _DATA / "google_token.json"
-GCLOUD_FILE = _DATA / "google_gcloud_credentials.json"
+SERVICE_ACCOUNT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_SERVICE_ACCOUNT",
+                                           _DATA / "google_service_account.json"))
 CACHE_DIR = _DATA / "drive-cache"
 LISTINGS_ROOT_NAME = os.environ.get("VIBER_MCP_LISTINGS_FOLDER", "APR LISTING")
 
@@ -53,13 +55,11 @@ def _creds():
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    if GCLOUD_FILE.exists():
-        # Admin setup via `gcloud auth application-default login` with the Drive scope, copied
-        # here; carries its quota_project_id (a project with the Drive API enabled).
-        creds = Credentials.from_authorized_user_file(str(GCLOUD_FILE))
-        if not creds.valid:
-            creds.refresh(Request())
-        return creds
+    if SERVICE_ACCOUNT_FILE.exists():
+        # Read-only service account (created with gcloud); the listing folder is shared with it.
+        from google.oauth2 import service_account
+        return service_account.Credentials.from_service_account_file(
+            str(SERVICE_ACCOUNT_FILE), scopes=SCOPES)
 
     creds = None
     if TOKEN_FILE.exists():
@@ -106,7 +106,7 @@ def _list(q: str, fields: str = "id,name,mimeType,modifiedTime,size,parents") ->
     out, token = [], None
     while True:
         resp = _drive().files().list(
-            q=q, fields=f"nextPageToken,files({fields})", pageSize=200, pageToken=token,
+            q=q, fields=f"nextPageToken,files({fields})", pageSize=1000, pageToken=token,
             orderBy="name", **_ALL,
         ).execute()
         out += resp.get("files", [])
@@ -172,18 +172,21 @@ def _property_folders() -> list[dict]:
     global _tree_cache
     if _tree_cache and time.time() - _tree_cache[0] < 300:
         return _tree_cache[1]
+    # One paged query for every visible folder, then walk the tree in memory (a call per
+    # folder takes minutes).
+    folders = _list(f"mimeType = '{FOLDER}' and trashed = false", fields="id,name,modifiedTime,parents")
+    kids: dict[str, list[dict]] = {}
+    for f in folders:
+        for parent in f.get("parents", []):
+            kids.setdefault(parent, []).append(f)
+    root = next((f["id"] for f in folders if f["name"] == LISTINGS_ROOT_NAME), None) or _listings_root()
     out = []
-    for cat in _children(_listings_root()):
-        if cat["mimeType"] != FOLDER:
-            continue
-        for deal in _children(cat["id"]):
-            if deal["mimeType"] != FOLDER:
-                continue
-            for prop in _children(deal["id"]):
-                if prop["mimeType"] == FOLDER:
-                    out.append({"folder_id": prop["id"], "name": prop["name"],
-                                "category": cat["name"], "deal": deal["name"],
-                                "modified": prop["modifiedTime"]})
+    for cat in kids.get(root, []):
+        for deal in kids.get(cat["id"], []):
+            for prop in kids.get(deal["id"], []):
+                out.append({"folder_id": prop["id"], "name": prop["name"],
+                            "category": cat["name"], "deal": deal["name"],
+                            "modified": prop["modifiedTime"]})
     _tree_cache = (time.time(), out)
     return out
 

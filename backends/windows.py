@@ -169,6 +169,24 @@ def _restore_foreground(prev: int) -> None:
         user32.AttachThreadInput(me, tid, False)
 
 
+def _uia_write_keeping_focus(fn) -> None:
+    """Run a UIA write (which makes Qt activate Viber) while continuously handing the
+    foreground back to the user's window. Long values take Qt seconds to apply, so the
+    focus is guarded for the whole write, not just afterwards."""
+    prev = win32gui.GetForegroundWindow()
+    job = _uia_pool.submit(fn)
+    settle_until = None
+    while True:
+        if win32gui.GetForegroundWindow() != prev:
+            _restore_foreground(prev)
+        if job.done():
+            settle_until = settle_until or time.time() + 0.6  # late activation after the write
+            if time.time() >= settle_until:
+                break
+        time.sleep(0.02)
+    job.result(timeout=0)  # re-raise errors from the write
+
+
 def _is_compose(c) -> bool:
     return c.ControlTypeName == "EditControl" and c.ClassName.startswith("QQuickTextEdit")
 
@@ -342,25 +360,13 @@ class WindowsBackend(Backend):
                     win32gui.PostMessage(hwnd, win32con.WM_CHAR, ord(ch), 1)
             if self._wait_value(text, timeout=1.0 + len(text) / 200):
                 return
-        prev = win32gui.GetForegroundWindow()
-
         def run():
             el = _find_desc(auto.ControlFromHandle(hwnd), self._target)
             if el is None:
                 raise OCRError("Viber's text box was not found (is a chat open?).")
             el.GetValuePattern().SetValue(text)
-        try:
-            _on_uia(run)
-        finally:
-            # Qt activates the window asynchronously; catch it as soon as it happens.
-            for _ in range(20):
-                time.sleep(0.05)
-                if win32gui.GetForegroundWindow() != prev:
-                    break
-            _restore_foreground(prev)
-            time.sleep(0.3)
-            _restore_foreground(prev)
-        if not self._wait_value(text):
+        _uia_write_keeping_focus(run)
+        if not self._wait_value(text, timeout=8.0):
             raise OCRError("Could not enter the text into Viber.")
 
     # --- "clipboard" (staged text only; the real clipboard is never touched) ----------
@@ -381,10 +387,24 @@ class WindowsBackend(Backend):
         current = self._value()
         if not current:
             return
-        self._post_key(win32con.VK_END)
-        for _ in range(len(current) + 2):
-            self._post_key(win32con.VK_BACK)
-        if not self._wait_value(""):
+        # End only reaches the end of the caret's line, so Backspace can't clear multi-line
+        # text; single-line text is backspaced (no focus change) and checked, with a UIA
+        # clear as the fallback.
+        single_line = not any(c in current for c in ("\n", "\r", chr(0x2029)))
+        if single_line:
+            self._post_key(win32con.VK_END)
+            for _ in range(len(current) + 2):
+                self._post_key(win32con.VK_BACK)
+            if self._wait_value(""):
+                return
+        hwnd, target = self._hwnd(), self._target
+
+        def run():
+            el = _find_desc(auto.ControlFromHandle(hwnd), target)
+            if el is not None:
+                el.GetValuePattern().SetValue("")
+        _uia_write_keeping_focus(run)
+        if not self._wait_value("", timeout=5.0):
             raise OCRError("Could not clear the existing text in Viber.")
 
     def paste(self) -> None:
@@ -396,10 +416,12 @@ class WindowsBackend(Backend):
     def click_compose(self) -> None:
         self._target = _is_compose
         self._click_element(_is_compose, "message box")
+        time.sleep(0.25)  # let Qt move focus before keys arrive
 
     def click_search(self) -> None:
         self._target = _is_search
         self._click_element(_is_search, "search box")
+        time.sleep(0.25)
 
     def click_send(self) -> None:
         self._click_element(_is_send, "send button")
@@ -478,24 +500,13 @@ class WindowsBackend(Backend):
         point = getattr(self, "_last_click", None)
         if point is None:
             raise OCRError("Click the text field first, then type (needed for emoji/newlines).")
-        prev = win32gui.GetForegroundWindow()
-
         def run():
             el = auto.ControlFromPoint(int(point[0]), int(point[1]))
             pattern = el.GetPattern(auto.PatternId.ValuePattern) if el else None
             if pattern is None:
                 raise OCRError("The last-clicked spot isn't a text field; click the field first.")
             pattern.SetValue(pattern.Value + text)
-        try:
-            _on_uia(run)
-        finally:
-            for _ in range(20):
-                time.sleep(0.05)
-                if win32gui.GetForegroundWindow() != prev:
-                    break
-            _restore_foreground(prev)
-            time.sleep(0.3)
-            _restore_foreground(prev)
+        _uia_write_keeping_focus(run)
 
     def scroll_at(self, x: float, y: float, notches: int) -> None:
         sx, sy = self._to_screen(x, y)
