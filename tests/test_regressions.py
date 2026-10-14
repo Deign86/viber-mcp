@@ -319,3 +319,30 @@ def test_banner_running_into_the_chat_pane_is_not_sidebar_text():
     hit, display = find_number_row(rows, "+639175177830")
     assert (hit["x"], hit["y"]) == (81, 278)  # the picker row, not the banner
     assert display == "Rafael Luijie Esquivel"
+
+
+def test_send_listing_keeps_the_photos_it_just_sent(tmp_path, monkeypatch):
+    # Root cause of "all photos but the last not sent": send_listing deleted the downloads as
+    # soon as the preview closed, while Viber was still uploading them (only the last survived,
+    # because Viber still held it open). Fresh downloads must stay on disk after sending.
+    import sys
+    import types
+
+    import viber_drive
+
+    cache = tmp_path / "drive-cache"
+    cache.mkdir()
+    photos = [cache / f"id{n}_{n}.jpg" for n in range(3)]
+    for p in photos:
+        p.write_bytes(b"jpg")
+    monkeypatch.setattr(viber_drive, "CACHE_DIR", cache)
+    monkeypatch.setattr(viber_drive, "get_listing", lambda fid: {
+        "doc": "d", "client_text": "t", "videos": [],
+        "photos": [{"id": f"id{n}", "name": f"{n}.jpg"} for n in range(3)]})
+    monkeypatch.setattr(viber_drive, "download", lambda ids: [str(p) for p in photos])
+    monkeypatch.setitem(sys.modules, "viber_send",
+                        types.SimpleNamespace(reply=lambda text: {"verified": True}))
+    monkeypatch.setitem(sys.modules, "viber_ui",
+                        types.SimpleNamespace(send_files=lambda paths: {"verified": True}))
+    viber_drive.send_listing("folder")
+    assert all(p.exists() for p in photos)
