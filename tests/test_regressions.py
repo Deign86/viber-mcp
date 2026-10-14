@@ -162,3 +162,27 @@ def test_intro_message_default_mentions_the_group_chat():
 
 def test_intro_message_without_a_name_reads_cleanly():
     assert logic.intro_message({"name": ""}, "Hello po {name}! A GC is coming.") == "Hello po! A GC is coming."
+
+
+# ------------------------------------------------------- duplicate-GC guard
+
+
+def test_existing_gc_found_despite_ocr_misreads_and_truncation():
+    lines = ["Conversations", "LORl-WH-(1200-1350S...", "Max Alpha: Hello @Unknown"]
+    assert logic.search_says_gc_exists(lines, "LORI-WH-(1200-1350SQM, BULACAN)") == "yes"
+
+
+def test_no_results_means_no_gc():
+    assert logic.search_says_gc_exists(["No results found"], "ZED-WH-(1SQM, QC)") == "no"
+
+
+def test_unreadable_highlighted_title_needs_header_check():
+    # Viber renders the matching title in highlighted bold that OCR drops; only the preview
+    # line survives — the caller must open the result and compare the chat header.
+    lines = ["Conversations", "Beatriz Alpha: DONE-LORI-WH-"]
+    assert logic.search_says_gc_exists(lines, "LORI-WH-(1200-1350SQM, BULACAN)") == "unknown"
+
+
+def test_different_client_with_similar_name_is_not_a_match():
+    lines = ["Conversations", "LORNA-WH-(300SQM, PASIG)"]
+    assert logic.search_says_gc_exists(lines, "LORI-WH-(1200-1350SQM, BULACAN)") == "unknown"

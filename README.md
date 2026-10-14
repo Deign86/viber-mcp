@@ -104,7 +104,7 @@ turns it into a client GC:
 4. Quote-replies `DONE-<GC NAME>` to the template in the templates chat.
 
 It plans first (`dry_run=True`) and refuses when the name is uncertain, several active listings
-match, the listing is SOLD, or the template already has a DONE reply. Copy
+match, the listing is SOLD, the template already has a DONE reply, or a GC with that name already exists in Viber (checked by search; if the result title is unreadable it opens the top result and compares the chat header). Copy
 `gc_members.example.json` to `gc_members.json` (git-ignored) and list the staff to add; `"self"` is
 the PC's own Viber name, which is skipped because the creator is added automatically.
 

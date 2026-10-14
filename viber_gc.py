@@ -83,6 +83,12 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
     visible = viber_ui._messages(viber_ui._backend().elements())
     if any(logic_norm(m["text"]) == logic_norm(done) for m in visible):
         problems.append(f"'{done}' is already in this chat — this GC was made already.")
+    exists, moved = gc_exists(name)
+    if exists:
+        problems.append(f"GC ALREADY EXISTS: a chat named '{name}' is already in Viber — not "
+                        "creating a duplicate.")
+    if moved and cfg.get("templates_chat"):
+        viber_send.search_and_open(cfg["templates_chat"])  # put the templates chat back
 
     members = [m for m in cfg["members"] if logic_norm(m) != logic_norm(cfg.get("self", ""))]
     return {
@@ -161,22 +167,37 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
 # ------------------------------------------------------------ autonomous processing
 
 
-def _gc_exists(name: str) -> bool:
-    """Does a chat whose title starts like `name` already exist? (Viber search, then cleared.)"""
+def gc_exists(name: str) -> tuple[bool, bool]:
+    """Does a chat named like `name` already exist? Returns (exists, opened_a_chat).
+
+    Searches Viber; when the highlighted result title can't be read, opens the top result and
+    compares the chat header (reliable). opened_a_chat tells the caller the open chat changed."""
     b = viber_ui._backend()
     b.click_search()
     b.delete()
-    b.type_text(name[:18])
-    time.sleep(1.8)
-    head = viber_ui._norm(name)[:12]
-    try:
-        obs = viber_ui._left_column(viber_ui._ocr_px())
-        return any(viber_ui._norm(o["text"]).startswith(head) for o in obs[2:])  # skip search box
-    finally:
-        b.click_search()
-        b.delete()
-        b.press_key("escape")
-        time.sleep(0.6)
+    b.type_text(name[:30])
+    time.sleep(2.0)
+    obs = viber_ui._left_column(viber_ui._ocr_px())
+    texts = [o["text"] for o in obs if o["y"] > obs[0]["H"] * 0.1] if obs else []
+    verdict = logic.search_says_gc_exists(texts, name)
+    if verdict == "unknown":
+        header = next((o for o in obs if o["text"].strip().lower() in
+                       ("conversations", "groups", "chats")), None)
+        if header is not None:
+            b.click_at(viber_ui._ocr_center(header)[0], header["y"] + header["h"] * 3.2)
+            time.sleep(1.5)
+            exists = viber_send._header_matches(name)
+            b.click_search()
+            b.delete()
+            b.press_key("escape")
+            time.sleep(0.6)
+            return exists, True
+        verdict = "no"
+    b.click_search()
+    b.delete()
+    b.press_key("escape")
+    time.sleep(0.6)
+    return verdict == "yes", False
 
 
 def _find_message(text: str, screens: int = 6):
@@ -228,10 +249,6 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = T
         name = logic.gc_name(logic.parse_template(text))
         if name["uncertain"]:
             skipped.append({"gc_name": name["gc_name"], "reason": "; ".join(name["uncertain"])})
-            continue
-        if _gc_exists(name["gc_name"]):
-            skipped.append({"gc_name": name["gc_name"],
-                            "reason": "a chat with this name already exists (no DONE reply yet)"})
             continue
         # Re-open the templates chat and locate this template by its exact text.
         viber_send.search_and_open(chat)

@@ -264,3 +264,26 @@ def intro_message(template_fields: dict, configured: str = "") -> str:
     name = first[0].capitalize() if first else ""
     text = (configured or DEFAULT_INTRO).replace("{name}", name)
     return " ".join(text.replace(" !", "!").split()) if not name else text
+
+
+_SECTION_HEADERS = {"conversations", "groups", "contacts", "chats", "communities", "channels"}
+
+
+def search_says_gc_exists(result_texts: list[str], gc_name_: str) -> str:
+    """Read Viber's search results (OCR lines of the left column, search box excluded) for a GC
+    name: "yes" (a readable result title starts like the name), "no" (no results), or "unknown"
+    (results exist but the highlighted title couldn't be read — open the top one and compare
+    the chat header). Titles are truncated and OCR confuses I/l/1 and O/0, so compare prefixes
+    with those folded."""
+    def fold(s: str) -> str:
+        return norm(s).translate(str.maketrans({"l": "i", "1": "i", "0": "o"}))
+
+    head = fold(gc_name_)[:12]
+    lines = [t.strip() for t in result_texts if t.strip()]
+    if any("no results" in t.lower() for t in lines):
+        return "no"
+    if head and any(fold(t).startswith(head) for t in lines):
+        return "yes"
+    if any(t.lower() in _SECTION_HEADERS for t in lines):
+        return "unknown"
+    return "no"
