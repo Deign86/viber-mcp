@@ -528,12 +528,31 @@ def _select_member(name: str = "", number: str = "") -> str:
         raise UIError(f"Couldn't find '{name or number}' in Viber's contacts for the group.")
     display = find_number_row(rows, number)[1] if number else name
     before = _invite_count(obs)
-    _backend().click_at(*_ocr_center(hit))
-    time.sleep(0.8)
-    after = _invite_count(_ocr_px())
-    if before is not None and after is not None and after != before + 1:
-        raise UIError(f"Selecting '{name or number}' didn't register (invited {before} → {after}).")
-    return display
+    b = _backend()
+    # Click the row text first; if the count doesn't rise, click the row's select circle.
+    targets = [_ocr_center(hit), select_circle_point(b.elements(), hit, bool(number))]
+    after = before
+    for point in targets:
+        if point is None:
+            continue
+        b.click_at(*point)
+        for _ in range(6):  # the count can take a moment to update
+            time.sleep(0.5)
+            after = _invite_count(_ocr_px())
+            if before is None or after is None or after == before + 1:
+                return display
+    raise UIError(f"Selecting '{name or number}' didn't register (invited {before} → {after}).")
+
+
+def select_circle_point(elements: list[dict], line: dict, line_is_number: bool):
+    """Where a picker row's select circle (○) is. It sits at the search box's right edge (the
+    picker list and the search box share the sidebar's fixed width), vertically between the
+    row's name line and its number line — so just below a name line, just above a number line."""
+    search = next((e for e in elements if e["type"] == "Edit" and e["class"].startswith("TextFieldItem")), None)
+    if search is None:
+        return None
+    center_y = line["y"] + line["h"] / 2
+    return search["rect"][2] - 5, center_y + (-15 if line_is_number else 6)
 
 
 def _open_new_group() -> None:
@@ -548,8 +567,12 @@ def _open_new_group() -> None:
                   and abs(_mid(e["rect"])[1] - sy) < 15), key=lambda e: e["rect"][0], default=None)
     if pencil is None:
         raise UIError("Couldn't find Viber's new-chat (pencil) button.")
-    b.click_at(*_mid(pencil["rect"]))
-    hits, _ = _wait_ocr(lambda t: t.lower() == "new group")
+    hits = []
+    for _ in range(3):  # the first click is sometimes swallowed (e.g. right after a chat opens)
+        b.click_at(*_mid(pencil["rect"]))
+        hits, _ = _wait_ocr(lambda t: t.lower() == "new group", timeout=3.0)
+        if hits:
+            break
     if not hits:
         raise UIError("Viber's 'New group' option didn't appear.")
     b.click_at(*_ocr_center(hits[0]))

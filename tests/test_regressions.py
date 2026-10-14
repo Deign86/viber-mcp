@@ -241,3 +241,26 @@ def test_clear_downloads_without_a_cache_folder_is_harmless(tmp_path):
     import viber_drive
 
     assert viber_drive.clear_downloads(tmp_path / "missing")["removed"] == 0
+
+
+# ------------------------------------------- picker select circle (Rafael's row didn't tick)
+
+
+def test_select_circle_lines_up_with_the_row():
+    from viber_ui import select_circle_point
+
+    elements = [{"type": "Edit", "class": "TextFieldItem", "name": "", "text": "", "parent": 1,
+                 "rect": [88, 43, 284, 71]}]
+    # Rafael's row as OCR'd: "Unknown" at y=257, "+639175177830" at y=278; circle drawn at (279, 273).
+    name_line = {"text": "Unknown", "x": 80, "y": 257, "w": 60, "h": 20}
+    number_line = {"text": "+639175177830", "x": 81, "y": 278, "w": 105, "h": 20}
+    for point in (select_circle_point(elements, name_line, False),
+                  select_circle_point(elements, number_line, True)):
+        x, y = point
+        assert abs(x - 279) <= 6 and abs(y - 273) <= 6
+
+
+def test_select_circle_needs_the_search_box():
+    from viber_ui import select_circle_point
+
+    assert select_circle_point([], {"y": 257, "h": 20}, False) is None
