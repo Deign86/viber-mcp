@@ -65,6 +65,17 @@ each GC created and each template skipped or failed (with the reason).
   `JANE-WH-(~, LAS PINAS)` → `JANE-WH-(240SQM, LAS PINAS)`. Find the listing by backreading the GC
   (or the listing named in the template). Rename: header ⓘ → pencil next to the name → clear →
   type → ✓; confirm the "You changed the group name" notice.
+- **Posting a new inquiry for staff** ("send it to APG CLIENTS, format it properly"): use the
+  emoji template (🏢 Company Name / 👤 Name / 🏗️ Type / 📐 SQM / 💰 Budget / 📍 Location / 📱 Viber,
+  then Intern, Date Listed, Listing). The Listing line is the Drive **folder name only** — no
+  price. If no folder matches exactly, pick the closest (same type and city, nearest sqm, within
+  budget) and say which one you chose. Screenshots of the same inquiry twice = one inquiry.
+- **No client name** ("Name: Not provided"): the GC is named after the company
+  (`TPEHCARE-WH-(270SQM, QC)`); the tools do this automatically.
+- **Foreign numbers** (+81, +60, …) are fine when written with their country code.
+- **Client changes requirements** (e.g. 1,100 → 400–500 sqm): send a fitting listing, then update
+  everything about them — rename the GC, edit their template in the GC and in APG CLIENTS (SQM and
+  Listing line), and edit the `DONE-` reply to the new name.
 - **Members:** the client's Viber number first, then the staff list in gc_members.json (in order).
   If the number isn't in Viber's group picker yet, the client is first messaged 1:1 (introducing you
   as the admin who'll create their GC; wording in gc_members.json), then added.
@@ -162,6 +173,12 @@ each GC created and each template skipped or failed (with the reason).
 - **Match the client's use, not just sqm/location.** Check the template's business line and what
   the client said (e.g. logistics/deliveries) against owner restrictions (e.g. "storage only") and
   the listing's notes (truck access, enclosed, residential village) before suggesting it.
+- **Client's private message about their GC's property:** quote-reply briefly that their
+  inquiries will be answered in their group chat (name it); answer in the GC, not the 1:1.
+- **Don't promise what the owner hasn't confirmed** (times, "before Saturday", all-in prices).
+  If a coworker already told the client "we'll ask and update you", don't post the same thing.
+- **Contact number asked by a client:** give the company line (0927 555 5803) — never the
+  owner's number from the internal part.
 - **Fix name typos everywhere.** If a client's name was misspelled, `edit_message` every one of
   your messages that has it, not just the latest.
 
@@ -180,6 +197,8 @@ each GC created and each template skipped or failed (with the reason).
   messages like "we'll check/confirm with the owner", "waiting for admin response", "will update
   you" with no update after them; list each with the GC, what was promised and since when.
 - A listing with no owner number (e.g. Messenger/Facebook only) can't be reached here — say so.
+  If messaging a number fails with "not a Viber user", tell the staff member to call/text it and
+  list the questions to ask.
 - Call scripts for staff: opening with their name + company, the property, the client's questions
   numbered, closing line; note any owner quirks (e.g. "text first, doesn't answer unknown calls").
 
@@ -190,6 +209,13 @@ each GC created and each template skipped or failed (with the reason).
   If something landed in the wrong chat, unsend it there and report it.
 - **Viber minimized or closed to tray:** tools say "search box not found" / "No chat is open" and
   `screenshot` is a small black image. Ask the staff member to restore the Viber window; don't retry.
+- **Sponsored ad in the sidebar** (a video "Sponsored" box) can make tools report "No chat is
+  open" while a chat is visibly open; close the ad's ✕ (`screenshot` → `click`) and continue.
+- **`send_listing` fails mid-text** ("Could not enter the text"): the text may be left unsent in
+  the message box — clear it, then send the listing text with `reply` and the photos with
+  `drive_download` → `send_files`.
+- **A client GC run that errors part-way** may have done the group/template/listing already —
+  check the GC and APG CLIENTS and finish only the missing steps (mention, DONE reply).
 - **Unsending in groups:** the message menu shows "Delete for all participants" (handled by
   `unsend_message`). Photo albums are deleted one photo at a time.
 - **Report to the staff member briefly** — what was sent/done, where, and what's still pending.
