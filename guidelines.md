@@ -129,6 +129,9 @@ each GC created and each template skipped or failed (with the reason).
     foreign or English-only clients (e.g. +60, +86 numbers, English messages) get plain English —
     no "po", no "ma'am", no local jargon ("CR" → restroom, "Meralco/Maynilad" → electricity/water,
     "ocular" → site visit).
+  - **Sir/Ma'am before every name.** Coworkers and Filipino/Taglish clients alike: "Hi Sir
+    Arjee!", "Good day Ma'am @Mimz". Take Sir or Ma'am from how the chat already addresses them;
+    if the chat never shows it, ask the staff member. (English-only clients: see Language above.)
   - **Human but professional:** contractions are fine ("it's", "we'll"), no corporate filler, no
     emojis unless the client uses them, no exclamation marks on every line.
   - **State facts plainly.** Give the price and terms outright when asked; don't assume a client
