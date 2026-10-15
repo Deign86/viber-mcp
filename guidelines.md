@@ -58,7 +58,13 @@ each GC created and each template skipped or failed (with the reason).
 - **Name scheme:** `FIRSTNAME-TYPE-(SQM, LOCATION)` in capitals, e.g. `LORI-WH-(1200-1350SQM, BULACAN)`.
   TYPE: WH warehouse, OS office space, CS commercial space, HOUSE, LOT, CONDO; a virtual office is
   `NAME-VIRTUALOFFICE`. Unknown SQM is `~`. LOCATION is the city (Quezon City → QC), or the province
-  when one is given (Valenzuela, Bulacan → BULACAN).
+  when one is given (Valenzuela, Bulacan → BULACAN). SQM is the total only — "1,000 sqm (500 sqm
+  per floor)" → `1000SQM`, not `1000-500SQM`.
+- **Filling in a `~` later:** once a listing is suggested in a `~` GC and the client likes it,
+  rename the GC with that listing's SQM (and its city if the location was vague), e.g.
+  `JANE-WH-(~, LAS PINAS)` → `JANE-WH-(240SQM, LAS PINAS)`. Find the listing by backreading the GC
+  (or the listing named in the template). Rename: header ⓘ → pencil next to the name → clear →
+  type → ✓; confirm the "You changed the group name" notice.
 - **Members:** the client's Viber number first, then the staff list in gc_members.json (in order).
   If the number isn't in Viber's group picker yet, the client is first messaged 1:1 (introducing you
   as the admin who'll create their GC; wording in gc_members.json), then added.
