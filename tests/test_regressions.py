@@ -346,3 +346,13 @@ def test_send_listing_keeps_the_photos_it_just_sent(tmp_path, monkeypatch):
                         types.SimpleNamespace(send_files=lambda paths: {"verified": True}))
     viber_drive.send_listing("folder")
     assert all(p.exists() for p in photos)
+
+
+def test_blank_client_fields_are_sent_as_tilde():
+    # Jensi template: blank SQM/Budget must go to the GC as "~", not empty.
+    msg = logic.client_message(
+        "Kindly fill this up:\n🏢 Company Name: (for massage spa)\n👤 Name: Jensi\n"
+        "📐 Preferred SQM: \n💰 Preferred Budget:\n📍 Preferred Location: Metro Manila")
+    assert "📐 Preferred SQM: ~" in msg
+    assert "💰 Preferred Budget: ~" in msg
+    assert "Company Name: (for massage spa)" in msg and "Kindly" not in msg

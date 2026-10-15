@@ -114,7 +114,8 @@ def client_message(text: str) -> str:
     for line in clean(text).split("\n"):
         label = _label_of(line)
         if label and label[0] in _CLIENT_FIELDS:
-            kept.append(line.rstrip())
+            # Staff rule: a blank field is sent as "~", never left empty.
+            kept.append(line.rstrip() + ("" if label[1] else " ~"))
     return "\n".join(kept)
 
 

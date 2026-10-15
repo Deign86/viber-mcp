@@ -150,7 +150,8 @@ def test_client_message_privacy(tpl):
 
 def test_client_message_verbatim_lines():
     lines = TPL8.split("\n")
-    expected = "\n".join(lines[i].replace(ISO[0], "").replace(ISO[1], "").rstrip() for i in range(1, 8))
+    kept = (lines[i].replace(ISO[0], "").replace(ISO[1], "").rstrip() for i in range(1, 8))
+    expected = "\n".join(l + " ~" if l.endswith(":") else l for l in kept)  # blank field -> "~"
     msg = client_message(TPL8)
     assert msg == expected
     assert "👤" in msg and "🏗️ Type of Property: Warehouse" in msg
