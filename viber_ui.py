@@ -796,6 +796,24 @@ def _named(elements: list[dict], el_type: str, predicate) -> list[dict]:
     return [e for e in elements if e["type"] == el_type and e["name"] and predicate(e["name"].lower())]
 
 
+def _is_delete_for_myself(name: str) -> bool:
+    return "myself" in name.lower()
+
+
+def _delete_menu_pick(names: list[str], for_everyone: bool) -> str | None:
+    """Which message-menu item to click to delete. 1:1 chats offer a plain "Delete" (the
+    everyone/myself choice comes after); group chats list "Delete for myself", "Delete without
+    a trace" and "Delete for all participants" directly. None = nothing suitable."""
+    plain = [s for s in names if s.lower() == "delete"]
+    if plain:
+        return plain[0]
+    if for_everyone:
+        wanted = [s for s in names if "all participants" in s.lower() or "everyone" in s.lower()]
+    else:
+        wanted = [s for s in names if _is_delete_for_myself(s)]
+    return wanted[0] if wanted else None
+
+
 def unsend_message(text: str | None = None, n: int | None = None,
                    for_everyone: bool = True) -> dict:
     """Delete one of MY messages in the open chat, chosen by exact/unique text or by n."""
@@ -827,20 +845,27 @@ def unsend_message(text: str | None = None, n: int | None = None,
     time.sleep(0.8)
 
     # Only the context-menu item (MenuItem), never the info panel's "Delete" chat button.
-    delete = _named(b.elements(), "MenuItem", lambda s: s == "delete")
-    if not delete:
+    menu = _named(b.elements(), "MenuItem", lambda s: s.startswith("delete"))
+    names = [e["name"] for e in menu]
+    pick = _delete_menu_pick(names, for_everyone)
+    if pick is None:
         b.press_key("escape")
+        if any(_is_delete_for_myself(s) for s in names):
+            raise UIError("Viber only offers 'Delete for myself' — the message is too old to unsend "
+                          "for everyone. Nothing was deleted.")
         raise UIError("Viber didn't offer Delete for that message.")
-    dl, dt, dr, db = delete[0]["rect"]
+    item = next(e for e in menu if e["name"] == pick)
+    dl, dt, dr, db = item["rect"]
     b.click_at((dl + dr) / 2, (dt + db) / 2)
     time.sleep(1.0)
 
-    # Real chats ask "for everyone" vs "for myself"; My Notes deletes immediately.
+    # Group chats put the choice in the menu itself (picked above). 1:1 chats show a plain
+    # "Delete", then ask "for everyone" vs "for myself"; My Notes deletes immediately.
     elements = b.elements()
     everyone = [e for e in elements if e["name"] and "everyone" in e["name"].lower()]
     myself = [e for e in elements if e["name"] and "myself" in e["name"].lower()]
-    choice = None
-    if everyone or myself:
+    choice = None if pick.lower() == "delete" else item
+    if pick.lower() == "delete" and (everyone or myself):
         options = everyone if for_everyone else myself
         if not options:
             b.press_key("escape")

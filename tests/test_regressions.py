@@ -356,3 +356,18 @@ def test_blank_client_fields_are_sent_as_tilde():
     assert "📐 Preferred SQM: ~" in msg
     assert "💰 Preferred Budget: ~" in msg
     assert "Company Name: (for massage spa)" in msg and "Kindly" not in msg
+
+
+# --------------------------------------------------------------- unsend in group chats
+
+
+def test_unsend_picks_group_chat_delete_items():
+    # Group chats have no plain "Delete" — the choice is in the message menu itself
+    # (unsend failed with "Viber didn't offer Delete" in JNT-WH).
+    from viber_ui import _delete_menu_pick
+    group = ["Delete for myself", "Delete without a trace", "Delete for all participants"]
+    assert _delete_menu_pick(group, True) == "Delete for all participants"
+    assert _delete_menu_pick(group, False) == "Delete for myself"
+    assert _delete_menu_pick(["Delete"], True) == "Delete"
+    assert _delete_menu_pick(["Delete for myself"], True) is None
+    assert _delete_menu_pick([], True) is None
