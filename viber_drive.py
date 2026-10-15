@@ -77,8 +77,9 @@ def _creds():
     if not creds or not creds.valid:
         if not CLIENT_FILE.exists():
             raise DriveError(
-                f"Google Drive isn't set up on this PC: missing {CLIENT_FILE.name}. "
-                "Ask the admin for the OAuth client file (see README → Google Drive)."
+                "Google Drive isn't set up on this PC. Ask the admin for the service account key "
+                f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>), "
+                f"or add the OAuth client file as {CLIENT_FILE} (see README → Google Drive)."
             )
         flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_FILE), SCOPES)
         # Opens the browser once; the staff member signs in with their company Google account.

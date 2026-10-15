@@ -1,4 +1,6 @@
 # One-shot setup for viber-mcp on Windows. Run:  powershell -ExecutionPolicy Bypass -File .\setup.ps1
+# Add  -ServiceAccountKey <path to google_service_account.json>  to install the Drive key too.
+param([string]$ServiceAccountKey)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
@@ -12,8 +14,18 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 Write-Host "Installing dependencies..."
 uv sync
 
-if (-not (Test-Path google_oauth_client.json)) {
-    Write-Host "Note: google_oauth_client.json is missing. The Google Drive listing tools need it (see README -> Google Drive setup)."
+$dataDir = Join-Path $env:LOCALAPPDATA "viber-mcp"
+$saKey = Join-Path $dataDir "google_service_account.json"
+if ($ServiceAccountKey) {
+    if (-not (Test-Path $ServiceAccountKey)) { Write-Warning "Service account key not found: $ServiceAccountKey"; exit 1 }
+    $type = (Get-Content $ServiceAccountKey -Raw | ConvertFrom-Json).type
+    if ($type -ne "service_account") { Write-Warning "$ServiceAccountKey is not a service account key (type: '$type')."; exit 1 }
+    New-Item -ItemType Directory -Force $dataDir | Out-Null
+    Copy-Item $ServiceAccountKey $saKey -Force
+    Write-Host "Installed the Drive service account key to $saKey"
+}
+if (-not (Test-Path $saKey) -and -not (Test-Path google_oauth_client.json)) {
+    Write-Host "Note: Google Drive isn't set up. Rerun with -ServiceAccountKey <path to google_service_account.json> (see README -> Google Drive setup)."
 }
 
 if (-not (Test-Path contacts.json)) {

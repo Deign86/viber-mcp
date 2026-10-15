@@ -203,8 +203,9 @@ gcloud iam service-accounts keys create "%LOCALAPPDATA%\viber-mcp\google_service
 
 Then in Google Drive, **Share** the `APR LISTING` folder with
 `viber-drive-reader@<project-id>.iam.gserviceaccount.com`. The tool only requests read-only
-access, whatever role you give it. Copy the key file to the same path on each staff PC, or
-point `VIBER_MCP_GOOGLE_SERVICE_ACCOUNT` at it. Treat the key like a password: anyone with it
+access, whatever role you give it. On each staff PC run
+`.\setup.ps1 -ServiceAccountKey <path to the key>` (it copies the key to
+`%LOCALAPPDATA%\viber-mcp\`), or point `VIBER_MCP_GOOGLE_SERVICE_ACCOUNT` at it. Treat the key like a password: anyone with it
 can read the shared folder. To cut access, delete the key in Cloud Console or remove the share.
 
 (gcloud's own `auth application-default login` can't be used: Google blocks it for Drive.)
