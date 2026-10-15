@@ -119,8 +119,22 @@ def client_message(text: str) -> str:
     return "\n".join(kept)
 
 
+_PLACEHOLDERS = {"", "~", "-", "n/a", "na", "none", "not provided", "not specified", "unknown"}
+
+
+def _is_placeholder(value: str) -> bool:
+    return re.sub(r"\s*\(.*\)\s*$", "", clean(value)).strip().lower() in _PLACEHOLDERS
+
+
 def viber_e164(raw: str) -> str:
-    digits = re.sub(r"\D", "", clean(raw))
+    """PH mobiles in any local format → +639XXXXXXXXX; any other number written with its
+    country code ("+81 80…", "+60 11…") is accepted as international E.164."""
+    text = clean(raw).strip()
+    digits = re.sub(r"\D", "", text)
+    if text.startswith("+") and not digits.startswith("63"):
+        if not 8 <= len(digits) <= 15:
+            raise ValueError(f"not a valid international number: {raw!r}")
+        return "+" + digits
     if digits.startswith("63"):
         national = digits[2:]
     elif digits.startswith("0"):
@@ -188,7 +202,11 @@ def _location_part(text: str):
 def gc_name(fields: dict) -> dict:
     uncertain: list[str] = []
 
-    words = (fields.get("name") or "").split()
+    raw_name = fields.get("name") or ""
+    if _is_placeholder(raw_name):
+        # "Name: Not provided" — use the company name instead (e.g. TPEHcare), never "NOT".
+        raw_name = "" if _is_placeholder(fields.get("company") or "") else fields.get("company") or ""
+    words = raw_name.split()
     name = "".join(c for c in (words[0] if words else "") if c.isalpha()).upper()
     if not name:
         name = "?"
@@ -296,7 +314,10 @@ DEFAULT_INTRO = ("Hello po {name}! Our admin will be creating a Viber group chat
 def intro_message(template_fields: dict, configured: str = "") -> str:
     """The 1:1 message sent to a client whose number isn't in Viber's recent chats yet (so the
     group picker can't find it): tells them a GC is coming. `configured` may use {name}."""
-    first = (template_fields.get("name") or "").split()
+    raw = template_fields.get("name") or ""
+    if _is_placeholder(raw):
+        raw = "" if _is_placeholder(template_fields.get("company") or "") else template_fields.get("company") or ""
+    first = raw.split()
     name = first[0].capitalize() if first else ""
     text = (configured or DEFAULT_INTRO).replace("{name}", name)
     return " ".join(text.replace(" !", "!").split()) if not name else text

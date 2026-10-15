@@ -175,7 +175,7 @@ def test_viber_e164(raw, expected):
     assert viber_e164(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["", "0212345678", "0917123", "abc", "+14155550123", "08171704489"])
+@pytest.mark.parametrize("raw", ["", "0212345678", "0917123", "abc", "+1415", "08171704489"])
 def test_viber_e164_invalid(raw):
     with pytest.raises(ValueError):
         viber_e164(raw)

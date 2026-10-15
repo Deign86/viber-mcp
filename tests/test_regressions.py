@@ -371,3 +371,24 @@ def test_unsend_picks_group_chat_delete_items():
     assert _delete_menu_pick(["Delete"], True) == "Delete"
     assert _delete_menu_pick(["Delete for myself"], True) is None
     assert _delete_menu_pick([], True) is None
+
+
+# --------------------------------------------------------------- foreign numbers / placeholder names
+
+
+def test_foreign_numbers_with_country_code_are_accepted():
+    # Caren (+81) and Jane (+60) were refused as "not a valid PH mobile number".
+    assert logic.viber_e164("+818045489863") == "+818045489863"
+    assert logic.viber_e164("+60 11 2726 6942") == "+601127266942"
+    assert logic.viber_e164("0917 128 7661") == "+639171287661"
+    assert logic.viber_e164("+63 966 665 5551") == "+639666655551"
+
+
+def test_name_not_provided_falls_back_to_company():
+    # "Name: Not provided" made the GC "NOT-WH-(270SQM, QC)".
+    f = {"name": "Not provided", "company": "TPEHcare", "property_type": "Warehouse",
+         "sqm": "270 sqm", "location": "Quezon City"}
+    assert logic.gc_name(f)["gc_name"] == "TPEHCARE-WH-(270SQM, QC)"
+    assert "Tpehcare" in logic.intro_message(f)
+    f2 = dict(f, company="")
+    assert "name missing" in logic.gc_name(f2)["uncertain"]
