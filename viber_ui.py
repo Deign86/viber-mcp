@@ -821,15 +821,24 @@ def _is_delete_for_myself(name: str) -> bool:
     return "myself" in name.lower()
 
 
+def _is_delete_for_everyone(name: str) -> bool:
+    s = name.lower()
+    # Groups: "Delete for all participants"; 1:1s: "Delete for me and <contact name>".
+    # Never "Delete without a trace".
+    return "all participants" in s or "everyone" in s or s.startswith("delete for me and ")
+
+
 def _delete_menu_pick(names: list[str], for_everyone: bool) -> str | None:
-    """Which message-menu item to click to delete. 1:1 chats offer a plain "Delete" (the
+    """Which message-menu item to click to delete. Older 1:1 menus offer a plain "Delete" (the
     everyone/myself choice comes after); group chats list "Delete for myself", "Delete without
-    a trace" and "Delete for all participants" directly. None = nothing suitable."""
+    a trace" and "Delete for all participants" directly, and 1:1 chats now list "Delete for
+    myself", "Delete without a trace" and "Delete for me and <contact>". None = nothing
+    suitable."""
     plain = [s for s in names if s.lower() == "delete"]
     if plain:
         return plain[0]
     if for_everyone:
-        wanted = [s for s in names if "all participants" in s.lower() or "everyone" in s.lower()]
+        wanted = [s for s in names if _is_delete_for_everyone(s)]
     else:
         wanted = [s for s in names if _is_delete_for_myself(s)]
     return wanted[0] if wanted else None
