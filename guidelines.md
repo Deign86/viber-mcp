@@ -56,9 +56,12 @@ dashed line is included), the photos as one album, a dashed separator, creates t
 quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
 - **Lots for lease** go one level deeper: `category="CONDO / HOUSE AND LOT"`, `deal="LEASE"`,
   `subfolder="LOT"`.
-- **Drive write needs a staff Google sign-in** (the service account can't upload — it has no
-  storage). If the tool or its dry run reports that write sign-in isn't set up, stop and tell the
-  staff member; nothing has been posted.
+- **No Drive write sign-in on this PC → `drive_todo`.** The service account can't upload (it has no
+  storage), so without a staff OAuth sign-in the tool posts to the GC only and returns `drive_todo`.
+  Do it with the Google Drive connector: in `parent_folder_id` create folder `folder_name`, the
+  Google Doc `doc_name` with `doc_text`, upload the photos under their `photos` names (via Chrome),
+  then quote-reply the `then` line to the posted listing with `reply_to_message`. Never re-run
+  `post_new_listing` for it (it would post twice).
 - **Only listings marked complete** (address, final price, owner name and number on file). Skip
   incomplete ones and say why.
 - **Check it isn't already posted:** `find_listings` for the same place/sqm and search the GC

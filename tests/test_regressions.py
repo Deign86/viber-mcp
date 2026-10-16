@@ -512,6 +512,7 @@ def test_new_listing_stops_without_reposting_when_drive_fails(monkeypatch):
 
     sent = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    monkeypatch.setattr(viber_drive, "write_auth_problem", lambda: None)
     monkeypatch.setattr(viber_drive, "_drive_write", lambda: None)
     monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
         search_and_open=lambda n: {"matched": "APR LISTING ONLY"},
@@ -569,18 +570,55 @@ def test_new_listing_posts_nothing_when_drive_write_is_unusable(monkeypatch):
     import pytest
     import viber_drive
 
+    # The OAuth client file is there but the sign-in fails: stop before posting anything.
     sent = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    monkeypatch.setattr(viber_drive, "write_auth_problem", lambda: None)
 
     def no_auth():
-        raise viber_drive.DriveError("Adding listings to Drive isn't set up on this PC")
+        raise viber_drive.DriveError("Drive write sign-in expired")
     monkeypatch.setattr(viber_drive, "_drive_write", no_auth)
     monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
         search_and_open=sent.append, reply=sent.append))
     monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
-    with pytest.raises(viber_drive.DriveError, match="isn't set up"):
+    with pytest.raises(viber_drive.DriveError, match="expired"):
         viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
     assert sent == []
+
+
+def test_new_listing_without_oauth_client_posts_to_gc_and_hands_drive_to_connector(monkeypatch):
+    # No OAuth client on this PC (Cloud console needs 2SV the account owner can't do): posting
+    # must still work, with the Drive part returned for the Google Drive connector.
+    import sys
+    import types
+
+    import viber_drive
+
+    sent = []
+    monkeypatch.setattr(viber_drive, "_check_new_listing", lambda *_: {
+        **_plan(), "photos": ["C:/p/a.JPG", "C:/p/b.png"]})
+    monkeypatch.setattr(viber_drive, "write_auth_problem", lambda: "not set up")
+
+    def no_drive(*_):
+        raise AssertionError("must not touch Drive")
+    monkeypatch.setattr(viber_drive, "_drive_write", no_drive)
+    monkeypatch.setattr(viber_drive, "add_listing_to_drive", no_drive)
+    monkeypatch.setattr(viber_drive, "_quote_reply_posted", no_drive)
+    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
+        search_and_open=lambda n: {"matched": "APR LISTING ONLY"},
+        reply=lambda t: sent.append(t) or {"verified": True}))
+    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace(
+        send_files=lambda ps: sent.append(ps) or {"verified": True}))
+    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", ["a", "b"])
+    assert out["posted"] is True and "STOP" not in out and "drive" not in out
+    assert sent == ["t\n---\ni", ["C:/p/a.JPG", "C:/p/b.png"], viber_drive.GC_SEPARATOR]
+    todo = out["drive_todo"]
+    assert todo["parent_folder_id"] == "d"
+    assert todo["doc_name"] == "*Quezon City, 860 Apolonio Samson"
+    assert todo["doc_text"].startswith("t\n---\ni\n\nAdded to Drive: ")
+    assert todo["photos"] == {"C:/p/a.JPG": "AlphaPremier_Photo_01.jpg",
+                              "C:/p/b.png": "AlphaPremier_Photo_02.png"}
+    assert "Added to Drive [File name:*Quezon City, 860 Apolonio Samson]" in todo["then"]
 
 
 def test_failed_drive_upload_trashes_the_half_made_folder(monkeypatch):

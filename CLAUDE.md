@@ -187,8 +187,10 @@ Status:
   (`google_token_write.json`, full `drive` scope) so the read-only sign-in is untouched, and **never
   the service account** — service accounts have 0 bytes of Drive storage, so uploads fail with
   403 `storageQuotaExceeded` (folder creation still succeeds). It needs `google_oauth_client.json`
-  (or a saved write token); `write_auth_problem()` checks that offline and dry runs report it.
-  If an upload fails, `add_listing_to_drive` trashes the half-made folder. A failure after the GC
+  (or a saved write token); `write_auth_problem()` checks that offline. Without it (the Cloud
+  console needs 2SV the account owner can't do from here), it posts to the GC only and returns
+  `drive_todo` (pure `drive_todo()`: parent id, folder/doc names, doc text, photo→`_photo_name`
+  map, the quote-reply) for Claude's Google Drive connector. If an upload fails, `add_listing_to_drive` trashes the half-made folder. A failure after the GC
   post returns `STOP` with what's done instead of raising — never re-run it.
 - Group folders: some deal folders hold a comma-less group folder of listings (lots for lease are
   in `CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT / LOT`); `_property_folders` walks into them

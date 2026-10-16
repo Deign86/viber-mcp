@@ -383,9 +383,12 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
     <category>/<deal>/<folder_name> with the doc "*<folder_name>" and the photos; then quote-replies
     "Added to Drive [File name:*<folder_name>]" to the post. Refuses (before sending anything) if
     the text has no dashed separator, a photo is missing, the category/deal folder isn't found,
-    a listing folder with that name already exists, or Drive write sign-in isn't usable (it needs
-    a staff Google sign-in — the service account can't upload). If it stops part-way it says
-    what's done.
+    or a listing folder with that name already exists. If it stops part-way it says what's done.
+
+    Without a Drive write sign-in on this PC (no google_oauth_client.json — the service account
+    can't upload), it posts to the GC only and returns `drive_todo` (folder, doc name and text,
+    photo names): create those with the Google Drive connector (photos via Chrome), then
+    quote-reply the "Added to Drive" line with reply_to_message. Never re-run it for that.
 
     Args:
         text: the full listing in the staff format (see other posts in the GC).
@@ -393,8 +396,8 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
         deal: "LEASE" or "SALE".
         folder_name: "City, sqm Area", e.g. "Pasay City, 8, 12, 22 Malibay".
         photo_paths: full paths of the listing's photos on this PC, in order (may be empty).
-        dry_run: True = check everything and show the plan; send/create nothing. Reports
-            `write_auth` if the Drive write sign-in isn't set up.
+        dry_run: True = check everything and show the plan; send/create nothing. Says if the
+            Drive part will be left for the connector.
         subfolder: optional folder inside the deal folder, e.g. "LOT" for lots under
             CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT.
     """
