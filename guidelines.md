@@ -51,17 +51,14 @@ for anything that goes to a client. Never mix photos from a different listing.
 ## Posting new listings (APR LISTING ONLY + Drive)
 "Send my completed listings to the listings GC / add them to Drive" → `post_new_listing` once per
 listing. It posts the full listing in APR LISTING ONLY (staff GC, so the internal part below the
-dashed line is included), the photos as one album, a dashed separator, creates the Drive folder
-(`category` / `deal` / `folder_name`) with the doc `*<folder_name>` and the photos, then
+dashed line is included), the photos as one album and a dashed separator. It does **not** write to
+Drive (the service account has no storage and no Google sign-in is needed): its result's drive_todo
+says what to add with the **Google Drive connector** — in the parent folder id create the folder
+(`City, sqm Area`), the Google Doc `*<folder_name>` with the given doc text, and the photos under
+the given AlphaPremier_Photo_NN names (upload them via Chrome). Then `mark_listing_added_to_drive`
 quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
 - **Lots for lease** go one level deeper: `category="CONDO / HOUSE AND LOT"`, `deal="LEASE"`,
   `subfolder="LOT"`.
-- **No Drive write sign-in on this PC → `drive_todo`.** The service account can't upload (it has no
-  storage), so without a staff OAuth sign-in the tool posts to the GC only and returns `drive_todo`.
-  Do it with the Google Drive connector: in `parent_folder_id` create folder `folder_name`, the
-  Google Doc `doc_name` with `doc_text`, upload the photos under their `photos` names (via Chrome),
-  then quote-reply the `then` line to the posted listing with `reply_to_message`. Never re-run
-  `post_new_listing` for it (it would post twice).
 - **Only listings marked complete** (address, final price, owner name and number on file). Skip
   incomplete ones and say why.
 - **Check it isn't already posted:** `find_listings` for the same place/sqm and search the GC
@@ -79,7 +76,6 @@ quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
   listing a photo belongs to, ask. No photos → `photo_paths` empty; add them later only by hand.
 - Run with `dry_run=True` first if anything is uncertain. If it returns `STOP`, finish the listed
   remaining steps by hand — never re-run it (that posts the listing twice).
-- The first run asks for a Google sign-in with edit access to Drive (once per PC).
 
 ## Client group chats (templates in APG CLIENTS)
 Staff post a client template (name, property type, SQM, budget, location, Viber number, often a

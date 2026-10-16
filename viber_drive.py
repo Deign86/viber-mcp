@@ -8,9 +8,9 @@ Auth (read-only Drive), first match wins:
 2. OAuth "desktop app" sign-in, once per Windows user, using `google_oauth_client.json` next to
    this file (git-ignored) or VIBER_MCP_GOOGLE_CLIENT; token kept in google_token.json there.
 
-Writing (post_new_listing) never uses the service account: service accounts have 0 bytes of
-Drive storage, so uploads fail with storageQuotaExceeded. It always uses the OAuth sign-in (a
-staff Google account, full `drive` scope, token google_token_write.json).
+This module never WRITES to Drive: the service account has 0 bytes of Drive storage (uploads
+fail with storageQuotaExceeded). post_new_listing returns `drive_todo` for Claude's Google Drive
+connector instead.
 
 Listing layout (APR LISTING): <root> / <CATEGORY> / <FOR LEASE/RENT | FOR SALE> / [<group> /]
 <property folder>, where a property folder holds one listing doc (Google Doc or .docx) plus its
@@ -32,8 +32,6 @@ _HERE = Path(__file__).resolve().parent
 _DATA = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "viber-mcp"
 CLIENT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_CLIENT", _HERE / "google_oauth_client.json"))
 TOKEN_FILE = _DATA / "google_token.json"
-WRITE_SCOPES = ["https://www.googleapis.com/auth/drive"]
-WRITE_TOKEN_FILE = _DATA / "google_token_write.json"
 SERVICE_ACCOUNT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_SERVICE_ACCOUNT",
                                            _DATA / "google_service_account.json"))
 CACHE_DIR = _DATA / "drive-cache"
@@ -53,7 +51,6 @@ _SEPARATOR = re.compile(r"^\s*[-_—–=]{3,}\s*$")  # a lone "—" (signature l
 _ALL = {"supportsAllDrives": True, "includeItemsFromAllDrives": True, "corpora": "allDrives"}
 
 _service = None
-_write_service = None
 _tree_cache: tuple[float, list[dict]] | None = None
 
 
@@ -64,25 +61,13 @@ class DriveError(Exception):
 # ------------------------------------------------------------------------------ auth
 
 
-def write_auth_problem() -> str | None:
-    """Why Drive WRITE access can't work on this PC, or None if it can (a saved write token or
-    the OAuth client file to sign in with). Checks files only — no network, no browser."""
-    if WRITE_TOKEN_FILE.exists() or CLIENT_FILE.exists():
-        return None
-    return ("Adding listings to Drive isn't set up on this PC: it needs a staff Google sign-in "
-            f"(the service account has no Drive storage, so it can't upload). Add the OAuth client "
-            f"file as {CLIENT_FILE} (see README → Google Drive), then try again.")
-
-
-def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
-           allow_service_account: bool = True):
+def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    if allow_service_account and SERVICE_ACCOUNT_FILE.exists():
-        # Service account (created with gcloud); the listing folder is shared with it (as an
-        # editor if listings are to be added).
+    if SERVICE_ACCOUNT_FILE.exists():
+        # Service account (created with gcloud); the listing folder is shared with it.
         from google.oauth2 import service_account
         return service_account.Credentials.from_service_account_file(
             str(SERVICE_ACCOUNT_FILE), scopes=scopes)
@@ -99,9 +84,6 @@ def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
             creds = None
     if not creds or not creds.valid:
         if not CLIENT_FILE.exists():
-            if not allow_service_account:
-                raise DriveError(write_auth_problem() or "Drive write sign-in expired and the "
-                                 f"OAuth client file {CLIENT_FILE} is missing to sign in again.")
             raise DriveError(
                 "Google Drive isn't set up on this PC. Ask the admin for the service account key "
                 f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>), "
@@ -121,18 +103,6 @@ def _drive():
         from googleapiclient.discovery import build
         _service = build("drive", "v3", credentials=_creds(), cache_discovery=False)
     return _service
-
-
-def _drive_write():
-    """Drive with write access — only for adding listings. Its own token, so reading keeps
-    working with the read-only sign-in and the write sign-in is asked for only when needed.
-    Never the service account: it has 0 bytes of storage, so uploads fail (storageQuotaExceeded)."""
-    global _write_service
-    if _write_service is None:
-        from googleapiclient.discovery import build
-        creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, allow_service_account=False)
-        _write_service = build("drive", "v3", credentials=creds, cache_discovery=False)
-    return _write_service
 
 
 def sign_in() -> dict:
@@ -428,97 +398,54 @@ def _today() -> str:
 
 
 def drive_todo(plan: dict, text: str, added: str) -> dict:
-    """What to create in Drive by hand (Claude's Google Drive connector + Chrome for photos) when
-    this PC has no Drive write sign-in: the same folder/doc/photo names add_listing_to_drive uses."""
+    """What to create in Drive with Claude's Google Drive connector (photos via Chrome), following
+    the Drive's conventions, and the quote-reply to post once it's there."""
     return {"parent_folder_id": plan["parent_id"], "parent_path": plan["path"],
             "folder_name": plan["folder_name"], "doc_name": f"*{plan['folder_name']}",
             "doc_text": listing_doc_text(text, added),
             "photos": {p: _photo_name(i, p) for i, p in enumerate(plan["photos"], 1)},
-            "then": f"quote-reply '{added_to_drive_reply(plan['folder_name'])}' to the posted "
-                    "listing in the GC (reply_to_message)"}
+            "then": "mark_listing_added_to_drive(text, folder_name) — quote-replies "
+                    f"'{added_to_drive_reply(plan['folder_name'])}' to the post"}
 
 
-def add_listing_to_drive(text: str, parent_id: str, folder_name: str, photos: list[str]) -> dict:
-    """Create <parent>/<folder_name>/ with the listing doc '*<folder_name>' and the photos."""
-    import mimetypes
-
-    from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
-
-    global _tree_cache
-    drive = _drive_write()
-    folder = drive.files().create(
-        body={"name": folder_name, "mimeType": FOLDER, "parents": [parent_id]},
-        fields="id,webViewLink", supportsAllDrives=True).execute()
-    body = listing_doc_text(text, _today())
-    try:
-        doc = drive.files().create(
-            body={"name": f"*{folder_name}", "mimeType": GDOC, "parents": [folder["id"]]},
-            media_body=MediaIoBaseUpload(io.BytesIO(body.encode("utf-8")), mimetype="text/plain"),
-            fields="id", supportsAllDrives=True).execute()
-        uploaded = []
-        for i, p in enumerate(photos, 1):
-            media = MediaFileUpload(p, mimetype=mimetypes.guess_type(p)[0] or "image/jpeg")
-            f = drive.files().create(
-                body={"name": _photo_name(i, p), "parents": [folder["id"]]},
-                media_body=media, fields="id,name", supportsAllDrives=True).execute()
-            uploaded.append(f["name"])
-    except Exception as e:
-        # Don't leave a half-made folder behind (it would block a retry as "already exists").
-        # Trashed, not deleted, so it can still be restored.
-        try:
-            drive.files().update(fileId=folder["id"], body={"trashed": True},
-                                 supportsAllDrives=True).execute()
-        except Exception:
-            raise DriveError(f"{e} — and the half-made Drive folder '{folder_name}' couldn't be "
-                             "trashed; remove it by hand.") from e
-        raise DriveError(f"{e} — the half-made Drive folder was moved to the trash.") from e
-    _tree_cache = None  # the new folder must show up in find_listings right away
-    return {"folder_id": folder["id"], "link": folder.get("webViewLink"), "doc_id": doc["id"],
-            "photos": uploaded}
-
-
-def _quote_reply_posted(text: str, reply_text: str, tries: int = 8) -> dict:
-    """Quote-reply `reply_text` to my posted message `text` in the open chat, scrolling up to it."""
+def mark_listing_added_to_drive(text: str, folder_name: str, tries: int = 8) -> dict:
+    """Once the listing is in Drive: open the listings GC and quote-reply 'Added to Drive
+    [File name:*<folder_name>]' to my posted listing `text`, scrolling up to find it."""
     import viber_ocr
+    import viber_send
     import viber_ui
 
+    global _tree_cache
+    _tree_cache = None  # the folder made with the connector must show up in find_listings now
+    opened = viber_send.search_and_open(LISTINGS_GC)
+    if opened.get("matched", "").strip().casefold() != LISTINGS_GC.casefold():
+        raise DriveError(f"Opened '{opened.get('matched')}' instead of '{LISTINGS_GC}'. Nothing sent.")
+    reply_text = added_to_drive_reply(folder_name)
     viber_ui.jump_to_latest()
     for _ in range(tries):
         n = find_posted_message(viber_ui.list_messages()["messages"], text)
         if n is not None:
-            return viber_ui.reply_to_message(n, reply_text)
+            viber_ui.reply_to_message(n, reply_text)
+            return {"replied": reply_text, "to_message": n}
         viber_ocr.scroll_and_read("chat", "up", 10)
-    raise DriveError("Couldn't find the posted listing on screen to quote-reply to.")
+    raise DriveError("Couldn't find the posted listing on screen to quote-reply to. Nothing sent.")
 
 
 def post_new_listing(text: str, category: str, deal: str, folder_name: str,
                      photo_paths: list[str], dry_run: bool = False, subfolder: str = "") -> dict:
-    """Post a NEW listing the way staff do: in the listings GC (full text incl. the internal part
-    below the dashed line, then the photos, then a dashed separator), add it to Drive (folder +
-    '*' doc + photos), then quote-reply 'Added to Drive [File name:*<folder>]' to the post.
-    Everything is checked (separator, photos, category/deal folder, duplicate name) before
-    anything is sent or created. Without a Drive write sign-in on this PC (no OAuth client file),
-    it posts to the GC only and returns `drive_todo` for Claude's Google Drive connector."""
+    """Post a NEW listing the way staff do in the listings GC: full text incl. the internal part
+    below the dashed line, then the photos, then a dashed separator. Returns `drive_todo` — the
+    Drive folder / '*' doc / photos to create with Claude's Google Drive connector (this server
+    can't write to Drive), then mark_listing_added_to_drive. Everything is checked (separator,
+    photos, category/deal folder, duplicate name) before anything is sent."""
     import viber_send
     import viber_ui
 
     plan = _check_new_listing(text, category, deal, folder_name, photo_paths, subfolder)
-    reply_text = added_to_drive_reply(plan["folder_name"])
-    gc_only = write_auth_problem() is not None
     if dry_run:
-        out = {"posted": False, "gc": LISTINGS_GC, "drive_folder": f"{plan['path']} / {plan['folder_name']}",
-               "doc": f"*{plan['folder_name']}", "photos": len(plan["photos"]),
-               "added_to_drive_reply": reply_text,
-               "note": "Nothing sent or created. Call again without dry_run."}
-        if gc_only:
-            out["drive"] = ("No Drive write sign-in on this PC: it will post to the GC only and "
-                            "return drive_todo for the Google Drive connector.")
-        return out
+        return {"posted": False, "gc": LISTINGS_GC, "drive_todo": drive_todo(plan, text, _today()),
+                "note": "Nothing sent or created. Call again without dry_run."}
 
-    if not gc_only:
-        # Get Drive write access BEFORE posting (may open the browser to sign in once): a post to
-        # the GC can't be undone, so a broken write sign-in must stop everything here.
-        _drive_write()
     opened = viber_send.search_and_open(LISTINGS_GC)
     if opened.get("matched", "").strip().casefold() != LISTINGS_GC.casefold():
         raise DriveError(f"Opened '{opened.get('matched')}' instead of '{LISTINGS_GC}'. Nothing sent.")
@@ -529,17 +456,13 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
             done["photos_verified"] = viber_ui.send_files(plan["photos"]).get("verified")
         viber_send.reply(GC_SEPARATOR)
         done["posted"] = True
-        if gc_only:
-            done["drive_todo"] = drive_todo(plan, text, _today())
-            done["next"] = ("Not in Drive yet. Create drive_todo with the Google Drive connector "
-                            "(photos via Chrome), then quote-reply. Don't re-run this tool.")
-            return done
-        done["drive"] = add_listing_to_drive(text, plan["parent_id"], plan["folder_name"], plan["photos"])
-        _quote_reply_posted(text, reply_text)
-        done["added_to_drive_reply"] = reply_text
     except Exception as e:
         done["STOP"] = (f"Stopped part-way: {e}. Everything listed above here is done — finish the "
                         "rest by hand, don't re-run (it would post the listing twice).")
+        return done
+    done["drive_todo"] = drive_todo(plan, text, _today())
+    done["next"] = ("Posted; not in Drive yet. Create drive_todo with the Google Drive connector "
+                    "(photos via Chrome), then call mark_listing_added_to_drive. Don't re-run this.")
     return done
 
 

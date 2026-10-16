@@ -500,32 +500,29 @@ def test_new_listing_dry_run_sends_nothing(monkeypatch):
     monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
     out = viber_drive.post_new_listing("t\n---\ni", "warehouse", "lease", "x", [], dry_run=True)
     assert calls == [] and out["posted"] is False
-    assert out["added_to_drive_reply"] == "Added to Drive [File name:*Quezon City, 860 Apolonio Samson]"
+    assert out["drive_todo"]["doc_name"] == "*Quezon City, 860 Apolonio Samson"
 
 
-def test_new_listing_stops_without_reposting_when_drive_fails(monkeypatch):
-    # A failure after the GC post must report what's done, not raise (a retry would post twice).
+def test_new_listing_stops_without_reposting_when_photos_fail(monkeypatch):
+    # A failure after the text is posted must report what's done, not raise (a retry would post twice).
     import sys
     import types
 
     import viber_drive
 
     sent = []
-    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
-    monkeypatch.setattr(viber_drive, "write_auth_problem", lambda: None)
-    monkeypatch.setattr(viber_drive, "_drive_write", lambda: None)
+    monkeypatch.setattr(viber_drive, "_check_new_listing", lambda *_: {**_plan(), "photos": ["a.jpg"]})
     monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
         search_and_open=lambda n: {"matched": "APR LISTING ONLY"},
         reply=lambda t: sent.append(t) or {"verified": True}))
-    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
 
     def boom(*_):
-        raise viber_drive.DriveError("403 insufficient permissions")
-    monkeypatch.setattr(viber_drive, "add_listing_to_drive", boom)
-    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
-    assert out["posted"] is True and "drive" not in out
-    assert "403" in out["STOP"] and "don't re-run" in out["STOP"]
-    assert sent == ["t\n---\ni", viber_drive.GC_SEPARATOR]
+        raise RuntimeError("attach button not found")
+    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace(send_files=boom))
+    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", ["a.jpg"])
+    assert "posted" not in out and "drive_todo" not in out
+    assert "attach button" in out["STOP"] and "don't re-run" in out["STOP"]
+    assert sent == ["t\n---\ni"]
 
 
 def test_new_listing_refuses_wrong_chat(monkeypatch):
@@ -537,7 +534,6 @@ def test_new_listing_refuses_wrong_chat(monkeypatch):
 
     sent = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
-    monkeypatch.setattr(viber_drive, "_drive_write", lambda: None)
     monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
         search_and_open=lambda n: {"matched": "APR LISTINGS ARCHIVE"}, reply=sent.append))
     monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
@@ -546,49 +542,11 @@ def test_new_listing_refuses_wrong_chat(monkeypatch):
     assert sent == []
 
 
-def test_drive_write_never_uses_the_service_account(monkeypatch, tmp_path):
-    # 2026-10-16: writes went through the service account (0 bytes of Drive storage), so the
-    # folder was created but the doc upload failed with 403 storageQuotaExceeded.
-    import pytest
-    import viber_drive
-
-    sa = tmp_path / "google_service_account.json"
-    sa.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(viber_drive, "SERVICE_ACCOUNT_FILE", sa)
-    monkeypatch.setattr(viber_drive, "CLIENT_FILE", tmp_path / "missing_client.json")
-    monkeypatch.setattr(viber_drive, "WRITE_TOKEN_FILE", tmp_path / "missing_token.json")
-    monkeypatch.setattr(viber_drive, "_write_service", None)
-    with pytest.raises(viber_drive.DriveError, match="service account has no Drive storage"):
-        viber_drive._drive_write()
-    assert "OAuth client" in viber_drive.write_auth_problem()
-
-
-def test_new_listing_posts_nothing_when_drive_write_is_unusable(monkeypatch):
-    import sys
-    import types
-
-    import pytest
-    import viber_drive
-
-    # The OAuth client file is there but the sign-in fails: stop before posting anything.
-    sent = []
-    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
-    monkeypatch.setattr(viber_drive, "write_auth_problem", lambda: None)
-
-    def no_auth():
-        raise viber_drive.DriveError("Drive write sign-in expired")
-    monkeypatch.setattr(viber_drive, "_drive_write", no_auth)
-    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
-        search_and_open=sent.append, reply=sent.append))
-    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
-    with pytest.raises(viber_drive.DriveError, match="expired"):
-        viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
-    assert sent == []
-
-
-def test_new_listing_without_oauth_client_posts_to_gc_and_hands_drive_to_connector(monkeypatch):
-    # No OAuth client on this PC (Cloud console needs 2SV the account owner can't do): posting
-    # must still work, with the Drive part returned for the Google Drive connector.
+def test_new_listing_posts_to_gc_and_hands_drive_to_the_connector(monkeypatch):
+    # 2026-10-16: Drive writes went through the service account (0 bytes of storage), so the
+    # folder was created but the doc upload failed with 403 storageQuotaExceeded, leaving an empty
+    # folder. The server no longer writes to Drive and needs no OAuth client: it posts to the GC
+    # and returns drive_todo for Claude's Google Drive connector.
     import sys
     import types
 
@@ -597,62 +555,45 @@ def test_new_listing_without_oauth_client_posts_to_gc_and_hands_drive_to_connect
     sent = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", lambda *_: {
         **_plan(), "photos": ["C:/p/a.JPG", "C:/p/b.png"]})
-    monkeypatch.setattr(viber_drive, "write_auth_problem", lambda: "not set up")
-
-    def no_drive(*_):
-        raise AssertionError("must not touch Drive")
-    monkeypatch.setattr(viber_drive, "_drive_write", no_drive)
-    monkeypatch.setattr(viber_drive, "add_listing_to_drive", no_drive)
-    monkeypatch.setattr(viber_drive, "_quote_reply_posted", no_drive)
+    monkeypatch.setattr(viber_drive, "_drive", lambda: (_ for _ in ()).throw(AssertionError("no Drive")))
     monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
         search_and_open=lambda n: {"matched": "APR LISTING ONLY"},
         reply=lambda t: sent.append(t) or {"verified": True}))
     monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace(
         send_files=lambda ps: sent.append(ps) or {"verified": True}))
     out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", ["a", "b"])
-    assert out["posted"] is True and "STOP" not in out and "drive" not in out
+    assert out["posted"] is True and "STOP" not in out
     assert sent == ["t\n---\ni", ["C:/p/a.JPG", "C:/p/b.png"], viber_drive.GC_SEPARATOR]
     todo = out["drive_todo"]
     assert todo["parent_folder_id"] == "d"
+    assert todo["folder_name"] == "Quezon City, 860 Apolonio Samson"
     assert todo["doc_name"] == "*Quezon City, 860 Apolonio Samson"
     assert todo["doc_text"].startswith("t\n---\ni\n\nAdded to Drive: ")
     assert todo["photos"] == {"C:/p/a.JPG": "AlphaPremier_Photo_01.jpg",
                               "C:/p/b.png": "AlphaPremier_Photo_02.png"}
-    assert "Added to Drive [File name:*Quezon City, 860 Apolonio Samson]" in todo["then"]
+    assert not hasattr(viber_drive, "_drive_write")
 
 
-def test_failed_drive_upload_trashes_the_half_made_folder(monkeypatch):
-    # The storageQuotaExceeded failure left an empty listing folder behind, which then blocks
-    # a retry as "already exists".
-    import pytest
+def test_mark_added_to_drive_quote_replies_the_post(monkeypatch):
+    import sys
+    import types
+
     import viber_drive
 
-    calls = []
-
-    class Req:
-        def __init__(self, result):
-            self.result = result
-
-        def execute(self):
-            if isinstance(self.result, Exception):
-                raise self.result
-            return self.result
-
-    class Files:
-        def create(self, body, **kw):
-            calls.append(("create", body["name"]))
-            if body.get("mimeType") == viber_drive.FOLDER:
-                return Req({"id": "new", "webViewLink": "l"})
-            return Req(RuntimeError("403 storageQuotaExceeded"))
-
-        def update(self, fileId, body, **kw):
-            calls.append(("update", fileId, body))
-            return Req({})
-
-    monkeypatch.setattr(viber_drive, "_drive_write", lambda: type("D", (), {"files": lambda s: Files()})())
-    with pytest.raises(viber_drive.DriveError, match="moved to the trash"):
-        viber_drive.add_listing_to_drive("t\n---\ni", "parent", "Pasig, 300 Ugong", [])
-    assert calls[-1] == ("update", "new", {"trashed": True})
+    replies = []
+    post = "LOT FOR LEASE\n------\nOwner: x"
+    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
+        search_and_open=lambda n: {"matched": "APR LISTING ONLY"}))
+    monkeypatch.setitem(sys.modules, "viber_ocr", types.SimpleNamespace(scroll_and_read=lambda *a: None))
+    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace(
+        jump_to_latest=lambda: None,
+        list_messages=lambda: {"messages": [
+            {"n": 1, "from": "me", "kind": "text", "text": "-" * 39},
+            {"n": 2, "from": "me", "kind": "text", "text": post}]},
+        reply_to_message=lambda n, t: replies.append((n, t))))
+    out = viber_drive.mark_listing_added_to_drive(post, "Pasig, 1000 Kapitolyo")
+    assert replies == [(2, "Added to Drive [File name:*Pasig, 1000 Kapitolyo]")]
+    assert out["to_message"] == 2
 
 
 def test_lots_in_nested_group_folder_are_listed_and_reachable(monkeypatch):
