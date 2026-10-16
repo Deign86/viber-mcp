@@ -11,7 +11,7 @@ import server  # noqa: E402
 NON_TOOL_NAMES = {
     "client_text", "intro_message_first", "dry_run", "include_internal", "low_confidence", "confirmation_dialog_buttons",
     "gc_members.json", "listing_folder_id", "gc_name", "preview", "failed", "verified", "STOP",
-    "folder_id",
+    "folder_id", "photo_paths", "folder_name",
 }
 SNAKE = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 

@@ -459,3 +459,85 @@ def test_short_message_is_still_pressed_at_its_centre():
 
     m = {"kind": "text", "text": "ok", "rect": [600, 300, 700, 340], "view": (308, 143, 1100, 913)}
     assert viber_ui._press_point(m) == (650, 320)
+
+
+# ------------------------------------------------------------- posting new listings
+
+
+def test_new_listing_refuses_an_already_listed_folder(monkeypatch):
+    # The One Premier unit was already in Drive ("*Las Piñas, 60 Almanza Uno"); posting it again
+    # would have duplicated it in the listings GC and in Drive.
+    import pytest
+    import viber_drive
+
+    existing = [{"folder_id": "x", "name": "*Las Piñas, 60 Almanza Uno", "category": "COMMERCIAL SPACE",
+                 "deal": "For lease", "modified": "2026-10-13"}]
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "c", "name": "COMMERCIAL SPACE", "mimeType": viber_drive.FOLDER}] if fid == "root" else [
+        {"id": "d", "name": "For lease", "mimeType": viber_drive.FOLDER}])
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: existing)
+    text = "COMMERCIAL SPACE FOR RENT\n------\nOwner: Masters Tolentino"
+    with pytest.raises(viber_drive.DriveError, match="already exists"):
+        viber_drive._check_new_listing(text, "commercial space", "lease", "las piñas, 60 almanza uno", [])
+
+
+def _plan(*_):
+    return {"parent_id": "d", "path": "APR LISTING / WAREHOUSE / FOR LEASE/RENT",
+            "folder_name": "Quezon City, 860 Apolonio Samson", "photos": []}
+
+
+def test_new_listing_dry_run_sends_nothing(monkeypatch):
+    import sys
+    import types
+
+    import viber_drive
+
+    calls = []
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
+        search_and_open=calls.append, reply=calls.append))
+    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
+    out = viber_drive.post_new_listing("t\n---\ni", "warehouse", "lease", "x", [], dry_run=True)
+    assert calls == [] and out["posted"] is False
+    assert out["added_to_drive_reply"] == "Added to Drive [File name:*Quezon City, 860 Apolonio Samson]"
+
+
+def test_new_listing_stops_without_reposting_when_drive_fails(monkeypatch):
+    # A failure after the GC post must report what's done, not raise (a retry would post twice).
+    import sys
+    import types
+
+    import viber_drive
+
+    sent = []
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
+        search_and_open=lambda n: {"matched": "APR LISTING ONLY"},
+        reply=lambda t: sent.append(t) or {"verified": True}))
+    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
+
+    def boom(*_):
+        raise viber_drive.DriveError("403 insufficient permissions")
+    monkeypatch.setattr(viber_drive, "add_listing_to_drive", boom)
+    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
+    assert out["posted"] is True and "drive" not in out
+    assert "403" in out["STOP"] and "don't re-run" in out["STOP"]
+    assert sent == ["t\n---\ni", viber_drive.GC_SEPARATOR]
+
+
+def test_new_listing_refuses_wrong_chat(monkeypatch):
+    import sys
+    import types
+
+    import pytest
+    import viber_drive
+
+    sent = []
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
+        search_and_open=lambda n: {"matched": "APR LISTINGS ARCHIVE"}, reply=sent.append))
+    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
+    with pytest.raises(viber_drive.DriveError, match="Nothing sent"):
+        viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
+    assert sent == []

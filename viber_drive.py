@@ -27,6 +27,8 @@ _HERE = Path(__file__).resolve().parent
 _DATA = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "viber-mcp"
 CLIENT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_CLIENT", _HERE / "google_oauth_client.json"))
 TOKEN_FILE = _DATA / "google_token.json"
+WRITE_SCOPES = ["https://www.googleapis.com/auth/drive"]
+WRITE_TOKEN_FILE = _DATA / "google_token_write.json"
 SERVICE_ACCOUNT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_SERVICE_ACCOUNT",
                                            _DATA / "google_service_account.json"))
 CACHE_DIR = _DATA / "drive-cache"
@@ -34,6 +36,9 @@ CACHE_DIR = _DATA / "drive-cache"
 # Viber's own upload (it reads the file after the click) and left photos "not sent".
 KEEP_DOWNLOADS_DAYS = float(os.environ.get("VIBER_MCP_KEEP_DOWNLOADS_DAYS", "3"))
 LISTINGS_ROOT_NAME = os.environ.get("VIBER_MCP_LISTINGS_FOLDER", "APR LISTING")
+# The staff GC where new listings are posted (text, photos, separator, "Added to Drive" reply).
+LISTINGS_GC = os.environ.get("VIBER_MCP_LISTINGS_GC", "APR LISTING ONLY")
+GC_SEPARATOR = "-" * 39
 
 FOLDER = "application/vnd.google-apps.folder"
 GDOC = "application/vnd.google-apps.document"
@@ -43,6 +48,7 @@ _SEPARATOR = re.compile(r"^\s*[-_—–=]{3,}\s*$")  # a lone "—" (signature l
 _ALL = {"supportsAllDrives": True, "includeItemsFromAllDrives": True, "corpora": "allDrives"}
 
 _service = None
+_write_service = None
 _tree_cache: tuple[float, list[dict]] | None = None
 
 
@@ -53,20 +59,21 @@ class DriveError(Exception):
 # ------------------------------------------------------------------------------ auth
 
 
-def _creds():
+def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
     if SERVICE_ACCOUNT_FILE.exists():
-        # Read-only service account (created with gcloud); the listing folder is shared with it.
+        # Service account (created with gcloud); the listing folder is shared with it (as an
+        # editor if listings are to be added).
         from google.oauth2 import service_account
         return service_account.Credentials.from_service_account_file(
-            str(SERVICE_ACCOUNT_FILE), scopes=SCOPES)
+            str(SERVICE_ACCOUNT_FILE), scopes=scopes)
 
     creds = None
-    if TOKEN_FILE.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+    if token_file.exists():
+        creds = Credentials.from_authorized_user_file(str(token_file), scopes)
     if creds and creds.valid:
         return creds
     if creds and creds.expired and creds.refresh_token:
@@ -81,11 +88,11 @@ def _creds():
                 f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>), "
                 f"or add the OAuth client file as {CLIENT_FILE} (see README → Google Drive)."
             )
-        flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_FILE), SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_FILE), scopes)
         # Opens the browser once; the staff member signs in with their company Google account.
         creds = flow.run_local_server(port=0, open_browser=True, timeout_seconds=300)
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(creds.to_json(), encoding="utf-8")
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(creds.to_json(), encoding="utf-8")
     return creds
 
 
@@ -95,6 +102,17 @@ def _drive():
         from googleapiclient.discovery import build
         _service = build("drive", "v3", credentials=_creds(), cache_discovery=False)
     return _service
+
+
+def _drive_write():
+    """Drive with write access — only for adding listings. Its own token, so reading keeps
+    working with the read-only sign-in and the write sign-in is asked for only when needed."""
+    global _write_service
+    if _write_service is None:
+        from googleapiclient.discovery import build
+        _write_service = build("drive", "v3", credentials=_creds(WRITE_SCOPES, WRITE_TOKEN_FILE),
+                               cache_discovery=False)
+    return _write_service
 
 
 def sign_in() -> dict:
@@ -286,6 +304,165 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Fa
         prune_downloads()  # keep fresh photos (Viber may still be uploading); drop old ones
     return {"sent": True, "doc": listing["doc"], "text_verified": text_result.get("verified"),
             "photos_sent": len(paths), "photos_verified": files_result.get("verified")}
+
+
+# ------------------------------------------------------------- adding new listings
+
+
+def pick_folder(folders: list[dict], wanted: str, kind: str) -> dict:
+    """The one folder whose name is `wanted` (case-insensitive), else the one containing it
+    (so deal "LEASE" finds "FOR LEASE/RENT" and "SALE" finds "FOR SALE"). Raises if none or
+    several match."""
+    w = wanted.strip().casefold()
+    if not w:
+        raise DriveError(f"No {kind} given.")
+    exact = [f for f in folders if f["name"].strip().casefold() == w]
+    hits = exact or [f for f in folders if w in f["name"].casefold()]
+    names = ", ".join(sorted(f["name"] for f in folders))
+    if not hits:
+        raise DriveError(f"No {kind} folder matches '{wanted}'. Options: {names}")
+    if len(hits) > 1:
+        raise DriveError(f"'{wanted}' matches several {kind} folders "
+                         f"({', '.join(f['name'] for f in hits)}); be more specific.")
+    return hits[0]
+
+
+def listing_doc_text(text: str, added: str) -> str:
+    """The listing doc body: the posted text plus the 'Added to Drive: <date>' line staff add."""
+    text = text.strip()
+    if "added to drive" in text.casefold():
+        return text
+    return f"{text}\n\nAdded to Drive: {added}"
+
+
+def added_to_drive_reply(folder_name: str) -> str:
+    """The quote-reply staff post under a listing in the listings GC once it's in Drive."""
+    return f"Added to Drive [File name:*{folder_name.strip()}]"
+
+
+def _norm_message(text: str) -> str:
+    # Viber wraps numbers/links in Unicode isolate marks and may trim trailing spaces.
+    text = text.replace("⁨", "").replace("⁩", "").replace("\r\n", "\n")
+    return "\n".join(line.strip() for line in text.strip().split("\n"))
+
+
+def find_posted_message(messages: list[dict], text: str) -> int | None:
+    """n of MY newest visible text message equal to `text` (or, failing that, starting with its
+    first line), from list_messages output. None if it isn't on screen."""
+    want = _norm_message(text)
+    first = want.split("\n", 1)[0]
+    mine = [m for m in messages if m.get("from") == "me" and m.get("kind") == "text"]
+    for match in (lambda t: t == want, lambda t: t.split("\n", 1)[0] == first):
+        hits = [m["n"] for m in mine if match(_norm_message(m.get("text", "")))]
+        if hits:
+            return min(hits)
+    return None
+
+
+def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
+                       photo_paths: list[str]) -> dict:
+    """Validate a new listing and resolve its Drive parent folder. Changes nothing."""
+    split_listing(text)  # raises if there's no dashed separator between client and internal parts
+    folder_name = folder_name.strip()
+    if not folder_name or "," not in folder_name:
+        raise DriveError("folder_name must follow 'City, sqm Area' (e.g. 'Pasay City, 8, 12, 22 Malibay').")
+    photos = [Path(p).expanduser().resolve() for p in photo_paths]
+    missing = [str(p) for p in photos if not p.is_file()]
+    if missing:
+        raise DriveError(f"Photo file(s) not found: {', '.join(missing)}")
+    root = _listings_root()
+    cat = pick_folder([f for f in _children(root) if f["mimeType"] == FOLDER], category, "category")
+    dl = pick_folder([f for f in _children(cat["id"]) if f["mimeType"] == FOLDER], deal, "deal")
+    clash = [p for p in _property_folders()
+             if p["name"].strip().lstrip("*").strip().casefold() == folder_name.casefold()]
+    if clash:
+        raise DriveError(f"A listing folder named '{folder_name}' already exists "
+                         f"({clash[0]['category']} / {clash[0]['deal']}) — it may already be posted. "
+                         "Check before adding it again.")
+    return {"parent_id": dl["id"], "path": f"{LISTINGS_ROOT_NAME} / {cat['name']} / {dl['name']}",
+            "folder_name": folder_name, "photos": [str(p) for p in photos]}
+
+
+def add_listing_to_drive(text: str, parent_id: str, folder_name: str, photos: list[str]) -> dict:
+    """Create <parent>/<folder_name>/ with the listing doc '*<folder_name>' and the photos."""
+    import mimetypes
+    from datetime import date
+
+    from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
+
+    global _tree_cache
+    drive = _drive_write()
+    folder = drive.files().create(
+        body={"name": folder_name, "mimeType": FOLDER, "parents": [parent_id]},
+        fields="id,webViewLink", supportsAllDrives=True).execute()
+    today = date.today()
+    body = listing_doc_text(text, f"{today:%B} {today.day}, {today.year}")
+    doc = drive.files().create(
+        body={"name": f"*{folder_name}", "mimeType": GDOC, "parents": [folder["id"]]},
+        media_body=MediaIoBaseUpload(io.BytesIO(body.encode("utf-8")), mimetype="text/plain"),
+        fields="id", supportsAllDrives=True).execute()
+    uploaded = []
+    for i, p in enumerate(photos, 1):
+        ext = Path(p).suffix.lower() or ".jpg"
+        media = MediaFileUpload(p, mimetype=mimetypes.guess_type(p)[0] or "image/jpeg")
+        f = drive.files().create(
+            body={"name": f"AlphaPremier_Photo_{i:02d}{ext}", "parents": [folder["id"]]},
+            media_body=media, fields="id,name", supportsAllDrives=True).execute()
+        uploaded.append(f["name"])
+    _tree_cache = None  # the new folder must show up in find_listings right away
+    return {"folder_id": folder["id"], "link": folder.get("webViewLink"), "doc_id": doc["id"],
+            "photos": uploaded}
+
+
+def _quote_reply_posted(text: str, reply_text: str, tries: int = 8) -> dict:
+    """Quote-reply `reply_text` to my posted message `text` in the open chat, scrolling up to it."""
+    import viber_ocr
+    import viber_ui
+
+    viber_ui.jump_to_latest()
+    for _ in range(tries):
+        n = find_posted_message(viber_ui.list_messages()["messages"], text)
+        if n is not None:
+            return viber_ui.reply_to_message(n, reply_text)
+        viber_ocr.scroll_and_read("chat", "up", 10)
+    raise DriveError("Couldn't find the posted listing on screen to quote-reply to.")
+
+
+def post_new_listing(text: str, category: str, deal: str, folder_name: str,
+                     photo_paths: list[str], dry_run: bool = False) -> dict:
+    """Post a NEW listing the way staff do: in the listings GC (full text incl. the internal part
+    below the dashed line, then the photos, then a dashed separator), add it to Drive (folder +
+    '*' doc + photos), then quote-reply 'Added to Drive [File name:*<folder>]' to the post.
+    Everything is checked (separator, photos, category/deal folder, duplicate name) before
+    anything is sent or created."""
+    import viber_send
+    import viber_ui
+
+    plan = _check_new_listing(text, category, deal, folder_name, photo_paths)
+    reply_text = added_to_drive_reply(plan["folder_name"])
+    if dry_run:
+        return {"posted": False, "gc": LISTINGS_GC, "drive_folder": f"{plan['path']} / {plan['folder_name']}",
+                "doc": f"*{plan['folder_name']}", "photos": len(plan["photos"]),
+                "added_to_drive_reply": reply_text,
+                "note": "Nothing sent or created. Call again without dry_run."}
+
+    opened = viber_send.search_and_open(LISTINGS_GC)
+    if opened.get("matched", "").strip().casefold() != LISTINGS_GC.casefold():
+        raise DriveError(f"Opened '{opened.get('matched')}' instead of '{LISTINGS_GC}'. Nothing sent.")
+    done: dict = {"gc": LISTINGS_GC}
+    try:
+        done["text_verified"] = viber_send.reply(text.strip()).get("verified")
+        if plan["photos"]:
+            done["photos_verified"] = viber_ui.send_files(plan["photos"]).get("verified")
+        viber_send.reply(GC_SEPARATOR)
+        done["posted"] = True
+        done["drive"] = add_listing_to_drive(text, plan["parent_id"], plan["folder_name"], plan["photos"])
+        _quote_reply_posted(text, reply_text)
+        done["added_to_drive_reply"] = reply_text
+    except Exception as e:
+        done["STOP"] = (f"Stopped part-way: {e}. Everything listed above here is done — finish the "
+                        "rest by hand, don't re-run (it would post the listing twice).")
+    return done
 
 
 def remove_downloads(paths: list[str], cache_dir: Path | None = None) -> int:

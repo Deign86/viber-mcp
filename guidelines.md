@@ -48,6 +48,31 @@ Flow: `find_listings` (match the property asked about: location, type, sqm) → 
 chat → `send_listing` (text above the line + all photos together). Never use `include_internal=True`
 for anything that goes to a client. Never mix photos from a different listing.
 
+## Posting new listings (APR LISTING ONLY + Drive)
+"Send my completed listings to the listings GC / add them to Drive" → `post_new_listing` once per
+listing. It posts the full listing in APR LISTING ONLY (staff GC, so the internal part below the
+dashed line is included), the photos as one album, a dashed separator, creates the Drive folder
+(`category` / `deal` / `folder_name`) with the doc `*<folder_name>` and the photos, then
+quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
+- **Only listings marked complete** (address, final price, owner name and number on file). Skip
+  incomplete ones and say why.
+- **Check it isn't already posted:** `find_listings` for the same place/sqm and search the GC
+  (header 🔍) for its street/area. A listing already posted (even under an older folder name) is
+  skipped and reported, not posted again. The tool itself refuses an existing folder name.
+- **Text format:** copy the staff format of recent posts — title, areas, rent, highlights,
+  amenities, the inquiry block, the dashed line, then commission, terms, notes, viewing, location,
+  map, foot traffic, nearby places, contact details, the Carousell/FB listing link, `Group N`,
+  `Intern: <name>`, `Date Listed: <date>`. Drop drafting notes ("COMPLETE: …") and private inbox
+  links.
+- **Folder name:** `City, sqm Area` like the rest of the Drive — several units → all sizes
+  (`Pasay City, 8, 12, 22 Malibay`); a warehouse → its floor area.
+- **Photos must be that listing's photos.** Match them by what they show (signage, floor plan,
+  unit sizes, the photos already quote-replied to that listing in the GC). If you can't tell which
+  listing a photo belongs to, ask. No photos → `photo_paths` empty; add them later only by hand.
+- Run with `dry_run=True` first if anything is uncertain. If it returns `STOP`, finish the listed
+  remaining steps by hand — never re-run it (that posts the listing twice).
+- The first run asks for a Google sign-in with edit access to Drive (once per PC).
+
 ## Client group chats (templates in APG CLIENTS)
 Staff post a client template (name, property type, SQM, budget, location, Viber number, often a
 listing, intern and date — typed in many formats) in the templates chat. "Make the GCs" →
@@ -122,7 +147,8 @@ each GC created and each template skipped or failed (with the reason).
   message box SENDS.
 - **Files/photos:** `send_files(paths, caption)` sends local files to the open chat as one batch
   (several photos = one album). Only send what the staff member named.
-- **Listings (Google Drive):** `find_listings` → `send_listing` (see Property listings).
+- **Listings (Google Drive):** `find_listings` → `send_listing` (see Property listings); new
+  listings → `post_new_listing` (see Posting new listings).
   `drive_sign_in` if Drive isn't signed in; `drive_search` / `drive_download` only for files outside
   the listings layout, and only when asked. Don't delete downloads right after sending (Viber may
   still be uploading); `send_listing`, client GCs and `clear_downloads` prune files older than a
