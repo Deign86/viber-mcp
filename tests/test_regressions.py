@@ -764,6 +764,28 @@ def test_confirm_in_drive_quote_replies_added_to_drive(monkeypatch):
     assert replies == [("LOT FOR LEASE\n---\ni", "Added to Drive [File name:*Cebu, 3,500 Tunga Moalboal]")]
 
 
+def test_new_listing_folder_gets_the_star_too(monkeypatch):
+    # 2026-10-16: the General Trias folder was created without the '*' — new listings carry the
+    # identifier on the folder name as well as the doc. confirm still finds it (with or without *).
+    import viber_drive
+
+    plan = {"parent_id": "P", "path": "x", "folder_name": "Cavite, 1,416 General Trias", "photos": []}
+    up = viber_drive.drive_upload_plan("A\n---\nB", plan, "October 16, 2026")
+    assert up["folder_name"] == up["doc_title"] == "*Cavite, 1,416 General Trias"
+
+    doc = {"name": "*Cavite, 1,416 General Trias", "mimeType": viber_drive.GDOC, "id": "doc"}
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [
+        {"folder_id": "F", "name": "*Cavite, 1,416 General Trias", "category": "C", "deal": "D"}])
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [doc])
+    monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "A\n---\nB")
+    replies = []
+    monkeypatch.setattr(viber_drive, "_quote_reply_posted", lambda t, r: replies.append(r))
+    _GC().install(monkeypatch)
+    for name in ("*Cavite, 1,416 General Trias", "Cavite, 1,416 General Trias"):
+        assert viber_drive.confirm_listing_in_drive(name, 0)["folder_id"] == "F"
+    assert replies == ["Added to Drive [File name:*Cavite, 1,416 General Trias]"] * 2
+
+
 # ------------------------------------------------------------- mentioning the client
 
 

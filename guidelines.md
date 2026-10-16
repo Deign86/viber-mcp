@@ -55,7 +55,8 @@ for anything that goes to a client. Never mix photos from a different listing.
    separator; returns `drive_upload`. Post every listing this way first so the GC reads
    text → photos → separator for each, with nothing in between.
 2. Upload with the **Google Drive connector** (never this server — its service account has no
-   storage): in `drive_upload.parent_folder_id` create the folder `folder_name`, the Google Doc
+   storage): in `drive_upload.parent_folder_id` create the folder `folder_name` (new listings
+   carry the `*` identifier on the folder name too, e.g. `*Cavite, 1,416 General Trias`), the Google Doc
    `doc_title` from `doc_text`, and the photos named as listed. If the connector can't take a
    photo (it needs the file inline), upload it with Drive in the browser into the same folder.
 3. `confirm_listing_in_drive(folder_name, photos)` — checks the folder, doc and photo count in
