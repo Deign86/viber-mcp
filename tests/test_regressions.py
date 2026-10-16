@@ -744,3 +744,125 @@ def test_confirm_in_drive_quote_replies_added_to_drive(monkeypatch):
     out = viber_drive.confirm_listing_in_drive("Cebu, 3,500 Tunga Moalboal", 2)
     assert out["confirmed"] is True
     assert replies == [("LOT FOR LEASE\n---\ni", "Added to Drive [File name:*Cebu, 3,500 Tunga Moalboal]")]
+
+
+# ------------------------------------------------------------- mentioning the client
+
+
+def test_unknown_picker_label_is_not_a_viber_name():
+    # 2026-10-16: an unsaved number showed as "Unknown" in the group picker, and the flow tried
+    # to mention "Unknown" ("'Unknown' isn't in this chat's mention list").
+    import viber_ui
+
+    for label in ("Unknown", "", "  ", "+639531830814", "0953 183 0814"):
+        assert viber_ui.is_placeholder_name(label), label
+    assert not viber_ui.is_placeholder_name("Anthony")
+
+
+def test_client_name_is_read_from_the_unsaved_number_banner():
+    import viber_ui
+
+    lines = ["Viber Out", "Anthony", "Active",
+             "Anthony +639531830814 is not in your contact list - save it using"]
+    assert viber_ui.name_from_contact_banner(lines, "+639531830814") == "Anthony"
+    # OCR letter-for-digit slips in the number still match; another number's banner doesn't.
+    ocr = ["Mark Anthony Santos +6395318308l4 is not in your contact list"]
+    assert viber_ui.name_from_contact_banner(ocr, "+639531830814") == "Mark Anthony Santos"
+    assert viber_ui.name_from_contact_banner(lines, "+639922064099") == ""
+
+
+def test_mention_must_be_the_whole_name():
+    import viber_ui
+
+    assert viber_ui.mention_inserted("Hello @Anthony", "Hello ", "Anthony")
+    assert viber_ui.mention_inserted("Hello @Anthony ", "Hello ", "Anthony")
+    assert not viber_ui.mention_inserted("Hello @Mark Anthony Santos", "Hello ", "Anthony")
+    assert not viber_ui.mention_inserted("Hello @Anth", "Hello ", "Anthony")
+    assert viber_ui.mention_inserted("DONE-X — @Jean Ashley existing client po.", "DONE-X — ",
+                                     "Jean Ashley", " existing client po.")
+
+
+class MentionBackend:
+    """Viber's mention list for a group with "Mark Anthony Santos" (the CEO) and the client
+    "Anthony": typing "@Anth" lists both, the CEO highlighted first; Down moves the highlight,
+    Tab inserts the highlighted name, a space closes the list. Sending with the list open sends
+    the highlighted person (what mentioned the CEO on 2026-10-16)."""
+
+    ROWS = ["Mark Anthony Santos", "Anthony"]
+    COMPOSE = (320, 900, 1000, 940)
+
+    def __init__(self):
+        self.value, self.open, self.highlight, self.sent = "", False, 0, None
+
+    class _Img:
+        width, height = 1100, 967
+
+    def screenshot(self):
+        return self._Img()
+
+    def elements(self):
+        return [{"type": "Pane", "class": "SplitView", "rect": (308, 0, 1100, 967)},
+                {"type": "Edit", "class": "QQuickTextEdit_QML_1", "rect": self.COMPOSE}]
+
+    def observe(self):
+        if not self.open:
+            return [{"text": "Hello everyone", "x": 0.5, "y": 0.5, "w": 0.1, "h": 0.02}]
+        return [{"text": r, "x": 0.35, "y": (850 - 40 * i) / 967, "w": 0.2, "h": 0.02}
+                for i, r in enumerate(self.ROWS)]
+
+    def click_compose(self):
+        pass
+
+    def delete(self):
+        self.value, self.open = "", False
+
+    def _value(self):
+        return self.value
+
+    def type_into_focus(self, text):
+        self.value += text
+        if "@" in text:
+            self.open, self.highlight = True, 0
+        elif text.startswith(" "):
+            self.open = False
+
+    def press_key(self, key, repeat=1):
+        if key == "down" and self.open:
+            self.highlight = (self.highlight + repeat) % len(self.ROWS)
+        elif key == "tab" and self.open:
+            self.value = self.value[:self.value.rindex("@")] + "@" + self.ROWS[self.highlight]
+        elif key == "backspace":
+            self.value = self.value[:-repeat]
+        elif key == "escape":
+            self.open = False
+
+    def click_at(self, x, y, button="left"):
+        pass
+
+    def click_send(self):
+        self.sent = "Hello @" + self.ROWS[self.highlight] if self.open else self.value
+
+
+def test_mention_picks_the_exact_member_not_a_longer_name_containing_it(monkeypatch):
+    import backends
+    import viber_ui
+
+    fake = MentionBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_ui.time, "sleep", lambda s: None)
+    out = viber_ui.mention("Anthony")
+    assert fake.sent == "Hello @Anthony "
+    assert out["mentioned"] == "Anthony" and not fake.open
+
+
+def test_mention_of_a_non_member_sends_nothing(monkeypatch):
+    import pytest
+    import backends
+    import viber_ui
+
+    fake = MentionBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_ui.time, "sleep", lambda s: None)
+    with pytest.raises(viber_ui.UIError, match="mention list"):
+        viber_ui.mention("Unknown")
+    assert fake.sent is None and fake.value == ""
