@@ -512,6 +512,7 @@ def test_new_listing_stops_without_reposting_when_drive_fails(monkeypatch):
 
     sent = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    monkeypatch.setattr(viber_drive, "_drive_write", lambda: None)
     monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
         search_and_open=lambda n: {"matched": "APR LISTING ONLY"},
         reply=lambda t: sent.append(t) or {"verified": True}))
@@ -535,9 +536,114 @@ def test_new_listing_refuses_wrong_chat(monkeypatch):
 
     sent = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    monkeypatch.setattr(viber_drive, "_drive_write", lambda: None)
     monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
         search_and_open=lambda n: {"matched": "APR LISTINGS ARCHIVE"}, reply=sent.append))
     monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
     with pytest.raises(viber_drive.DriveError, match="Nothing sent"):
         viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
     assert sent == []
+
+
+def test_drive_write_never_uses_the_service_account(monkeypatch, tmp_path):
+    # 2026-10-16: writes went through the service account (0 bytes of Drive storage), so the
+    # folder was created but the doc upload failed with 403 storageQuotaExceeded.
+    import pytest
+    import viber_drive
+
+    sa = tmp_path / "google_service_account.json"
+    sa.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(viber_drive, "SERVICE_ACCOUNT_FILE", sa)
+    monkeypatch.setattr(viber_drive, "CLIENT_FILE", tmp_path / "missing_client.json")
+    monkeypatch.setattr(viber_drive, "WRITE_TOKEN_FILE", tmp_path / "missing_token.json")
+    monkeypatch.setattr(viber_drive, "_write_service", None)
+    with pytest.raises(viber_drive.DriveError, match="service account has no Drive storage"):
+        viber_drive._drive_write()
+    assert "OAuth client" in viber_drive.write_auth_problem()
+
+
+def test_new_listing_posts_nothing_when_drive_write_is_unusable(monkeypatch):
+    import sys
+    import types
+
+    import pytest
+    import viber_drive
+
+    sent = []
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+
+    def no_auth():
+        raise viber_drive.DriveError("Adding listings to Drive isn't set up on this PC")
+    monkeypatch.setattr(viber_drive, "_drive_write", no_auth)
+    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
+        search_and_open=sent.append, reply=sent.append))
+    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
+    with pytest.raises(viber_drive.DriveError, match="isn't set up"):
+        viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
+    assert sent == []
+
+
+def test_failed_drive_upload_trashes_the_half_made_folder(monkeypatch):
+    # The storageQuotaExceeded failure left an empty listing folder behind, which then blocks
+    # a retry as "already exists".
+    import pytest
+    import viber_drive
+
+    calls = []
+
+    class Req:
+        def __init__(self, result):
+            self.result = result
+
+        def execute(self):
+            if isinstance(self.result, Exception):
+                raise self.result
+            return self.result
+
+    class Files:
+        def create(self, body, **kw):
+            calls.append(("create", body["name"]))
+            if body.get("mimeType") == viber_drive.FOLDER:
+                return Req({"id": "new", "webViewLink": "l"})
+            return Req(RuntimeError("403 storageQuotaExceeded"))
+
+        def update(self, fileId, body, **kw):
+            calls.append(("update", fileId, body))
+            return Req({})
+
+    monkeypatch.setattr(viber_drive, "_drive_write", lambda: type("D", (), {"files": lambda s: Files()})())
+    with pytest.raises(viber_drive.DriveError, match="moved to the trash"):
+        viber_drive.add_listing_to_drive("t\n---\ni", "parent", "Pasig, 300 Ugong", [])
+    assert calls[-1] == ("update", "new", {"trashed": True})
+
+
+def test_lots_in_nested_group_folder_are_listed_and_reachable(monkeypatch):
+    # Lots for lease live in CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT / LOT — one level deeper
+    # than category / deal, so they were invisible to find_listings and unreachable for posting.
+    import pytest
+    import viber_drive
+
+    F = viber_drive.FOLDER
+    folders = [
+        {"id": "root", "name": "APR LISTING", "parents": ["top"], "modifiedTime": "1"},
+        {"id": "c", "name": "CONDO / HOUSE AND LOT", "parents": ["root"], "modifiedTime": "1"},
+        {"id": "d", "name": "FOR LEASE/ FOR RENT", "parents": ["c"], "modifiedTime": "1"},
+        {"id": "lot", "name": "LOT", "parents": ["d"], "modifiedTime": "1"},
+        {"id": "p1", "name": "Taguig, 500 Bagumbayan", "parents": ["lot"], "modifiedTime": "2"},
+        {"id": "p2", "name": "Makati, 80 Poblacion", "parents": ["d"], "modifiedTime": "3"},
+    ]
+    monkeypatch.setattr(viber_drive, "_tree_cache", None)
+    monkeypatch.setattr(viber_drive, "_list", lambda q, fields="": folders)
+    found = {p["name"]: p["deal"] for p in viber_drive._property_folders()}
+    assert found == {"Taguig, 500 Bagumbayan": "FOR LEASE/ FOR RENT / LOT",
+                     "Makati, 80 Poblacion": "FOR LEASE/ FOR RENT"}
+
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": f["id"], "name": f["name"], "mimeType": F} for f in folders if fid in f["parents"]])
+    text = "LOT FOR LEASE\n------\nOwner: x"
+    plan = viber_drive._check_new_listing(text, "condo", "lease", "Pasig, 1000 Kapitolyo", [], "lot")
+    assert plan["parent_id"] == "lot"
+    assert plan["path"] == "APR LISTING / CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT / LOT"
+    with pytest.raises(viber_drive.DriveError, match="already exists"):
+        viber_drive._check_new_listing(text, "condo", "lease", "Taguig, 500 Bagumbayan", [], "lot")

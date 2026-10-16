@@ -375,15 +375,17 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Fa
 
 @mcp.tool()
 def post_new_listing(text: str, category: str, deal: str, folder_name: str,
-                     photo_paths: list[str], dry_run: bool = False) -> dict:
+                     photo_paths: list[str], dry_run: bool = False, subfolder: str = "") -> dict:
     """Post a NEW listing to the staff listings GC (APR LISTING ONLY) and add it to Drive.
 
     Does what staff do by hand: posts the full listing text (client part, dashed line, internal
     part) → the photos as one album → a dashed separator; creates the Drive folder
     <category>/<deal>/<folder_name> with the doc "*<folder_name>" and the photos; then quote-replies
     "Added to Drive [File name:*<folder_name>]" to the post. Refuses (before sending anything) if
-    the text has no dashed separator, a photo is missing, the category/deal folder isn't found, or
-    a listing folder with that name already exists. If it stops part-way it says what's done.
+    the text has no dashed separator, a photo is missing, the category/deal folder isn't found,
+    a listing folder with that name already exists, or Drive write sign-in isn't usable (it needs
+    a staff Google sign-in — the service account can't upload). If it stops part-way it says
+    what's done.
 
     Args:
         text: the full listing in the staff format (see other posts in the GC).
@@ -391,9 +393,13 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
         deal: "LEASE" or "SALE".
         folder_name: "City, sqm Area", e.g. "Pasay City, 8, 12, 22 Malibay".
         photo_paths: full paths of the listing's photos on this PC, in order (may be empty).
-        dry_run: True = check everything and show the plan; send/create nothing.
+        dry_run: True = check everything and show the plan; send/create nothing. Reports
+            `write_auth` if the Drive write sign-in isn't set up.
+        subfolder: optional folder inside the deal folder, e.g. "LOT" for lots under
+            CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT.
     """
-    return viber_drive.post_new_listing(text, category, deal, folder_name, photo_paths, dry_run)
+    return viber_drive.post_new_listing(text, category, deal, folder_name, photo_paths, dry_run,
+                                        subfolder)
 
 
 @mcp.tool()

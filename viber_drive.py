@@ -8,8 +8,13 @@ Auth (read-only Drive), first match wins:
 2. OAuth "desktop app" sign-in, once per Windows user, using `google_oauth_client.json` next to
    this file (git-ignored) or VIBER_MCP_GOOGLE_CLIENT; token kept in google_token.json there.
 
-Listing layout (APR LISTING): <root> / <CATEGORY> / <FOR LEASE/RENT | FOR SALE> / <property
-folder>, where a property folder holds one listing doc (Google Doc or .docx) plus its photos.
+Writing (post_new_listing) never uses the service account: service accounts have 0 bytes of
+Drive storage, so uploads fail with storageQuotaExceeded. It always uses the OAuth sign-in (a
+staff Google account, full `drive` scope, token google_token_write.json).
+
+Listing layout (APR LISTING): <root> / <CATEGORY> / <FOR LEASE/RENT | FOR SALE> / [<group> /]
+<property folder>, where a property folder holds one listing doc (Google Doc or .docx) plus its
+photos, and an optional group folder (e.g. "LOT", name without a comma) holds property folders.
 The doc's client-facing text sits ABOVE a typed dashed separator line; everything below it is
 internal and is never returned unless explicitly requested for staff eyes.
 """
@@ -59,12 +64,23 @@ class DriveError(Exception):
 # ------------------------------------------------------------------------------ auth
 
 
-def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE):
+def write_auth_problem() -> str | None:
+    """Why Drive WRITE access can't work on this PC, or None if it can (a saved write token or
+    the OAuth client file to sign in with). Checks files only — no network, no browser."""
+    if WRITE_TOKEN_FILE.exists() or CLIENT_FILE.exists():
+        return None
+    return ("Adding listings to Drive isn't set up on this PC: it needs a staff Google sign-in "
+            f"(the service account has no Drive storage, so it can't upload). Add the OAuth client "
+            f"file as {CLIENT_FILE} (see README → Google Drive), then try again.")
+
+
+def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
+           allow_service_account: bool = True):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    if SERVICE_ACCOUNT_FILE.exists():
+    if allow_service_account and SERVICE_ACCOUNT_FILE.exists():
         # Service account (created with gcloud); the listing folder is shared with it (as an
         # editor if listings are to be added).
         from google.oauth2 import service_account
@@ -83,6 +99,9 @@ def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE):
             creds = None
     if not creds or not creds.valid:
         if not CLIENT_FILE.exists():
+            if not allow_service_account:
+                raise DriveError(write_auth_problem() or "Drive write sign-in expired and the "
+                                 f"OAuth client file {CLIENT_FILE} is missing to sign in again.")
             raise DriveError(
                 "Google Drive isn't set up on this PC. Ask the admin for the service account key "
                 f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>), "
@@ -106,12 +125,13 @@ def _drive():
 
 def _drive_write():
     """Drive with write access — only for adding listings. Its own token, so reading keeps
-    working with the read-only sign-in and the write sign-in is asked for only when needed."""
+    working with the read-only sign-in and the write sign-in is asked for only when needed.
+    Never the service account: it has 0 bytes of storage, so uploads fail (storageQuotaExceeded)."""
     global _write_service
     if _write_service is None:
         from googleapiclient.discovery import build
-        _write_service = build("drive", "v3", credentials=_creds(WRITE_SCOPES, WRITE_TOKEN_FILE),
-                               cache_discovery=False)
+        creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, allow_service_account=False)
+        _write_service = build("drive", "v3", credentials=creds, cache_discovery=False)
     return _write_service
 
 
@@ -190,7 +210,9 @@ def _listings_root() -> str:
 
 
 def _property_folders() -> list[dict]:
-    """All property folders: root / category / deal-type / property. Cached for 5 minutes."""
+    """All property folders: root / category / deal-type / [group /] property, where a group is a
+    comma-less folder holding folders (e.g. CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT / LOT).
+    Cached for 5 minutes."""
     global _tree_cache
     if _tree_cache and time.time() - _tree_cache[0] < 300:
         return _tree_cache[1]
@@ -206,9 +228,15 @@ def _property_folders() -> list[dict]:
     for cat in kids.get(root, []):
         for deal in kids.get(cat["id"], []):
             for prop in kids.get(deal["id"], []):
-                out.append({"folder_id": prop["id"], "name": prop["name"],
-                            "category": cat["name"], "deal": deal["name"],
-                            "modified": prop["modifiedTime"]})
+                if "," not in prop["name"] and kids.get(prop["id"]):
+                    group = f"{deal['name']} / {prop['name']}"  # a group folder, e.g. LOT
+                    props = [(p, group) for p in kids[prop["id"]]]
+                else:
+                    props = [(prop, deal["name"])]
+                for p, deal_name in props:
+                    out.append({"folder_id": p["id"], "name": p["name"],
+                                "category": cat["name"], "deal": deal_name,
+                                "modified": p["modifiedTime"]})
     _tree_cache = (time.time(), out)
     return out
 
@@ -360,7 +388,7 @@ def find_posted_message(messages: list[dict], text: str) -> int | None:
 
 
 def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
-                       photo_paths: list[str]) -> dict:
+                       photo_paths: list[str], subfolder: str = "") -> dict:
     """Validate a new listing and resolve its Drive parent folder. Changes nothing."""
     split_listing(text)  # raises if there's no dashed separator between client and internal parts
     folder_name = folder_name.strip()
@@ -373,13 +401,18 @@ def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
     root = _listings_root()
     cat = pick_folder([f for f in _children(root) if f["mimeType"] == FOLDER], category, "category")
     dl = pick_folder([f for f in _children(cat["id"]) if f["mimeType"] == FOLDER], deal, "deal")
+    path = f"{LISTINGS_ROOT_NAME} / {cat['name']} / {dl['name']}"
+    if subfolder.strip():  # e.g. LOT under CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT
+        dl = pick_folder([f for f in _children(dl["id"]) if f["mimeType"] == FOLDER],
+                         subfolder, "subfolder")
+        path += f" / {dl['name']}"
     clash = [p for p in _property_folders()
              if p["name"].strip().lstrip("*").strip().casefold() == folder_name.casefold()]
     if clash:
         raise DriveError(f"A listing folder named '{folder_name}' already exists "
                          f"({clash[0]['category']} / {clash[0]['deal']}) — it may already be posted. "
                          "Check before adding it again.")
-    return {"parent_id": dl["id"], "path": f"{LISTINGS_ROOT_NAME} / {cat['name']} / {dl['name']}",
+    return {"parent_id": dl["id"], "path": path,
             "folder_name": folder_name, "photos": [str(p) for p in photos]}
 
 
@@ -397,18 +430,29 @@ def add_listing_to_drive(text: str, parent_id: str, folder_name: str, photos: li
         fields="id,webViewLink", supportsAllDrives=True).execute()
     today = date.today()
     body = listing_doc_text(text, f"{today:%B} {today.day}, {today.year}")
-    doc = drive.files().create(
-        body={"name": f"*{folder_name}", "mimeType": GDOC, "parents": [folder["id"]]},
-        media_body=MediaIoBaseUpload(io.BytesIO(body.encode("utf-8")), mimetype="text/plain"),
-        fields="id", supportsAllDrives=True).execute()
-    uploaded = []
-    for i, p in enumerate(photos, 1):
-        ext = Path(p).suffix.lower() or ".jpg"
-        media = MediaFileUpload(p, mimetype=mimetypes.guess_type(p)[0] or "image/jpeg")
-        f = drive.files().create(
-            body={"name": f"AlphaPremier_Photo_{i:02d}{ext}", "parents": [folder["id"]]},
-            media_body=media, fields="id,name", supportsAllDrives=True).execute()
-        uploaded.append(f["name"])
+    try:
+        doc = drive.files().create(
+            body={"name": f"*{folder_name}", "mimeType": GDOC, "parents": [folder["id"]]},
+            media_body=MediaIoBaseUpload(io.BytesIO(body.encode("utf-8")), mimetype="text/plain"),
+            fields="id", supportsAllDrives=True).execute()
+        uploaded = []
+        for i, p in enumerate(photos, 1):
+            ext = Path(p).suffix.lower() or ".jpg"
+            media = MediaFileUpload(p, mimetype=mimetypes.guess_type(p)[0] or "image/jpeg")
+            f = drive.files().create(
+                body={"name": f"AlphaPremier_Photo_{i:02d}{ext}", "parents": [folder["id"]]},
+                media_body=media, fields="id,name", supportsAllDrives=True).execute()
+            uploaded.append(f["name"])
+    except Exception as e:
+        # Don't leave a half-made folder behind (it would block a retry as "already exists").
+        # Trashed, not deleted, so it can still be restored.
+        try:
+            drive.files().update(fileId=folder["id"], body={"trashed": True},
+                                 supportsAllDrives=True).execute()
+        except Exception:
+            raise DriveError(f"{e} — and the half-made Drive folder '{folder_name}' couldn't be "
+                             "trashed; remove it by hand.") from e
+        raise DriveError(f"{e} — the half-made Drive folder was moved to the trash.") from e
     _tree_cache = None  # the new folder must show up in find_listings right away
     return {"folder_id": folder["id"], "link": folder.get("webViewLink"), "doc_id": doc["id"],
             "photos": uploaded}
@@ -429,7 +473,7 @@ def _quote_reply_posted(text: str, reply_text: str, tries: int = 8) -> dict:
 
 
 def post_new_listing(text: str, category: str, deal: str, folder_name: str,
-                     photo_paths: list[str], dry_run: bool = False) -> dict:
+                     photo_paths: list[str], dry_run: bool = False, subfolder: str = "") -> dict:
     """Post a NEW listing the way staff do: in the listings GC (full text incl. the internal part
     below the dashed line, then the photos, then a dashed separator), add it to Drive (folder +
     '*' doc + photos), then quote-reply 'Added to Drive [File name:*<folder>]' to the post.
@@ -438,14 +482,21 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
     import viber_send
     import viber_ui
 
-    plan = _check_new_listing(text, category, deal, folder_name, photo_paths)
+    plan = _check_new_listing(text, category, deal, folder_name, photo_paths, subfolder)
     reply_text = added_to_drive_reply(plan["folder_name"])
     if dry_run:
-        return {"posted": False, "gc": LISTINGS_GC, "drive_folder": f"{plan['path']} / {plan['folder_name']}",
-                "doc": f"*{plan['folder_name']}", "photos": len(plan["photos"]),
-                "added_to_drive_reply": reply_text,
-                "note": "Nothing sent or created. Call again without dry_run."}
+        out = {"posted": False, "gc": LISTINGS_GC, "drive_folder": f"{plan['path']} / {plan['folder_name']}",
+               "doc": f"*{plan['folder_name']}", "photos": len(plan["photos"]),
+               "added_to_drive_reply": reply_text,
+               "note": "Nothing sent or created. Call again without dry_run."}
+        problem = write_auth_problem()
+        if problem:
+            out["write_auth"] = problem
+        return out
 
+    # Get Drive write access BEFORE posting (may open the browser to sign in once): a post to
+    # the GC can't be undone, so an unusable write sign-in must stop everything here.
+    _drive_write()
     opened = viber_send.search_and_open(LISTINGS_GC)
     if opened.get("matched", "").strip().casefold() != LISTINGS_GC.casefold():
         raise DriveError(f"Opened '{opened.get('matched')}' instead of '{LISTINGS_GC}'. Nothing sent.")

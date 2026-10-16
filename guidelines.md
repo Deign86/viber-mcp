@@ -54,6 +54,11 @@ listing. It posts the full listing in APR LISTING ONLY (staff GC, so the interna
 dashed line is included), the photos as one album, a dashed separator, creates the Drive folder
 (`category` / `deal` / `folder_name`) with the doc `*<folder_name>` and the photos, then
 quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
+- **Lots for lease** go one level deeper: `category="CONDO / HOUSE AND LOT"`, `deal="LEASE"`,
+  `subfolder="LOT"`.
+- **Drive write needs a staff Google sign-in** (the service account can't upload — it has no
+  storage). If the tool or its dry run reports that write sign-in isn't set up, stop and tell the
+  staff member; nothing has been posted.
 - **Only listings marked complete** (address, final price, owner name and number on file). Skip
   incomplete ones and say why.
 - **Check it isn't already posted:** `find_listings` for the same place/sqm and search the GC
