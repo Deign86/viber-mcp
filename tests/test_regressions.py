@@ -435,6 +435,24 @@ def test_unsend_picks_one_to_one_delete_for_me_and_contact():
     assert _delete_menu_pick(["Delete without a trace"], False) is None
 
 
+def test_unsend_one_to_one_menu_with_isolate_marks():
+    # Live 2026-10-16: the real 1:1 menu wraps the contact name in U+2068/U+2069, and unsaved
+    # numbers show "Unknown". Unsend still failed with "too old to unsend for everyone".
+    from viber_ui import _delete_menu_pick
+    head = ["Reply", "Edit", "Copy message", "Select", "Translate", "Pin", "Forward",
+            "Delete for myself", "Delete without a trace"]
+    for name in ("Beatriz Alpha", "Unknown"):
+        item = f"Delete for me and ⁨{name}⁩"
+        menu = head + [item]
+        assert _delete_menu_pick(menu, True) == item
+        assert _delete_menu_pick(menu, False) == "Delete for myself"
+    # Same with a non-breaking space and a leading isolate mark on the whole label.
+    odd = "⁨Delete for me and ⁨Unknown⁩⁩"
+    assert _delete_menu_pick(head + [odd], True) == odd
+    # Never the myself / without-a-trace items for for_everyone=True.
+    assert _delete_menu_pick(head, True) is None
+
+
 # --------------------------------------------------------------- foreign numbers / placeholder names
 
 
