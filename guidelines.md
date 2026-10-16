@@ -121,6 +121,11 @@ each GC created and each template skipped or failed (with the reason).
 - **Existing client** (GC already exists): the tools don't make a duplicate; they quote-reply to the
   template @mentioning the employee who posted it ("DONE-<GC NAME> — @Employee existing client po,
   GC already created."). Report it as an existing client, not a failure.
+- **Client already in a GC under another name** (`EXISTING CLIENT — GC NOT CREATED`: Viber said
+  "You already have a group together!"): send the new listing in that GC, rename it to the new
+  inquiry (keep the client's name, new sqm/location), then quote-reply
+  "DONE-<NEW NAME> — existing client po, GC already created." to the template. Never unsend the
+  template and never pick "Create Another Group".
 
 ## Background operation (don't disturb the person using this PC)
 - All tools run in the background: they never move the cursor, use the keyboard, touch the
@@ -134,6 +139,9 @@ each GC created and each template skipped or failed (with the reason).
 
 ## How to work
 - **Inbox:** `list_chats` (unread counts are in the list), `scroll_chat_list` for more.
+- **Find a message across chats** ("who sent an LOI today?", a street name, a number):
+  `search_messages(query)` — Viber's message-search tab. `search_and_open` only matches chat
+  names. Then open each chat it lists to read the full message and its date.
 - **Read a chat:** `search_and_open(name)` → `list_messages` (exact text, mine/theirs, n=1 newest) or
   `read_open_chat`; `scroll_chat("up")` for older messages, `jump_to_latest` to get back to the
   newest ones (do this before reading or replying if the chat may be scrolled up). Use
