@@ -373,6 +373,20 @@ def test_unsend_picks_group_chat_delete_items():
     assert _delete_menu_pick([], True) is None
 
 
+def test_unsend_picks_one_to_one_delete_for_me_and_contact():
+    # 1:1 menus (2026-10-16, chat with Beatriz Alpha) have no plain "Delete" and no
+    # "everyone": the for-everyone item is "Delete for me and <contact>". Unsend failed with
+    # "too old to unsend" even for fresh messages. Never pick "Delete without a trace".
+    from viber_ui import _delete_menu_pick
+    one_to_one = ["Delete for myself", "Delete without a trace",
+                  "Delete for me and Beatriz Alpha", "Check for spam"]
+    assert _delete_menu_pick(one_to_one, True) == "Delete for me and Beatriz Alpha"
+    assert _delete_menu_pick(one_to_one, False) == "Delete for myself"
+    # Too old for everyone: only these remain — refuse rather than fall back to "without a trace".
+    assert _delete_menu_pick(["Delete for myself", "Delete without a trace"], True) is None
+    assert _delete_menu_pick(["Delete without a trace"], False) is None
+
+
 # --------------------------------------------------------------- foreign numbers / placeholder names
 
 
