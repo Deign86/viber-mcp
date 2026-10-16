@@ -484,60 +484,201 @@ def test_new_listing_refuses_an_already_listed_folder(monkeypatch):
 
 def _plan(*_):
     return {"parent_id": "d", "path": "APR LISTING / WAREHOUSE / FOR LEASE/RENT",
-            "folder_name": "Quezon City, 860 Apolonio Samson", "photos": []}
+            "folder_name": "Quezon City, 860 Apolonio Samson", "photos": ["C:/p/a.JPG", "C:/p/b.png"]}
 
 
-def test_new_listing_dry_run_sends_nothing(monkeypatch):
-    import sys
-    import types
+class _GC:
+    """Fake viber_send + viber_ui for the listings GC: records what is sent and shows my sent
+    texts back in list_messages (newest first), like Viber does."""
 
+    def __init__(self, matched="APR LISTING ONLY", echo=True, visible=()):
+        self.matched, self.echo, self.sent = matched, echo, []
+        self.visible = [{"from": "me", "kind": "text", "text": t} for t in visible]
+
+    def search_and_open(self, name):
+        return {"matched": self.matched}
+
+    def reply(self, text):
+        self.sent.append(text)
+        if self.echo:
+            self.visible.insert(0, {"from": "me", "kind": "text", "text": text})
+        return {"verified": False}  # reply's own check gives false negatives on long texts
+
+    def send_files(self, paths):
+        self.sent.append(list(paths))
+        return {"verified": True}
+
+    def jump_to_latest(self):
+        return {}
+
+    def list_messages(self):
+        return {"messages": [dict(m, n=i) for i, m in enumerate(self.visible, 1)]}
+
+    def install(self, monkeypatch):
+        import sys
+        import types
+
+        ns = types.SimpleNamespace(**{k: getattr(self, k) for k in (
+            "search_and_open", "reply", "send_files", "jump_to_latest", "list_messages")})
+        monkeypatch.setitem(sys.modules, "viber_send", ns)
+        monkeypatch.setitem(sys.modules, "viber_ui", ns)
+        return self
+
+
+def test_new_listing_dry_run_sends_nothing_and_plans_the_upload(monkeypatch):
     import viber_drive
 
-    calls = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
-    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
-        search_and_open=calls.append, reply=calls.append))
-    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
+    gc = _GC().install(monkeypatch)
     out = viber_drive.post_new_listing("t\n---\ni", "warehouse", "lease", "x", [], dry_run=True)
-    assert calls == [] and out["posted"] is False
+    assert gc.sent == [] and out["posted"] is False
     assert out["added_to_drive_reply"] == "Added to Drive [File name:*Quezon City, 860 Apolonio Samson]"
+    up = out["drive_upload"]
+    assert up["parent_folder_id"] == "d" and up["doc_title"] == "*Quezon City, 860 Apolonio Samson"
+    assert up["doc_text"].startswith("t\n---\ni\n\nAdded to Drive: ")
+    assert [p["name"] for p in up["photos"]] == ["AlphaPremier_Photo_01.jpg", "AlphaPremier_Photo_02.png"]
 
 
-def test_new_listing_stops_without_reposting_when_drive_fails(monkeypatch):
-    # A failure after the GC post must report what's done, not raise (a retry would post twice).
-    import sys
-    import types
-
+def test_new_listing_posts_text_photos_separator_and_never_uploads(monkeypatch):
+    # The Drive write ran as the read-only service account (0 bytes of storage): the folder was
+    # created, then the doc upload failed with storageQuotaExceeded. Uploads now go through the
+    # Drive connector; the server only posts and returns the plan.
     import viber_drive
 
-    sent = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
-    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
-        search_and_open=lambda n: {"matched": "APR LISTING ONLY"},
-        reply=lambda t: sent.append(t) or {"verified": True}))
-    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
+    gc = _GC().install(monkeypatch)
+    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", ["C:/p/a.JPG", "C:/p/b.png"])
+    assert out["posted"] is True and "STOP" not in out
+    assert gc.sent == ["t\n---\ni", ["C:/p/a.JPG", "C:/p/b.png"], viber_drive.GC_SEPARATOR]
+    assert out["drive_upload"]["parent_folder_id"] == "d"
+    assert not hasattr(viber_drive, "add_listing_to_drive") and not hasattr(viber_drive, "_drive_write")
 
-    def boom(*_):
-        raise viber_drive.DriveError("403 insufficient permissions")
-    monkeypatch.setattr(viber_drive, "add_listing_to_drive", boom)
-    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
-    assert out["posted"] is True and "drive" not in out
-    assert "403" in out["STOP"] and "don't re-run" in out["STOP"]
-    assert sent == ["t\n---\ni", viber_drive.GC_SEPARATOR]
+
+def test_new_listing_accepts_ocr_junk_after_the_gc_name(monkeypatch):
+    # search_and_open matched "APR LISTING ONLY w" (a stray tick); the exact check refused it.
+    import viber_drive
+
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    gc = _GC(matched="APR LISTING ONLY w").install(monkeypatch)
+    assert viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])["posted"] is True
+    assert gc.sent[0] == "t\n---\ni"
 
 
 def test_new_listing_refuses_wrong_chat(monkeypatch):
-    import sys
-    import types
-
     import pytest
     import viber_drive
 
-    sent = []
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
-    monkeypatch.setitem(sys.modules, "viber_send", types.SimpleNamespace(
-        search_and_open=lambda n: {"matched": "APR LISTINGS ARCHIVE"}, reply=sent.append))
-    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace())
-    with pytest.raises(viber_drive.DriveError, match="Nothing sent"):
+    for other in ("APR LISTINGS ARCHIVE", "APR LISTING ONLY OLD"):
+        gc = _GC(matched=other).install(monkeypatch)
+        with pytest.raises(viber_drive.DriveError, match="Nothing sent"):
+            viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
+        assert gc.sent == []
+
+
+def test_new_listing_refuses_a_repost(monkeypatch):
+    import pytest
+    import viber_drive
+
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    gc = _GC(visible=["t\n---\ni"]).install(monkeypatch)
+    with pytest.raises(viber_drive.DriveError, match="already the latest post"):
         viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
-    assert sent == []
+    assert gc.sent == []
+
+
+def test_new_listing_stops_before_photos_if_the_text_did_not_post(monkeypatch):
+    # A failure after the first send must report what's done, not raise (a retry would post twice).
+    import viber_drive
+
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    gc = _GC(echo=False).install(monkeypatch)
+    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", ["C:/p/a.JPG"])
+    assert out["posted"] is False and "drive_upload" not in out
+    assert "don't re-run" in out["STOP"]
+    assert gc.sent == ["t\n---\ni"]
+
+
+def test_lots_in_a_group_folder_are_listings(monkeypatch):
+    # Lots for lease live one level deeper (CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT / LOT /
+    # <property>); they were invisible to find_listings and to the duplicate check.
+    import viber_drive
+
+    def f(i, name, parent):
+        return {"id": i, "name": name, "parents": [parent], "modifiedTime": "2026-10-16"}
+    folders = [f("root", "APR LISTING", "x"), f("cat", "CONDO / HOUSE AND LOT", "root"),
+               f("deal", "FOR LEASE/ FOR RENT", "cat"), f("grp", "LOT", "deal"),
+               f("p1", "Cebu, 3,500 Tunga Moalboal", "grp"),
+               f("p2", "Cavite (Sabutan Silang Cavite)", "deal")]
+    monkeypatch.setattr(viber_drive, "_tree_cache", None)
+    monkeypatch.setattr(viber_drive, "_list", lambda q, fields="": folders)
+    got = {p["name"]: p["deal"] for p in viber_drive._property_folders()}
+    assert got == {"Cebu, 3,500 Tunga Moalboal": "FOR LEASE/ FOR RENT / LOT",
+                   "Cavite (Sabutan Silang Cavite)": "FOR LEASE/ FOR RENT"}
+
+
+def test_new_listing_can_target_a_group_subfolder(monkeypatch):
+    import viber_drive
+
+    tree = {"root": [{"id": "cat", "name": "CONDO / HOUSE AND LOT"}],
+            "cat": [{"id": "deal", "name": "FOR LEASE/ FOR RENT"}, {"id": "s", "name": "FOR SALE"}],
+            "deal": [{"id": "lot", "name": "LOT"}, {"id": "ch", "name": "CONDO / HOUSE"}]}
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        dict(c, mimeType=viber_drive.FOLDER) for c in tree.get(fid, [])])
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [])
+    plan = viber_drive._check_new_listing("LOT\n---\ni", "condo / house and lot", "lease",
+                                          "Cebu, 3,500 Tunga Moalboal", [], subfolder="lot")
+    assert plan["parent_id"] == "lot"
+    assert plan["path"] == "APR LISTING / CONDO / HOUSE AND LOT / FOR LEASE/ FOR RENT / LOT"
+
+
+def test_drive_listing_queries_retry_transient_errors(monkeypatch):
+    # find_listings failed with WinError 10053 (connection aborted) and the folder walk with an
+    # HTTP 500 "Internal Error"; the client only retries those when asked to.
+    import types
+
+    import viber_drive
+
+    seen = []
+    req = types.SimpleNamespace(execute=lambda num_retries=0: seen.append(num_retries) or {"files": []})
+    files = types.SimpleNamespace(list=lambda **kw: req)
+    monkeypatch.setattr(viber_drive, "_drive", lambda: types.SimpleNamespace(files=lambda: files))
+    viber_drive._list("trashed = false")
+    assert seen == [viber_drive.RETRIES] and viber_drive.RETRIES >= 3
+
+
+def _drive_folder(monkeypatch, files):
+    import viber_drive
+
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [
+        {"folder_id": "F", "name": "Cebu, 3,500 Tunga Moalboal", "category": "C", "deal": "D"}])
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: files)
+    monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "LOT FOR LEASE\n---\ni")
+    replies = []
+    monkeypatch.setattr(viber_drive, "_quote_reply_posted", lambda t, r: replies.append((t, r)))
+    return replies
+
+
+def test_confirm_in_drive_posts_nothing_until_the_photos_are_there(monkeypatch):
+    import pytest
+    import viber_drive
+
+    doc = {"name": "*Cebu, 3,500 Tunga Moalboal", "mimeType": viber_drive.GDOC, "id": "doc"}
+    replies = _drive_folder(monkeypatch, [doc, {"name": "p1.jpg", "mimeType": "image/jpeg"}])
+    _GC().install(monkeypatch)
+    with pytest.raises(viber_drive.DriveError, match="1 photo"):
+        viber_drive.confirm_listing_in_drive("Cebu, 3,500 Tunga Moalboal", 2)
+    assert replies == []
+
+
+def test_confirm_in_drive_quote_replies_added_to_drive(monkeypatch):
+    import viber_drive
+
+    doc = {"name": "*Cebu, 3,500 Tunga Moalboal", "mimeType": viber_drive.GDOC, "id": "doc"}
+    imgs = [{"name": f"p{i}.jpg", "mimeType": "image/jpeg"} for i in (1, 2)]
+    replies = _drive_folder(monkeypatch, [doc, *imgs])
+    _GC(matched="APR LISTING ONLY w").install(monkeypatch)
+    out = viber_drive.confirm_listing_in_drive("Cebu, 3,500 Tunga Moalboal", 2)
+    assert out["confirmed"] is True
+    assert replies == [("LOT FOR LEASE\n---\ni", "Added to Drive [File name:*Cebu, 3,500 Tunga Moalboal]")]

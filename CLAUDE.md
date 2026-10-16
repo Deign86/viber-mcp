@@ -171,19 +171,28 @@ Status:
   (`VIBER_MCP_KEEP_DOWNLOADS_DAYS`; never delete right after sending — that raced Viber's upload and
   left photos "not sent"). `remove_downloads` /
   `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`
-  (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / `City, sqm Area`
-  folder with one Google Doc (title starts with `*`) plus JPGs. The doc is split at the typed dashed
+  (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / [group, e.g.
+  `LOT` — a comma-less folder with subfolders, `_is_subfolder_group`] / `City, sqm Area`
+  folder with one Google Doc (title starts with `*`) plus JPGs. Drive calls use
+  `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common. The doc is split at the typed dashed
   line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in
   code unless `get_listing(include_internal=True)`. `send_listing` sends the text, then the photos via
   `send_files`; never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
-  `send_listing`, `drive_search`, `drive_download`, `post_new_listing`.
-- `post_new_listing` (viber_drive.py) is the only Drive WRITE path: it validates everything first
-  (separator, photos, category/deal folder via `pick_folder`, no existing folder of that name), then
-  posts text → photos → dashed separator in `VIBER_MCP_LISTINGS_GC` (default `APR LISTING ONLY`),
-  creates `<category>/<deal>/<City, sqm Area>/` with the doc `*<name>` + `AlphaPremier_Photo_NN`
-  photos, and quote-replies `Added to Drive [File name:*<name>]` (found via `find_posted_message`,
-  which strips Viber's U+2068/U+2069 isolate marks). Write access uses its own token
-  (`google_token_write.json`, full `drive` scope) so the read-only sign-in is untouched. A failure
-  after the GC post returns `STOP` with what's done instead of raising — never re-run it.
+  `send_listing`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`.
+- **This server never writes to Drive.** Its Google identity is the read-only service account
+  (`viber-drive-reader@apg-viber-assistant.iam.gserviceaccount.com`, gcloud project
+  `apg-viber-assistant`); service accounts have 0 bytes of storage, so uploads failed with
+  `storageQuotaExceeded` after creating an empty folder. Uploads go through the Google Drive
+  connector (thealphapremiergroup@gmail.com).
+- `post_new_listing` (viber_drive.py) validates everything first (separator, photos,
+  category/deal[/subfolder] via `pick_folder`, no existing folder of that name), opens
+  `VIBER_MCP_LISTINGS_GC` (default `APR LISTING ONLY`; `is_listings_gc` tolerates OCR junk like a
+  trailing "w"), refuses if the listing is already the latest post, posts the text, confirms it is
+  on screen (`find_posted_message`, which strips Viber's U+2068/U+2069 isolate marks — `reply`'s
+  `verified` gives false negatives on long texts), then photos → dashed separator, and returns
+  `drive_upload` (parent folder id, folder name, doc title/text with `Added to Drive: <date>`,
+  `AlphaPremier_Photo_NN` names). `confirm_listing_in_drive` checks folder/doc/photo count in Drive,
+  then quote-replies `Added to Drive [File name:*<name>]`. A failure after the first GC send returns
+  `STOP` with what's done instead of raising — never re-run it.
 - Test any tool with `uv run client.py call <tool> '<json>'`; element ids from `list_elements`
   only live within one server process (each `client.py` call starts a new one).
