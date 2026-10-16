@@ -127,6 +127,7 @@ def _messages(elements: list[dict]) -> list[dict]:
     if chat is None:
         raise UIError("No chat is open in Viber.")
     own_left = chat["rect"][0] + (chat["rect"][2] - chat["rect"][0]) * 0.25
+    view = _feed_view(elements, chat)
     by_parent: dict[int, list[dict]] = {}
     for el in elements:
         if el["parent"] is not None:
@@ -144,6 +145,7 @@ def _messages(elements: list[dict]) -> list[dict]:
             "rect": rect,
             "image_rect": image_el["rect"] if image_el else None,
             "like_rect": like["rect"] if like else None,
+            "view": view,
         }
 
     def is_text(e):
@@ -372,12 +374,31 @@ def _wait_preview():
     raise UIError("Viber's file preview didn't appear.")
 
 
+def _feed_view(elements: list[dict], chat: dict) -> tuple[float, float, float, float]:
+    """The on-screen part of the message feed: the chat pane minus its header bar and the
+    message box row. UIA reports full rects for messages scrolled partly out of view."""
+    l, t, r, b = chat["rect"]
+    compose = next((e for e in elements if e["type"] == "Edit" and e["class"].startswith("QQuickTextEdit")
+                    and t < e["rect"][1] < b), None)
+    return l, t + 72, r, (compose["rect"][1] - 12) if compose else b
+
+
 def _press_point(m: dict) -> tuple[float, float]:
-    """Where to click/right-click a message: its text, or the picture above "Remix image"."""
+    """Where to click/right-click a message: its text, or the picture above "Remix image".
+    A message taller than the feed (long listing) has its centre off-screen, so then press
+    inside the visible part instead: near its left edge (away from the timestamp), halfway
+    down (clear of the reminder banner and the reply bar that can overlay the feed's ends)."""
+    vl, vt, vr, vb = m.get("view") or (float("-inf"), float("-inf"), float("inf"), float("inf"))
     if m["kind"] == "image" and not m["text"]:
         l, t, _, _ = m["image_rect"]
-        return l + 60, t - 60
-    return _mid(m["rect"])
+        return l + 60, min(max(t - 60, vt + 10), vb - 10)
+    l, t, r, b = m["rect"]
+    if t >= vt and b <= vb:
+        return _mid(m["rect"])
+    top, bottom = max(t, vt), min(b, vb)
+    if bottom <= top:
+        raise UIError("That message is scrolled out of view — scroll_chat to bring it on screen.")
+    return l + min(40, (r - l) / 2), (top + bottom) / 2
 
 
 def _message(n: int) -> dict:
@@ -839,9 +860,7 @@ def unsend_message(text: str | None = None, n: int | None = None,
     else:
         raise UIError("Say which message: text=... or n=... (see list_messages).")
 
-    l, t, r, bt = target["rect"] if target["kind"] == "text" else target["image_rect"]
-    cx, cy = ((l + r) / 2, (t + bt) / 2) if target["kind"] == "text" else (l + 60, t - 60)
-    b.click_at(cx, cy, button="right")
+    b.click_at(*_press_point(target), button="right")
     time.sleep(0.8)
 
     # Only the context-menu item (MenuItem), never the info panel's "Delete" chat button.

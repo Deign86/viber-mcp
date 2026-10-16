@@ -392,3 +392,70 @@ def test_name_not_provided_falls_back_to_company():
     assert "Tpehcare" in logic.intro_message(f)
     f2 = dict(f, company="")
     assert "name missing" in logic.gc_name(f2)["uncertain"]
+
+
+# ------------------------------------------------- right-clicking a message taller than the feed
+
+
+class MenuBackend:
+    """A chat with one long listing whose top is scrolled above the pane; right-clicking it
+    opens the message menu only when the click lands on its visible part."""
+
+    PANE = [308, 71, 1100, 959]             # header bar: 71..143
+    COMPOSE = [400, 925, 730, 941]          # feed ends just above the message box
+    LONG = [600, -590, 1000, 790]           # centre (y=100) is under the header
+
+    def __init__(self):
+        self.clicks = []
+        self.menu_open = False
+
+    def elements(self):
+        def el(kind, cls, rect, parent=None, text="", name=""):
+            return {"type": kind, "name": name, "class": cls, "text": text, "parent": parent, "rect": rect}
+        out = [el("Pane", "StackView", self.PANE),
+               el("Edit", "QQuickTextEdit", self.COMPOSE),
+               el("Group", "FeedDelegate", [308, -600, 1100, 800], parent=0),
+               el("Text", "TextEditItem", self.LONG, parent=2, text="FOR LEASE\n" * 60)]
+        if self.menu_open:
+            out += [el("MenuItem", "MenuItem", [700, 300, 800, 320], name=n) for n in ("Reply", "Delete")]
+        return out
+
+    def visible(self, x, y):
+        l, t, r, b = self.LONG
+        return l <= x <= r and max(t, self.PANE[1] + 72) <= y <= min(b, self.COMPOSE[1])
+
+    def click_at(self, x, y, button="left"):
+        self.clicks.append((x, y, button))
+        if button == "right":
+            self.menu_open = self.visible(x, y)
+
+    def press_key(self, key):
+        self.menu_open = False
+
+
+def test_long_message_is_right_clicked_inside_its_visible_part(monkeypatch):
+    # reply_to_message(n=2) on a long listing raised "'Reply' isn't offered ... Available:" with an
+    # empty menu: the right-click went to the message's centre, which was above the chat pane.
+    import backends
+    import viber_ui
+
+    fake = MenuBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_ui.time, "sleep", lambda s: None)
+    result = viber_ui.message_action(1, "Reply")
+    assert result["chose"] == "Reply"
+    x, y, button = fake.clicks[0]
+    assert button == "right" and fake.visible(x, y)
+
+    fake.clicks.clear()
+    fake.menu_open = False
+    viber_ui.unsend_message(n=1)
+    x, y, button = fake.clicks[0]
+    assert button == "right" and fake.visible(x, y)
+
+
+def test_short_message_is_still_pressed_at_its_centre():
+    import viber_ui
+
+    m = {"kind": "text", "text": "ok", "rect": [600, 300, 700, 340], "view": (308, 143, 1100, 913)}
+    assert viber_ui._press_point(m) == (650, 320)
