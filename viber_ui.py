@@ -742,44 +742,139 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
             "client_display_name": client_display}
 
 
+_ISOLATES = str.maketrans("", "", "⁨⁩")
+
+
+def is_placeholder_name(name: str) -> bool:
+    """A picker label that isn't the person's Viber name: blank, "Unknown", or just a number."""
+    n = _norm(name)
+    return n in ("", "unknown", "unknowncontact") or re.fullmatch(r"[\d\s+()-]+", name.strip()) is not None
+
+
+def name_from_contact_banner(lines: list[str], number: str) -> str:
+    """The Viber name an unsaved number's 1:1 chat shows in its banner
+    "<Name> +63953… is not in your contact list". "" unless the banner is for `number`."""
+    for t in lines:
+        m = re.match(r"\s*(.+?)\s+(\+?[\dOoIl|SB][\dOoIl|SB ]{8,}?)\s+is not in your contact",
+                      t.translate(_ISOLATES), re.I)
+        digits = "".join(ch for ch in m.group(2).translate(_DIGIT_FOLD) if ch.isdigit()) if m else ""
+        if digits and digits[-10:] == number[-10:]:
+            return m.group(1).strip()
+    return ""
+
+
+def mention_inserted(value: str, before: str, name: str, after: str = "") -> bool:
+    """Is the message box exactly before + @name (+ after)? A whole-name match: Viber's mention
+    list also offers members whose name merely contains it ("Mark Anthony Santos" for
+    "Anthony"), and inserting one of those mentions the wrong person."""
+    v = value.translate(_ISOLATES).rstrip()
+    if not v.startswith(before):
+        return False
+    rest = v[len(before):]
+    tail = after.strip()
+    if tail:
+        if not rest.endswith(tail):
+            return False
+        rest = rest[:-len(tail)]
+    return rest.lstrip().startswith("@") and _norm(rest) == _norm(name)
+
+
+def _mention_zone(b) -> list[dict]:
+    """OCR lines of the chat pane just above the message box, where the mention list pops up."""
+    compose = next(e for e in b.elements() if e["type"] == "Edit" and e["class"].startswith("QQuickTextEdit"))
+    top = compose["rect"][1]
+    return [o for o in _ocr_px() if top - 400 < o["y"] < top - 5 and o["x"] > o.get("SB", o["W"] * 0.28)]
+
+
 def send_with_mention(before: str, display_name: str, after: str = "",
                       quote_n: int | None = None) -> dict:
     """Send "<before>@<display_name><after>" in the open chat, picking the person from Viber's
-    mention list so they're notified. With quote_n, it's sent as a quote-reply to that message."""
+    mention list so they're notified. With quote_n, it's sent as a quote-reply to that message.
+
+    The row is picked with the keyboard (Down × k, Tab) and the inserted text is checked to be
+    exactly this name; clicking the OCR'd row and sending with the list still open once mentioned
+    "Mark Anthony Santos" instead of "Anthony"."""
     b = _backend()
     if quote_n is not None:
         message_action(quote_n, "Reply")
     b.click_compose()
     b.delete()
+    want = _norm(display_name)
     # Typing the start of the name filters Viber's mention list (it only shows a few rows).
     first = display_name.split()[0] if display_name.split() else ""
-    b.type_into_focus(f"{before}@{first[:4]}")
+    query = f"@{first[:4]}"
+    baseline = {o["text"] for o in _mention_zone(b)}  # chat text that was there before the list
+    b.type_into_focus(before + query)
     time.sleep(1.5)
-    compose = next(e for e in b.elements() if e["type"] == "Edit" and e["class"].startswith("QQuickTextEdit"))
-    top = compose["rect"][1]
-    obs = _ocr_px()
-    picks = [o for o in obs if top - 400 < o["y"] < top - 5 and o["x"] > o.get("SB", o["W"] * 0.28)
-             and _norm(o["text"]) == _norm(display_name)] if obs else []
-    if not picks:
+    rows = [o for o in _mention_zone(b) if o["text"] not in baseline]
+    if not any(_norm(o["text"]) == want for o in rows):
         b.delete()
         raise UIError(f"'{display_name}' isn't in this chat's mention list.")
-    b.click_at(*_ocr_center(max(picks, key=lambda o: o["y"])))  # nearest the box
-    time.sleep(0.6)
-    if after:
-        b.type_into_focus(after)
-        time.sleep(0.3)
-    value = b._value() if hasattr(b, "_value") else ""
-    if "@" not in value or _norm(display_name) not in _norm(value):
+    # Which row is highlighted first can't be read from OCR, so try each until the inserted
+    # mention is exactly this name.
+    for downs in range(min(len(rows), 8)):
+        if downs:  # undo the wrong pick, keeping `before` (and any quote) in place
+            b.press_key("backspace", max(1, len(b._value().translate(_ISOLATES)) - len(before)))
+            b.type_into_focus(query)
+            time.sleep(1.2)
+            b.press_key("down", downs)
+        b.press_key("tab")
+        time.sleep(0.5)
+        if mention_inserted(b._value(), before, display_name):
+            break
+    else:
         b.delete()
-        raise UIError("The mention didn't insert; nothing sent.")
+        raise UIError(f"Couldn't insert a mention of exactly '{display_name}'; nothing sent.")
+    # A space right after the mention closes the list; sending while it's open can swap the pick.
+    b.type_into_focus(after if after[:1].isspace() else " " + after)
+    time.sleep(0.6)
+    if any(want in _norm(o["text"]) for o in _mention_zone(b) if o["text"] not in baseline):
+        b.press_key("escape")
+        time.sleep(0.4)
+    value = b._value()
+    if not mention_inserted(value, before, display_name, after):
+        b.delete()
+        raise UIError(f"The mention changed before sending ({value!r}); nothing sent.")
     b.click_send()
     time.sleep(1.2)
     return {"sent": True, "mentioned": display_name, "text": value}
 
 
-def mention(display_name: str, greeting: str = "Hello") -> dict:
-    """Send '<greeting> @<display_name>' in the open chat (the person is notified)."""
-    return send_with_mention(f"{greeting} ", display_name)
+def mention_opens_number(display_name: str, number: str) -> bool | None:
+    """Click the newest sent @display_name in the open chat and check that the chat it opens
+    (the person's 1:1 chat: number under the name, or in the "not in your contact list" banner)
+    shows `number`. None when it can't be told. Leaves that 1:1 chat open."""
+    want, digits = _norm(display_name), number[-10:]
+
+    def shows_number(obs):
+        return any(digits in "".join(ch for ch in o["text"].translate(_DIGIT_FOLD) if ch.isdigit())
+                   for o in obs)
+
+    obs = [o for o in _ocr_px() if o["x"] > o.get("SB", o["W"] * 0.28)]
+    lines = [o for o in obs if "@" in o["text"] and want in _norm(o["text"])]
+    if not lines:
+        return None
+    line = max(lines, key=lambda o: o["y"])  # newest
+    before = shows_number(obs)
+    t = line["text"]
+    at = t.index("@")
+    # Click the middle of the "@name" token, estimating its x from its share of the line.
+    frac = (at + (len(display_name) + 1) / 2) / max(1, len(t))
+    b = _backend()
+    b.click_at(line["x"] + line["w"] * min(frac, 0.95), line["y"] + line["h"] / 2)
+    time.sleep(1.5)
+    after = shows_number(_ocr_px())
+    return None if before else after  # already on screen before the click: inconclusive
+
+
+def mention(display_name: str, greeting: str = "Hello", number: str = "") -> dict:
+    """Send '<greeting> @<display_name>' in the open chat (the person is notified). With
+    `number`, also check the sent mention opens that number's chat ("verified_number") —
+    which leaves that 1:1 chat open, not the group."""
+    sent = send_with_mention(f"{greeting} ", display_name)
+    if number:
+        sent["verified_number"] = mention_opens_number(display_name, number)
+    return sent
 
 
 def sender_above(lines: list[dict], bubble_rect, floor_y: float) -> str:

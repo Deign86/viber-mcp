@@ -145,6 +145,11 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
         if not viber_ui.number_on_viber(plan["client_number"]):
             raise GCError(f"GC NOT CREATED — {plan['client_number']} still isn't in Viber's group "
                           "picker after the intro message. Report this and stop; do not retry.")
+    # The picker shows unsaved numbers as "Unknown"; the mention list uses their Viber name, which
+    # their 1:1 chat's "<Name> +63… is not in your contact list" banner shows.
+    client_name = plan["client_viber_name"]
+    if viber_ui.is_placeholder_name(client_name):
+        client_name = client_name_from_chat(plan["client_number"])
     created = viber_ui.create_group(plan["gc_name"], members if members is not None else cfg["members"],
                                     plan["client_number"], self_name=cfg.get("self", ""))
     if not created["created"]:
@@ -154,7 +159,13 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
     steps["template"] = viber_send.reply(plan["client_message"])
     if plan["listing"]:
         steps["listing"] = viber_drive.send_listing(plan["listing"]["folder_id"])
-    steps["mention"] = viber_ui.mention(created["client_display_name"])
+    if viber_ui.is_placeholder_name(client_name):
+        client_name = created["client_display_name"]
+    if viber_ui.is_placeholder_name(client_name):
+        raise GCError(f"GC '{plan['gc_name']}' was created and the template/listing posted, but the "
+                      f"client's Viber name couldn't be read (picker shows '{client_name}'), so they "
+                      "weren't mentioned and DONE wasn't replied. Report this and stop; do not retry.")
+    steps["mention"] = viber_ui.mention(client_name, number=plan["client_number"])
 
     # Back to the templates chat: quote-reply DONE to the original template.
     chat = done_chat or plan["templates_chat"]
@@ -167,7 +178,24 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
     else:
         steps["done_reply"] = viber_ui.reply_to_message(target["n"], plan["done_reply"], send=True)
     steps["cleanup"] = viber_drive.prune_downloads()  # only photos older than a few days
-    return {"done": True, "gc_name": plan["gc_name"], "steps": steps}
+    out = {"done": True, "gc_name": plan["gc_name"], "steps": steps}
+    if steps["mention"].get("verified_number") is False:
+        out["WARNING"] = (f"The @{client_name} mention didn't open {plan['client_number']}'s "
+                          "profile — it may have mentioned someone else. Check the GC and tell the "
+                          "staff member.")
+    return out
+
+
+def client_name_from_chat(number: str) -> str:
+    """Open the number's 1:1 chat and read the Viber name from its "not in your contact list"
+    banner. "" when it can't be read."""
+    viber_send.open_chat(number)
+    for _ in range(3):
+        name = viber_ui.name_from_contact_banner([o["text"] for o in viber_ui._ocr_px()], number)
+        if name:
+            return name
+        time.sleep(1.0)
+    return ""
 
 
 def notify_existing(template_text: str, gc_name: str) -> dict:

@@ -149,6 +149,12 @@ Status:
   tested) + `viber_gc.py` (plan/run) + `viber_ui.create_group` / `mention`. The new-group picker
   and the mention list aren't in the UIA tree — rows are found by OCR; OCR confuses I/l/1 and O/0,
   so names are compared after folding those (`_norm`, `viber_send._ocr_fold`).
+  The picker labels unsaved numbers "Unknown"; their Viber name comes from the 1:1 chat's
+  "<Name> +63… is not in your contact list" banner (`viber_gc.client_name_from_chat`). Mentions
+  are picked with Down×k + Tab and accepted only if the box holds exactly `@<name>`
+  (`mention_inserted` — "Anthony" is inside "Mark Anthony Santos"); then a space closes the list
+  before send (sending with it open sent the highlighted, wrong person). Clicking a sent mention
+  opens that person's 1:1 chat (number under the name, or in the banner) — `mention_opens_number`.
 - `viber_ui.py` holds the computer-use primitives (screenshot/click/type/key/scroll/elements)
   and the actions built on them (`list_messages`, `open_image`, `unsend_message`). On Windows,
   messages are `FeedDelegate` elements; text is the child `TextEditItem` edit's value, images
