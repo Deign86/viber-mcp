@@ -367,6 +367,79 @@ def _search_open(name: str) -> tuple[str, int]:
     return matched_text, score
 
 
+# OCR mangles the colon ("1243 PM", "1-25 PM", "9.49 AM"), so it's optional.
+_ROW_TIME = re.compile(r"(\d{1,2}[:.\-]?\d{2}\s*[AP]M|yesterday|monday|tuesday|wednesday|thursday|"
+                       r"friday|saturday|sunday|\d{1,2}/\d{1,2}/\d{4})$", re.I)
+
+
+def _row_stamp(text: str) -> str | None:
+    """The time/day stamp of a result row ("11:02 AM", "Yesterday"), ignoring a short prefix
+    such as the OCR'd read tick ("W 10:13 AM", "v'/ 12:43 PM"); None if it isn't one."""
+    t = text.strip()
+    m = _ROW_TIME.search(t)
+    return m.group(1) if m and m.start() <= 4 else None
+
+
+def message_search_rows(obs: list[dict]) -> list[dict]:
+    """Group the sidebar's OCR lines (message-search results) into rows: chat name + time on the
+    row's first line, then the matching message preview. Pure, so it's tested with fixtures."""
+    left = sorted((o for o in obs if o["x"] < 0.30 and o["y"] > 0.13), key=lambda o: o["y"])
+    stamps = [o for o in left if o["x"] > 0.18 and _row_stamp(o["text"])]
+    rows = []
+    for i, stamp in enumerate(stamps):
+        end = stamps[i + 1]["y"] - 0.012 if i + 1 < len(stamps) else 1.0
+        name = next((o["text"].strip() for o in left
+                     if abs(o["y"] - stamp["y"]) < 0.012 and o["x"] < stamp["x"]), "")
+        preview = [o["text"].strip() for o in left
+                   if stamp["y"] + 0.012 <= o["y"] < end and o["x"] < 0.27]
+        rows.append({"chat": name, "time": _row_stamp(stamp["text"]),
+                     "preview": " ".join(preview)})
+    return rows
+
+
+def search_messages(query: str, pages: int = 2) -> dict:
+    """Search the TEXT of messages in all chats (Viber's 2nd search tab, under the search box —
+    the 1st tab only matches chat/contact names). Returns rows (chat, time, preview), newest
+    first. Switches back to the name tab afterwards so search_and_open keeps working."""
+    query = query.strip()
+    if not query:
+        raise SendError("Search query is empty.")
+    if not viber_is_running():
+        raise SendError("Viber is not running. Launch and sign in to Viber first.")
+    backend.click_search()
+    time.sleep(0.4)
+    backend.select_all()
+    backend.delete()
+    backend.type_text(query)
+    time.sleep(1.2)
+    # Result-type tabs under the search box, left to right: names, messages, businesses.
+    tabs = sorted((e for e in backend.elements() if e["class"] == "TabComponent"),
+                  key=lambda e: e["rect"][0])
+    if len(tabs) < 2:
+        raise SendError("Viber's search tabs didn't appear (is the search box open?).")
+    mid = lambda e: ((e["rect"][0] + e["rect"][2]) / 2, (e["rect"][1] + e["rect"][3]) / 2)  # noqa: E731
+    rows, seen = [], set()
+    try:
+        backend.click_at(*mid(tabs[1]))
+        time.sleep(1.5)
+        backend.scroll("chats", 50)  # the list keeps its old scroll position — start at the top
+        time.sleep(0.8)
+        for page in range(max(1, pages)):
+            for r in message_search_rows(backend.observe()):
+                key = (r["chat"], r["time"], r["preview"])
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(r)
+            if page + 1 < pages:
+                backend.scroll("chats", -8)
+                time.sleep(0.8)
+    finally:
+        backend.click_at(*mid(tabs[0]))  # back to name search
+    return {"query": query, "count": len(rows), "results": rows,
+            "note": "OCR of the result list: chat names/previews may be truncated or garbled. "
+                    "Open a chat with search_and_open to read the full message."}
+
+
 def _header_matches(name: str) -> bool:
     """Is the open chat's header title `name` (allowing truncation and OCR look-alikes)?"""
     want = _ocr_fold(re.sub(r"[^a-z0-9]", "", name.lower()))
