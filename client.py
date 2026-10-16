@@ -106,6 +106,8 @@ async def _run(argv: list[str]) -> None:
 
 
 def main() -> None:
+    # Tool docs and chat text contain →, ₱, emoji; the Windows console code page can't print them.
+    sys.stdout.reconfigure(encoding="utf-8")
     asyncio.run(_run(sys.argv[1:]))
 
 

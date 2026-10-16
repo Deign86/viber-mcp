@@ -49,11 +49,19 @@ chat → `send_listing` (text above the line + all photos together). Never use `
 for anything that goes to a client. Never mix photos from a different listing.
 
 ## Posting new listings (APR LISTING ONLY + Drive)
-"Send my completed listings to the listings GC / add them to Drive" → `post_new_listing` once per
-listing. It posts the full listing in APR LISTING ONLY (staff GC, so the internal part below the
-dashed line is included), the photos as one album, a dashed separator, creates the Drive folder
-(`category` / `deal` / `folder_name`) with the doc `*<folder_name>` and the photos, then
-quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
+"Send my completed listings to the listings GC / add them to Drive" → per listing, in order:
+1. `post_new_listing` — posts the full listing in APR LISTING ONLY (staff GC, so the internal part
+   below the dashed line is included), the photos as one album right after it, a dashed
+   separator; returns `drive_upload`. Post every listing this way first so the GC reads
+   text → photos → separator for each, with nothing in between.
+2. Upload with the **Google Drive connector** (never this server — its service account has no
+   storage): in `drive_upload.parent_folder_id` create the folder `folder_name`, the Google Doc
+   `doc_title` from `doc_text`, and the photos named as listed. If the connector can't take a
+   photo (it needs the file inline), upload it with Drive in the browser into the same folder.
+3. `confirm_listing_in_drive(folder_name, photos)` — checks the folder, doc and photo count in
+   Drive, then quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
+- **Lots** go one level deeper: `category="CONDO / HOUSE AND LOT"`, `deal="LEASE"` or `"SALE"`,
+  `subfolder="LOT"` (condos/houses: `"CONDO / HOUSE"`).
 - **Only listings marked complete** (address, final price, owner name and number on file). Skip
   incomplete ones and say why.
 - **Check it isn't already posted:** `find_listings` for the same place/sqm and search the GC
@@ -70,8 +78,8 @@ quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
   unit sizes, the photos already quote-replied to that listing in the GC). If you can't tell which
   listing a photo belongs to, ask. No photos → `photo_paths` empty; add them later only by hand.
 - Run with `dry_run=True` first if anything is uncertain. If it returns `STOP`, finish the listed
-  remaining steps by hand — never re-run it (that posts the listing twice).
-- The first run asks for a Google sign-in with edit access to Drive (once per PC).
+  remaining steps by hand — never re-run it (that posts the listing twice). It also refuses when
+  the listing is already the latest post in the GC.
 
 ## Client group chats (templates in APG CLIENTS)
 Staff post a client template (name, property type, SQM, budget, location, Viber number, often a
