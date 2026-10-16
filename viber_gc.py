@@ -152,6 +152,11 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
         client_name = client_name_from_chat(plan["client_number"])
     created = viber_ui.create_group(plan["gc_name"], members if members is not None else cfg["members"],
                                     plan["client_number"], self_name=cfg.get("self", ""))
+    if created.get("existing_group") is not None:
+        raise GCError(f"EXISTING CLIENT — GC NOT CREATED: {plan['client_number']} already shares a "
+                      f"group with the staff ('{created['existing_group']}'). Send the new listing "
+                      "there, rename that GC to the new inquiry, then quote-reply 'DONE-<NEW NAME> — "
+                      "existing client po, GC already created.' to the template. Do not retry.")
     if not created["created"]:
         raise GCError("The group didn't appear after 'Start chat' — check Viber before retrying "
                       "(it may exist already).")

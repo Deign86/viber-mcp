@@ -92,6 +92,22 @@ def search_and_open(name: str) -> dict:
 
 
 @mcp.tool()
+def search_messages(query: str, pages: int = 2) -> dict:
+    """Search the TEXT of messages across all chats (e.g. "LOI", "letter of intent", a street).
+
+    Uses Viber's message-search tab (the 2nd icon under the search box — search_and_open only
+    matches chat names). Returns rows {chat, time, preview}, newest first; times are like
+    "1:57 PM", "Yesterday", "Tuesday", "10/8/2026". Previews are OCR and may be cut off — open
+    the chat to read the whole message.
+
+    Args:
+        query: words to find in messages.
+        pages: how many screens of results to read (scrolls the list between them).
+    """
+    return viber_send.search_messages(query, pages)
+
+
+@mcp.tool()
 def list_chats() -> dict:
     """List recent chats from the sidebar (names, previews, times, unread counts) via OCR.
 

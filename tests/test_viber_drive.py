@@ -41,7 +41,9 @@ def test_split_crlf_and_bom():
     assert "Hippodromo" not in public and "Hippodromo" in internal
 
 
-@pytest.mark.parametrize("sep", ["-----   ", "_____", "———", "=========", "–––––––––"])
+# "─" box-drawing lines are used in some docs (e.g. "Cavite, 40-45 General Trias").
+@pytest.mark.parametrize("sep", ["-----   ", "_____", "———", "=========", "–––––––––",
+                                 "────────────────", "━━━━━━"])
 def test_other_separators(sep):
     public, internal = viber_drive.split_listing(f"Hello\nWorld\n{sep}\nsecret")
     assert public == "Hello\nWorld" and internal == "secret"

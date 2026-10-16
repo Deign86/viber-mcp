@@ -48,7 +48,8 @@ port-ready for Windows/Linux — see "Porting" below):
 
 - `server.py` — FastMCP stdio server; thin `@mcp.tool()` wrappers only. Tools: `send_message`,
   `reply`, `open_chat`, `open_and_read`, `read_open_chat`, `list_chats`, `put_draft`,
-  `search_and_open`, `save_to_my_notes`, `open_my_notes`, `list_contacts`, `scroll_chat`,
+  `search_and_open`, `search_messages` (message-text search: the 2nd `TabComponent` under the
+  search box; `message_search_rows` parses the OCR'd rows), `save_to_my_notes`, `open_my_notes`, `list_contacts`, `scroll_chat`,
   `scroll_chat_list` (backend `scroll(area, notches)`; Windows posts `WM_MOUSEWHEEL`, macOS not yet).
 - `viber_send.py` — **platform-neutral** write/navigation logic: recipient resolution
   (`contacts.json` alias → E.164), the send pipeline, search-result scoring, panel detection, send

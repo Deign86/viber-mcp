@@ -630,6 +630,22 @@ def new_group_screen_state(left_texts: list[str]) -> str:
     return "chats"
 
 
+_ALREADY_GROUP = "already have a group together"
+
+
+def existing_group_from_dialog(texts: list[str]) -> str | None:
+    """Viber's "You already have a group together!" dialog (Start chat with members who already
+    share a group): the existing group's name (OCR, often truncated "..."), or None if no dialog."""
+    low = [t.strip().lower() for t in texts]
+    if not any(_ALREADY_GROUP in t for t in low):
+        return None
+    start = next(i for i, t in enumerate(low) if _ALREADY_GROUP in t)
+    for t, l in zip(texts[start + 1:], low[start + 1:]):
+        if l and l not in ("open", "create another group", "x", "×"):
+            return t.strip()
+    return ""
+
+
 def _open_new_group() -> None:
     """Open Viber's New group screen (pencil → New group). Looks at the screen before each click,
     because the pencil TOGGLES the new-chat panel: clicking it while the panel is already open
@@ -736,8 +752,17 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
     b.hold_foreground(prev, 3.0)  # Viber activates itself when the group is created
     # Header and chat-list titles are truncated ("TESTCLIENT-WH-(300S..."), so compare a prefix.
     head = _norm(gc_name)[:10]
-    hits, _ = _wait_ocr(lambda t: bool(head) and _norm(t).startswith(head), timeout=25,
-                        left_only=False)
+    hits, obs = _wait_ocr(lambda t: (bool(head) and _norm(t).startswith(head))
+                          or _ALREADY_GROUP in t.lower(), timeout=25, left_only=False)
+    existing = existing_group_from_dialog([o["text"] for o in obs])
+    if existing is not None:
+        # The client already shares a group with the staff: nothing was created. Close the
+        # dialog and the New group screen (never "Create Another Group" — that duplicates).
+        b.press_key("escape")
+        time.sleep(0.6)
+        _close_new_group()
+        return {"created": False, "existing_group": existing, "gc_name": gc_name,
+                "members_added": added, "client_display_name": client_display}
     return {"created": bool(hits), "gc_name": gc_name, "members_added": added,
             "client_display_name": client_display}
 
@@ -916,15 +941,24 @@ def _is_delete_for_myself(name: str) -> bool:
     return "myself" in name.lower()
 
 
+def _is_delete_for_everyone(name: str) -> bool:
+    s = name.lower()
+    # Groups: "Delete for all participants"; 1:1s: "Delete for me and <contact name>".
+    # Never "Delete without a trace".
+    return "all participants" in s or "everyone" in s or s.startswith("delete for me and ")
+
+
 def _delete_menu_pick(names: list[str], for_everyone: bool) -> str | None:
-    """Which message-menu item to click to delete. 1:1 chats offer a plain "Delete" (the
+    """Which message-menu item to click to delete. Older 1:1 menus offer a plain "Delete" (the
     everyone/myself choice comes after); group chats list "Delete for myself", "Delete without
-    a trace" and "Delete for all participants" directly. None = nothing suitable."""
+    a trace" and "Delete for all participants" directly, and 1:1 chats now list "Delete for
+    myself", "Delete without a trace" and "Delete for me and <contact>". None = nothing
+    suitable."""
     plain = [s for s in names if s.lower() == "delete"]
     if plain:
         return plain[0]
     if for_everyone:
-        wanted = [s for s in names if "all participants" in s.lower() or "everyone" in s.lower()]
+        wanted = [s for s in names if _is_delete_for_everyone(s)]
     else:
         wanted = [s for s in names if _is_delete_for_myself(s)]
     return wanted[0] if wanted else None

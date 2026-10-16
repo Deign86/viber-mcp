@@ -298,6 +298,54 @@ def test_new_group_screen_state_reads_the_sidebar():
     assert new_group_screen_state(["Q Search name or number", "Group name*", "Invite contacts", "0/250"]) == "group_form"
 
 
+def test_message_search_rows_group_name_time_and_preview():
+    # "LOIs sent today or yesterday": the name search found nothing; the messages tab lists
+    # chat + time + the matching message. OCR lines (x, y normalized) from that tab.
+    from viber_send import message_search_rows
+
+    obs = [
+        {"text": "Q LOI", "x": 0.08, "y": 0.05},
+        {"text": "JONAS-CS-6SQM-QC", "x": 0.07, "y": 0.20},
+        {"text": "11:02 AM", "x": 0.23, "y": 0.20},
+        {"text": "Me: Sir Jonas, update po:", "x": 0.07, "y": 0.22},
+        {"text": "na-receive at na-acknowl...", "x": 0.07, "y": 0.24},
+        {"text": "MON-WH-(2000SQM,..", "x": 0.07, "y": 0.30},
+        {"text": "Yesterday", "x": 0.22, "y": 0.30},
+        {"text": "Beatriz Alpha: Good", "x": 0.07, "y": 0.32},
+        {"text": "W 10:13 AM", "x": 0.21, "y": 0.40},
+        {"text": "Anne", "x": 0.07, "y": 0.40},
+        {"text": "Hello in the open chat", "x": 0.6, "y": 0.41},
+    ]
+    rows = message_search_rows(obs)
+    assert [r["chat"] for r in rows] == ["JONAS-CS-6SQM-QC", "MON-WH-(2000SQM,..", "Anne"]
+    assert rows[0]["time"] == "11:02 AM"
+    assert rows[0]["preview"] == "Me: Sir Jonas, update po: na-receive at na-acknowl..."
+    assert rows[1]["time"] == "Yesterday" and rows[1]["preview"] == "Beatriz Alpha: Good"
+    assert rows[2]["time"] == "10:13 AM"  # the "seen" tick OCR'd as "W" is stripped
+    assert rows[2]["preview"] == ""
+
+
+def test_message_search_stamps_survive_ocr_garbling():
+    # Live OCR of the result list: colons dropped or turned into "-", read ticks as "w".
+    from viber_send import _row_stamp
+
+    for raw in ("1243 PM", "1-25 PM", "w 1242 PM", "1102 AM", "9.49 AM", "W 1:58 PM", "Tuesday"):
+        assert _row_stamp(raw), raw
+    for not_a_stamp in ("Me: Thank you po", "Anne", "4", "12", "1,000 sqm"):
+        assert _row_stamp(not_a_stamp) is None, not_a_stamp
+
+
+def test_existing_group_dialog_is_detected():
+    # THSWV / Anfernee: "Start chat" showed "You already have a group together!" and the run
+    # failed with "group didn't appear" — the client already had BASEL-WH-(650SQM, LAS PINAS).
+    from viber_ui import existing_group_from_dialog
+
+    texts = ["APG CLIENTS", "+3", "You already have a group together!",
+             "BASEL-WH-(650SQM, LAS PI...", "Open", "Create Another Group"]
+    assert existing_group_from_dialog(texts) == "BASEL-WH-(650SQM, LAS PI..."
+    assert existing_group_from_dialog(["THSWV-WH-(967.76SQM, CAVITE)", "8 participants"]) is None
+
+
 # ------------------- chat-pane banner must not be mistaken for the picker row (Rafael)
 
 
@@ -371,6 +419,20 @@ def test_unsend_picks_group_chat_delete_items():
     assert _delete_menu_pick(["Delete"], True) == "Delete"
     assert _delete_menu_pick(["Delete for myself"], True) is None
     assert _delete_menu_pick([], True) is None
+
+
+def test_unsend_picks_one_to_one_delete_for_me_and_contact():
+    # 1:1 menus (2026-10-16, chat with Beatriz Alpha) have no plain "Delete" and no
+    # "everyone": the for-everyone item is "Delete for me and <contact>". Unsend failed with
+    # "too old to unsend" even for fresh messages. Never pick "Delete without a trace".
+    from viber_ui import _delete_menu_pick
+    one_to_one = ["Delete for myself", "Delete without a trace",
+                  "Delete for me and Beatriz Alpha", "Check for spam"]
+    assert _delete_menu_pick(one_to_one, True) == "Delete for me and Beatriz Alpha"
+    assert _delete_menu_pick(one_to_one, False) == "Delete for myself"
+    # Too old for everyone: only these remain — refuse rather than fall back to "without a trace".
+    assert _delete_menu_pick(["Delete for myself", "Delete without a trace"], True) is None
+    assert _delete_menu_pick(["Delete without a trace"], False) is None
 
 
 # --------------------------------------------------------------- foreign numbers / placeholder names
