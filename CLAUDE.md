@@ -176,6 +176,14 @@ Status:
   line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in
   code unless `get_listing(include_internal=True)`. `send_listing` sends the text, then the photos via
   `send_files`; never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
-  `send_listing`, `drive_search`, `drive_download`.
+  `send_listing`, `drive_search`, `drive_download`, `post_new_listing`.
+- `post_new_listing` (viber_drive.py) is the only Drive WRITE path: it validates everything first
+  (separator, photos, category/deal folder via `pick_folder`, no existing folder of that name), then
+  posts text → photos → dashed separator in `VIBER_MCP_LISTINGS_GC` (default `APR LISTING ONLY`),
+  creates `<category>/<deal>/<City, sqm Area>/` with the doc `*<name>` + `AlphaPremier_Photo_NN`
+  photos, and quote-replies `Added to Drive [File name:*<name>]` (found via `find_posted_message`,
+  which strips Viber's U+2068/U+2069 isolate marks). Write access uses its own token
+  (`google_token_write.json`, full `drive` scope) so the read-only sign-in is untouched. A failure
+  after the GC post returns `STOP` with what's done instead of raising — never re-run it.
 - Test any tool with `uv run client.py call <tool> '<json>'`; element ids from `list_elements`
   only live within one server process (each `client.py` call starts a new one).

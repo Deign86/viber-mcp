@@ -92,3 +92,80 @@ def test_find_filters_and_order():
     assert ids(deal="sale") == ["3"]
     assert ids(query="makati", deal="sale") == []
     assert viber_drive.find_listings()["count"] == 3
+
+
+# ------------------------------------------------------------- adding new listings
+
+LISTING = "WAREHOUSE FOR RENT\nMonthly Rent: ₱120,000\n-------------------------\nOwner: X\n0995 459 5602"
+CATS = [{"id": "c1", "name": "WAREHOUSE"}, {"id": "c2", "name": "COMMERCIAL SPACE"},
+        {"id": "c3", "name": "OFFICE SPACE"}]
+DEALS = [{"id": "d1", "name": "FOR LEASE/RENT"}, {"id": "d2", "name": "FOR SALE"}]
+
+
+def test_pick_folder_exact_then_contains():
+    assert viber_drive.pick_folder(CATS, "warehouse", "category")["id"] == "c1"
+    assert viber_drive.pick_folder(DEALS, "LEASE", "deal")["id"] == "d1"
+    assert viber_drive.pick_folder(DEALS, "sale", "deal")["id"] == "d2"
+
+
+def test_pick_folder_refuses_ambiguous_or_missing():
+    with pytest.raises(viber_drive.DriveError, match="several"):
+        viber_drive.pick_folder(CATS, "SPACE", "category")
+    with pytest.raises(viber_drive.DriveError, match="Options"):
+        viber_drive.pick_folder(CATS, "LOT", "category")
+
+
+def test_listing_doc_text_adds_drive_date_once():
+    body = viber_drive.listing_doc_text(LISTING, "October 16, 2026")
+    assert body.endswith("\n\nAdded to Drive: October 16, 2026")
+    assert viber_drive.listing_doc_text(body, "October 17, 2026") == body
+
+
+def test_added_to_drive_reply_format():
+    assert (viber_drive.added_to_drive_reply(" Pasay City, 8, 12, 22 Malibay ")
+            == "Added to Drive [File name:*Pasay City, 8, 12, 22 Malibay]")
+
+
+def test_find_posted_message_ignores_viber_isolate_marks():
+    # Viber shows numbers/links wrapped in U+2068/U+2069, so a plain == never matched.
+    shown = LISTING.replace("0995 459 5602", "⁨0995 459 5602⁩")
+    msgs = [{"n": 3, "from": "me", "kind": "text", "text": shown},
+            {"n": 2, "from": "me", "kind": "image", "text": ""},
+            {"n": 1, "from": "me", "kind": "text", "text": viber_drive.GC_SEPARATOR}]
+    assert viber_drive.find_posted_message(msgs, LISTING) == 3
+
+
+def test_find_posted_message_only_mine_and_falls_back_to_title():
+    msgs = [{"n": 2, "from": "them", "kind": "text", "text": LISTING},
+            {"n": 1, "from": "me", "kind": "text", "text": "WAREHOUSE FOR RENT\n(edited)"}]
+    assert viber_drive.find_posted_message(msgs, LISTING) == 1
+    assert viber_drive.find_posted_message(msgs[:1], LISTING) is None
+
+
+def _fake_drive(monkeypatch):
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    tree = {"root": CATS, "c1": DEALS, "c2": DEALS, "c3": DEALS}
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        dict(f, mimeType=viber_drive.FOLDER) for f in tree.get(fid, [])])
+
+
+def test_check_new_listing_resolves_parent(monkeypatch, tmp_path):
+    _fake_drive(monkeypatch)
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"jpg")
+    plan = viber_drive._check_new_listing(LISTING, "warehouse", "lease",
+                                          " Quezon City, 860 Apolonio Samson ", [str(photo)])
+    assert plan["parent_id"] == "d1"
+    assert plan["folder_name"] == "Quezon City, 860 Apolonio Samson"
+    assert plan["path"].endswith("WAREHOUSE / FOR LEASE/RENT")
+
+
+def test_check_new_listing_refuses_before_sending(monkeypatch, tmp_path):
+    _fake_drive(monkeypatch)
+    with pytest.raises(viber_drive.DriveError, match="separator"):
+        viber_drive._check_new_listing("no line here", "warehouse", "lease", "A, 1 B", [])
+    with pytest.raises(viber_drive.DriveError, match="not found"):
+        viber_drive._check_new_listing(LISTING, "warehouse", "lease", "A, 1 B",
+                                       [str(tmp_path / "missing.jpg")])
+    with pytest.raises(viber_drive.DriveError, match="City, sqm Area"):
+        viber_drive._check_new_listing(LISTING, "warehouse", "lease", "Malibay", [])
