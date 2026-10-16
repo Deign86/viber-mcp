@@ -937,14 +937,23 @@ def _named(elements: list[dict], el_type: str, predicate) -> list[dict]:
     return [e for e in elements if e["type"] == el_type and e["name"] and predicate(e["name"].lower())]
 
 
+_BIDI_MARKS = dict.fromkeys(map(ord, "⁦⁧⁨⁩‎‏‪‫‬‭‮"))
+
+
+def _menu_label(name: str) -> str:
+    """Lowercased menu label without bidi isolate/embedding marks (Viber wraps contact names in
+    U+2068/U+2069) and with whitespace (incl. NBSP) collapsed."""
+    return " ".join(name.translate(_BIDI_MARKS).split()).lower()
+
+
 def _is_delete_for_myself(name: str) -> bool:
-    return "myself" in name.lower()
+    return "myself" in _menu_label(name)
 
 
 def _is_delete_for_everyone(name: str) -> bool:
-    s = name.lower()
-    # Groups: "Delete for all participants"; 1:1s: "Delete for me and <contact name>".
-    # Never "Delete without a trace".
+    s = _menu_label(name)
+    # Groups: "Delete for all participants"; 1:1s: "Delete for me and ⁨<contact name>⁩"
+    # ("Unknown" for unsaved numbers). Never "Delete for myself" / "Delete without a trace".
     return "all participants" in s or "everyone" in s or s.startswith("delete for me and ")
 
 
@@ -954,7 +963,7 @@ def _delete_menu_pick(names: list[str], for_everyone: bool) -> str | None:
     a trace" and "Delete for all participants" directly, and 1:1 chats now list "Delete for
     myself", "Delete without a trace" and "Delete for me and <contact>". None = nothing
     suitable."""
-    plain = [s for s in names if s.lower() == "delete"]
+    plain = [s for s in names if _menu_label(s) == "delete"]
     if plain:
         return plain[0]
     if for_everyone:
@@ -993,7 +1002,7 @@ def unsend_message(text: str | None = None, n: int | None = None,
     time.sleep(0.8)
 
     # Only the context-menu item (MenuItem), never the info panel's "Delete" chat button.
-    menu = _named(b.elements(), "MenuItem", lambda s: s.startswith("delete"))
+    menu = _named(b.elements(), "MenuItem", lambda s: _menu_label(s).startswith("delete"))
     names = [e["name"] for e in menu]
     pick = _delete_menu_pick(names, for_everyone)
     if pick is None:
@@ -1010,10 +1019,11 @@ def unsend_message(text: str | None = None, n: int | None = None,
     # Group chats put the choice in the menu itself (picked above). 1:1 chats show a plain
     # "Delete", then ask "for everyone" vs "for myself"; My Notes deletes immediately.
     elements = b.elements()
-    everyone = [e for e in elements if e["name"] and "everyone" in e["name"].lower()]
-    myself = [e for e in elements if e["name"] and "myself" in e["name"].lower()]
-    choice = None if pick.lower() == "delete" else item
-    if pick.lower() == "delete" and (everyone or myself):
+    everyone = [e for e in elements if e["name"] and _is_delete_for_everyone(e["name"])]
+    myself = [e for e in elements if e["name"] and _is_delete_for_myself(e["name"])]
+    plain = _menu_label(pick) == "delete"
+    choice = None if plain else item
+    if plain and (everyone or myself):
         options = everyone if for_everyone else myself
         if not options:
             b.press_key("escape")
