@@ -391,11 +391,12 @@ def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
 
 def drive_upload_plan(text: str, plan: dict, added: str) -> dict:
     """What to create in Drive (with the Drive connector — this server never uploads): the folder,
-    the '*' listing doc and the photos, named the way staff name them."""
+    the listing doc and the photos, named the way staff name them. New listings get the '*'
+    identifier on the folder as well as the doc."""
     return {
         "parent_folder_id": plan["parent_id"],
         "parent_path": plan["path"],
-        "folder_name": plan["folder_name"],
+        "folder_name": f"*{plan['folder_name']}",
         "doc_title": f"*{plan['folder_name']}",
         "doc_text": listing_doc_text(text, added),
         "photos": [{"path": p, "name": f"AlphaPremier_Photo_{i:02d}{Path(p).suffix.lower() or '.jpg'}"}
@@ -483,8 +484,9 @@ def confirm_listing_in_drive(folder_name: str, photos: int) -> dict:
     `photos` photos), then quote-reply 'Added to Drive [File name:*<folder>]' to its GC post."""
     global _tree_cache
     _tree_cache = None  # the folder was just created
-    name = folder_name.strip()
-    hits = [p for p in _property_folders() if p["name"].strip().casefold() == name.casefold()]
+    name = folder_name.strip().lstrip("*").strip()  # the folder itself is named "*<name>"
+    hits = [p for p in _property_folders()
+            if p["name"].strip().lstrip("*").strip().casefold() == name.casefold()]
     if len(hits) != 1:
         raise DriveError(f"Expected one Drive folder named '{name}', found {len(hits)}. Nothing posted.")
     files = _children(hits[0]["folder_id"])
