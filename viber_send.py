@@ -205,6 +205,13 @@ def _ensure_panel_closed() -> None:
         time.sleep(0.6)
 
 
+def _settle(seconds: float) -> None:
+    """Fixed pause after fire-and-forget input (macOS). Skipped when the backend already
+    waited for the field to change (Windows checks the box's value)."""
+    if not backend.input_confirmed:
+        time.sleep(seconds)
+
+
 def _paste_into_compose(text: str) -> None:
     """Focus the compose box of the open chat, clear any draft, and paste `text` (no send).
 
@@ -212,13 +219,13 @@ def _paste_into_compose(text: str) -> None:
     """
     _ensure_panel_closed()          # a panel would displace the send button
     backend.click_compose()
-    time.sleep(0.4)
+    _settle(0.4)
     backend.select_all()            # select any leftover draft
-    time.sleep(0.1)
+    _settle(0.1)
     backend.delete()                # clear it
-    time.sleep(0.15)
+    _settle(0.15)
     backend.paste()
-    time.sleep(0.4)
+    _settle(0.4)
 
 
 def paste_into_open_chat(text: str) -> dict:
@@ -238,8 +245,8 @@ def paste_into_open_chat(text: str) -> dict:
         backend.focus()
         _paste_into_compose(text)
     finally:
-        time.sleep(0.25)
         if saved is not None:
+            time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
     return {"drafted": True, "sent": False, "text": text}
 
@@ -264,8 +271,8 @@ def reply(text: str) -> dict:
         backend.click_send()
         verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
-        time.sleep(0.25)
         if saved is not None:
+            time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
     return {"sent": True, "text": text, "verified": verified}
 
@@ -386,11 +393,11 @@ def _search_open(name: str) -> tuple[str, int]:
     Returns (matched_row_text, score). Raises SendError if no result matches.
     """
     backend.click_search()
-    time.sleep(0.4)
+    _settle(0.4)
     backend.select_all()            # clear any previous query
-    time.sleep(0.1)
+    _settle(0.1)
     backend.delete()
-    time.sleep(0.2)
+    _settle(0.2)
     backend.type_text(name)
 
     obs, match = _await_results(name)
@@ -569,8 +576,8 @@ def save_to_my_notes(text: str) -> dict:
         backend.click_send()
         verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
-        time.sleep(0.25)
         if saved is not None:
+            time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
     return {"saved_to": "My Notes", "text": text, "sent": True, "verified": verified}
 
@@ -600,8 +607,8 @@ def send_message(to: str, text: str, dry_run: bool = False) -> dict:
         backend.click_send()
         verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
-        time.sleep(0.25)
         if saved is not None:
+            time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
 
     return {

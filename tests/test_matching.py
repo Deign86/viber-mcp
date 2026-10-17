@@ -68,6 +68,20 @@ def test_await_results_skips_the_stale_chat_list(monkeypatch):
     assert match[:2] == ("Max Alpha", 0.179)
 
 
+def test_paste_pauses_only_for_fire_and_forget_backends(monkeypatch):
+    import viber_send
+    for confirmed, expect_pauses in ((True, False), (False, True)):
+        class FakeBackend:
+            input_confirmed = confirmed
+            def observe(self): return []
+            def __getattr__(self, name): return lambda *a: None
+        slept = []
+        monkeypatch.setattr(viber_send, "backend", FakeBackend())
+        monkeypatch.setattr(viber_send.time, "sleep", slept.append)
+        viber_send._paste_into_compose("hi")
+        assert bool(slept) == expect_pauses, confirmed
+
+
 def test_find_result_row_ignores_search_bar_and_returns_none():
     assert _find_result_row("Ivy", [{"text": "Ivy", "x": 0.1, "y": 0.05}]) is None
 
