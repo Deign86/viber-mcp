@@ -195,6 +195,9 @@ each GC created and each template skipped or failed (with the reason).
   - **Sir/Ma'am before every name.** Coworkers and Filipino/Taglish clients alike: "Hi Sir
     Arjee!", "Good day Ma'am @Mimz". Take Sir or Ma'am from how the chat already addresses them;
     if the chat never shows it, ask the staff member. (English-only clients: see Language above.)
+  - **Don't open every message with "Ma'am,"/"Sir,".** Use it once when greeting or starting a
+    conversation stretch, then only now and then — follow-ups just start with the answer
+    ("Mary lang po ang nakalagay…", not "Ma'am, Mary lang po…"). It should sound natural.
   - **Human but professional:** contractions are fine ("it's", "we'll"), no corporate filler, no
     emojis unless the client uses them, no exclamation marks on every line.
   - **State facts plainly.** Give the price and terms outright when asked; don't assume a client
