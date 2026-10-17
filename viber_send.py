@@ -205,6 +205,13 @@ def _ensure_panel_closed() -> None:
         time.sleep(0.6)
 
 
+def _settle(seconds: float) -> None:
+    """Fixed pause after fire-and-forget input (macOS). Skipped when the backend already
+    waited for the field to change (Windows checks the box's value)."""
+    if not backend.input_confirmed:
+        time.sleep(seconds)
+
+
 def _paste_into_compose(text: str) -> None:
     """Focus the compose box of the open chat, clear any draft, and paste `text` (no send).
 
@@ -212,13 +219,13 @@ def _paste_into_compose(text: str) -> None:
     """
     _ensure_panel_closed()          # a panel would displace the send button
     backend.click_compose()
-    time.sleep(0.4)
+    _settle(0.4)
     backend.select_all()            # select any leftover draft
-    time.sleep(0.1)
+    _settle(0.1)
     backend.delete()                # clear it
-    time.sleep(0.15)
+    _settle(0.15)
     backend.paste()
-    time.sleep(0.4)
+    _settle(0.4)
 
 
 def paste_into_open_chat(text: str) -> dict:
@@ -238,8 +245,8 @@ def paste_into_open_chat(text: str) -> dict:
         backend.focus()
         _paste_into_compose(text)
     finally:
-        time.sleep(0.25)
         if saved is not None:
+            time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
     return {"drafted": True, "sent": False, "text": text}
 
@@ -262,11 +269,10 @@ def reply(text: str) -> dict:
         backend.focus()
         _paste_into_compose(text)
         backend.click_send()
-        time.sleep(1.3)  # let the sent bubble render before verifying
-        verified = _verify_sent(text)
+        verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
-        time.sleep(0.25)
         if saved is not None:
+            time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
     return {"sent": True, "text": text, "verified": verified}
 
@@ -301,6 +307,12 @@ def _score_result(query: str, text: str) -> int:
     # OCR confuses I/l/1 and O/0 (e.g. "TESTCLlENT"); compare with those folded together.
     q, t = _ocr_fold(query.lower().strip()), _ocr_fold(t)
     if t == q:
+        return 6
+    # A whole-word match beats a longer word that merely starts with the query, so "Max" opens
+    # "Max Alpha", not "Maxine Cruz" listed above it.
+    if t.startswith(q + " "):
+        return 5
+    if f" {q} " in f" {t} ":
         return 4
     if t.startswith(q):
         return 3
@@ -331,22 +343,64 @@ def _find_result_row(query: str, observations: list[dict]):
     return text, norm_y, score
 
 
+def _poll(check, timeout: float, first: float = 0.0, interval: float = 0.1):
+    """Call `check()` until it returns something truthy or `timeout` seconds pass; return the
+    last result. Replaces fixed sleeps: fast cases finish early, slow ones still get the time."""
+    time.sleep(first)
+    deadline = time.monotonic() + timeout
+    while True:
+        result = check()
+        if result or time.monotonic() >= deadline:
+            return result
+        time.sleep(interval)
+
+
+# Left-column section headers that only exist once Viber is showing search results.
+_RESULT_HEADERS = {"conversations", "contacts", "groups", "businesses", "channels", "communities"}
+
+
+def _await_results(name: str, timeout: float = 2.4):
+    """Read the search results until they are safe to click; return (observations, match).
+
+    Replaces a fixed 1.6s wait plus one read. The first read after typing still shows the OLD
+    chat list, with the same name at a different y — so a match counts only once a results
+    section header is visible and two reads in a row agree on the row."""
+    state = {"prev": None, "obs": [], "match": None}
+
+    def check():
+        obs = backend.observe()
+        match = _find_result_row(name, obs)
+        ready = (state["prev"] is not None and match is not None and _same_row(state["prev"], match)
+                 and _results_header_visible(obs))
+        state.update(prev=match, obs=obs, match=match)
+        return ready
+
+    _poll(check, timeout=timeout, first=0.3)
+    return state["obs"], state["match"]
+
+
+def _results_header_visible(obs) -> bool:
+    return any(o["x"] < 0.35 and o["text"].strip().lower() in _RESULT_HEADERS for o in obs)
+
+
+def _same_row(a, b) -> bool:
+    return a[0] == b[0] and abs(a[1] - b[1]) < 0.01
+
+
 def _search_open(name: str) -> tuple[str, int]:
     """Type `name` in the search box and click the best-matching result row.
 
     Returns (matched_row_text, score). Raises SendError if no result matches.
     """
     backend.click_search()
-    time.sleep(0.4)
+    _settle(0.4)
     backend.select_all()            # clear any previous query
-    time.sleep(0.1)
+    _settle(0.1)
     backend.delete()
-    time.sleep(0.2)
+    _settle(0.2)
     backend.type_text(name)
-    time.sleep(1.6)                 # let results populate
 
-    obs = backend.observe()
-    match = _find_result_row(name, obs)
+    obs, match = _await_results(name)
     if match is None:
         # Viber renders the matching result's name in highlighted bold that OCR often can't
         # read. Open the first result under a section header and confirm by the chat header.
@@ -363,7 +417,7 @@ def _search_open(name: str) -> tuple[str, int]:
         )
     matched_text, norm_y, score = match
     backend.click_result(norm_y)
-    time.sleep(1.2)
+    _poll(lambda: _header_matches(matched_text), timeout=2.0)  # usually ~0.5s; was a fixed 1.2s
     return matched_text, score
 
 
@@ -520,11 +574,10 @@ def save_to_my_notes(text: str) -> dict:
             )
         _paste_into_compose(text)     # also closes the info panel if open
         backend.click_send()
-        time.sleep(1.3)
-        verified = _verify_sent(text)
+        verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
-        time.sleep(0.25)
         if saved is not None:
+            time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
     return {"saved_to": "My Notes", "text": text, "sent": True, "verified": verified}
 
@@ -552,11 +605,10 @@ def send_message(to: str, text: str, dry_run: bool = False) -> dict:
             return {"recipient": number, "text": text, "sent": False, "dry_run": True}
 
         backend.click_send()
-        time.sleep(1.3)  # let the sent bubble render before verifying
-        verified = _verify_sent(text)
+        verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
-        time.sleep(0.25)
         if saved is not None:
+            time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
 
     return {

@@ -27,6 +27,9 @@ class Backend(ABC):
     """Everything platform-specific needed to drive Viber Desktop."""
 
     name: str = "base"
+    # True if type_text/delete/paste return only once the field holds the expected text and
+    # click_compose/click_search wait for focus themselves — callers can then skip fixed pauses.
+    input_confirmed: bool = False
 
     # --- app / process ---------------------------------------------------------------
     @abstractmethod

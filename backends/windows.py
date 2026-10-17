@@ -201,6 +201,7 @@ def _is_send(c) -> bool:
 
 class WindowsBackend(Backend):
     name = "windows"
+    input_confirmed = True  # _enter/delete wait on the box's UIA value
 
     def __init__(self) -> None:
         self._pids: set[int] = set()
