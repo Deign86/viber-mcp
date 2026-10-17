@@ -150,6 +150,9 @@ each GC created and each template skipped or failed (with the reason).
 - **Sending:** "reply to / tell / send …" means send it — `reply`, `send_message`,
   `reply_to_message(n, text)` (quote-reply; sends by default). Use `put_draft` only when the staff
   member asks for a draft.
+- **Never call anyone an "intern" in a message** (to clients, owners, brokers or coworkers) — say
+  "employee" ("isa sa mga employees namin"). The `Intern: <name>` lines in listing docs and
+  templates are just where the name comes from; keep those template/doc fields as they are.
 - **Other message actions:** `edit_message(n, text)` fixes one of your own sent messages;
   `like_message(n)` toggles the heart; `message_action(n, action)` picks any item from a message's
   right-click menu (Pin, Forward, Copy message, Translate, Set reminder). If it reports
