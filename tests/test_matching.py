@@ -39,6 +39,35 @@ def test_find_result_row_prefers_prefix_over_substring_above_it():
     assert _find_result_row("Ivy", rows)[0] == "Ivy Cloma-Rosales"
 
 
+def test_find_result_row_prefers_whole_word_over_longer_prefix_above_it():
+    # Regression: the topmost prefix match used to win ("Max" opened "Maxine Cruz").
+    for query, rows, want in [
+        ("Max", ["Maxine Cruz", "Max Alpha"], "Max Alpha"),
+        ("Jean", ["Jeanette Uy", "Jean Dela Cruz"], "Jean Dela Cruz"),
+        ("Anthony", ["Mark Anthony Santos", "Anthony Reyes"], "Anthony Reyes"),
+    ]:
+        obs = [{"text": t, "x": 0.1, "y": 0.2 + 0.1 * i} for i, t in enumerate(rows)]
+        assert _find_result_row(query, obs)[0] == want, query
+
+
+def test_await_results_skips_the_stale_chat_list(monkeypatch):
+    # Live-app regression: the first read after typing still shows the old chat list, where the
+    # same name sits at another y. Only a read with a results header, agreeing twice, is clickable.
+    import viber_send
+    stale = [{"text": "Max Alpha", "x": 0.1, "y": 0.942}]
+    results = [{"text": "Conversations", "x": 0.05, "y": 0.13}, {"text": "Max Alpha", "x": 0.1, "y": 0.179}]
+    reads = iter([stale, stale, results, results, results])
+
+    class FakeBackend:
+        def observe(self):
+            return next(reads)
+
+    monkeypatch.setattr(viber_send, "backend", FakeBackend())
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: None)
+    _, match = viber_send._await_results("Max")
+    assert match[:2] == ("Max Alpha", 0.179)
+
+
 def test_find_result_row_ignores_search_bar_and_returns_none():
     assert _find_result_row("Ivy", [{"text": "Ivy", "x": 0.1, "y": 0.05}]) is None
 
