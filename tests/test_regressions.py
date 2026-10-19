@@ -346,6 +346,19 @@ def test_existing_group_dialog_is_detected():
     assert existing_group_from_dialog(["THSWV-WH-(967.76SQM, CAVITE)", "8 participants"]) is None
 
 
+def test_privacy_blocked_dialog_is_detected():
+    # KRYS-CS: the client's privacy settings blocked group invites. Viber created the GC without
+    # them and showed "Couldn't be added"; the run went on to the listing and failed at the photos.
+    from viber_ui import privacy_blocked_from_dialog
+
+    texts = ["KRYS-CS-(40SQM, TAYTAY-ANGONO)", "7 participants", "Couldn't be added",
+             "Maureen Donor was not added to the group due to", "their privacy settings.", "OK"]
+    assert privacy_blocked_from_dialog(texts) == "Maureen Donor"
+    assert privacy_blocked_from_dialog(["Couldn't be added Maureen Donor was not added to the "
+                                        "group due to their privacy settings."]) == "Maureen Donor"
+    assert privacy_blocked_from_dialog(["KAYLE-WH-(400SQM, MANILA)", "8 participants"]) is None
+
+
 # ------------------- chat-pane banner must not be mistaken for the picker row (Rafael)
 
 
