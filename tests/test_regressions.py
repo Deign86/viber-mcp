@@ -409,6 +409,28 @@ def test_send_listing_keeps_the_photos_it_just_sent(tmp_path, monkeypatch):
     assert all(p.exists() for p in photos)
 
 
+def test_free_form_inquiry_only_needs_name_and_number():
+    # OLIVER (J&T Express): a free-form note with no labels was refused ("name missing",
+    # "unknown property type", "location not a recognizable place"). Only the name and Viber
+    # number are required; the rest is inferred or taken from the listing.
+    from viber_gc_logic import client_message, fill_from_listing, gc_name, infer_fields, parse_template
+
+    note = "Oliver\nJ and t express\nWarehouse\n200-300k\n600-1000 Sqm\nNear San Juan , Mariana 09155329932"
+    fields = infer_fields(note, parse_template(note))
+    assert fields["name"] == "Oliver" and "09155329932" in fields["viber"]
+    naming = gc_name(fields)
+    assert naming["parts"]["type"] == "WH" and naming["parts"]["sqm"] == "600-1000"
+    filled = fill_from_listing(naming, "Quezon City, 860 Apolonio Samson", "WAREHOUSE")
+    assert filled["gc_name"] == "OLIVER-WH-(600-1000SQM, QC)" and not filled["uncertain"]
+    msg = client_message(note)
+    assert "👤 Name: Oliver" in msg and "09155329932" in msg
+
+    # Blank size and place come from the listing folder name.
+    filled = fill_from_listing(gc_name({"name": "Ana", "property_type": "", "sqm": "", "location": ""}),
+                               "Laguna, 1,080 Sta. Rosa", "WAREHOUSE")
+    assert filled["gc_name"] == "ANA-WH-(1080SQM, LAGUNA)" and not filled["uncertain"]
+
+
 def test_listing_without_dashed_line_is_split_by_inference():
     # MON-CS: the North Caloocan doc had no dashed line, so no listing could be sent. The client
     # part ends with our company contact block; owner details below it stay internal.
