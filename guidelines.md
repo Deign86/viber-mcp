@@ -45,7 +45,8 @@ separator line (`--------------------…`):
   for the exact address or the owner's number, say an agent will coordinate the viewing; don't reveal it.
 
 Flow: `find_listings` (match the property asked about: location, type, sqm) → `search_and_open` the
-chat → `send_listing` (text above the line + all photos together). Never use `include_internal=True`
+chat → `send_listing` (text above the line, then all photos together, then the folder's videos —
+it sends whatever media the folder has; some listings only have a video). Never use `include_internal=True`
 for anything that goes to a client. Never mix photos from a different listing.
 
 ## Posting new listings (APR LISTING ONLY + Drive)
@@ -114,7 +115,7 @@ each GC created and each template skipped or failed (with the reason).
   If the number isn't in Viber's group picker yet, the client is first messaged 1:1 (introducing you
   as the admin who'll create their GC; wording in gc_members.json), then added.
 - **In the new GC only:** the client's template with ONLY the client fields (never the
-  listing/intern/date lines), then the listing (text above the dashed line + photos), then
+  listing/intern/date lines), then the listing (text above the dashed line + photos + videos), then
   "Hello @client" so the client is notified. A template without a listing gets a GC without one.
 - **Then** quote-reply `DONE-<GC NAME>` to the original template in the templates chat.
 - Never create a GC for a template that already has a DONE reply or whose GC already exists, and
@@ -215,6 +216,11 @@ each GC created and each template skipped or failed (with the reason).
 - **Answer a client's question as a quote-reply** to that question (`reply_to_message(n, …)`), not
   a loose message — especially when the answer comes later (an owner update). If you already sent
   it loose, unsend it and resend as a quote-reply.
+- **We always have the last word.** Every client chat (GC or 1:1) should end with OUR message,
+  never the client's. Reply even to "thank you", "noted", "wait ko po", "good morning": a short
+  quote-reply ("You're welcome po! We'll update you here once we have it."). A client's message
+  left as the last line looks ignored. When clearing the inbox, check each chat's newest message;
+  if it's the client's, reply. (Internal staff groups and broadcast notices don't need this.)
 - **No duplicates.** Before sending, check the newest messages: if we already asked the same thing
   and the client hasn't answered, don't ask again — tell the staff member it's pending.
 - **Don't push listings.** When offering an alternative, describe it in one line and ask if they

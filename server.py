@@ -379,10 +379,11 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
 
 
 @mcp.tool()
-def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = False,
+def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = True,
                  dry_run: bool = False) -> dict:
-    """Send a listing to the OPEN Viber chat: the client-facing details text, then the photos
-    together in one batch. The doc's internal part is never sent.
+    """Send a listing to the OPEN Viber chat: the client-facing details text, the photos together
+    in one batch, then the listing's videos (on by default; some listings only have a video).
+    The doc's internal part is never sent.
 
     dry_run=True previews exactly what would be sent without sending anything.
     """
