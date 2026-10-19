@@ -243,15 +243,53 @@ def _doc_text(f: dict) -> str:
     raise DriveError(f"Unsupported listing document type: {f['mimeType']}")
 
 
-def split_listing(text: str) -> tuple[str, str]:
-    """(client-facing part above the dashed separator, internal part below it)."""
+# Without a dashed line, the client part ends with our company contact block…
+_COMPANY_CONTACT = re.compile(r"realty@alphapremiergroup\.com|0927\s*555\s*5803|0915\s*888\s*9482|"
+                              r"0921\s*217\s*4555", re.I)
+# …or, failing that, right before the first line of the internal notes.
+_INTERNAL_START = re.compile(
+    r"^\W*(internal|\d+(\.\d+)?\s*(month|%).*commission|commission|exact address|owner|"
+    r"contact (person|details|number)|intern\b|added to drive|map( link)?\s*:|location\s*:|"
+    r"google pin|viber\s*:|whatsapp|facebook profile|call update|note[s]?\s*:)", re.I)
+_PHONE = re.compile(r"(?:\+?63|0)\s*9\d{2}[\s-]*\d{3}[\s-]*\d{4}")
+
+
+def _infer_split(lines: list[str]) -> int | None:
+    """Index where the internal part starts in a doc with no dashed line, or None."""
+    contact = [i for i, l in enumerate(lines) if _COMPANY_CONTACT.search(l)]
+    if contact:
+        end = contact[0]
+        while end + 1 < len(lines) and (_COMPANY_CONTACT.search(lines[end + 1])
+                                        or not lines[end + 1].strip()):
+            end += 1
+        return end + 1
+    return next((i for i, l in enumerate(lines) if i and _INTERNAL_START.match(l)), None)
+
+
+def split_listing(text: str, strict: bool = False) -> tuple[str, str]:
+    """(client-facing part above the dashed separator, internal part below it).
+
+    Docs without the dashed line are split by inference (strict=False): the client part ends
+    with our company contact block (email / company numbers), or else right before the first
+    internal-looking line (commission, owner, contact person, exact address, intern…). If the
+    inferred client part still holds a non-company phone number, it refuses rather than risk
+    sending an owner's number."""
     lines = text.lstrip("﻿").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     for i, line in enumerate(lines):
         if _SEPARATOR.match(line) and any(l.strip() for l in lines[:i]):
             head = [l for l in lines[:i] if not _SEPARATOR.match(l)]  # drop a stray leading rule
             return "\n".join(head).strip(), "\n".join(lines[i + 1:]).strip()
-    raise DriveError("No dashed separator line found in the listing doc — can't tell which part "
-                     "is client-facing. Ask the staff member; don't send anything from this doc.")
+    cut = None if strict else _infer_split(lines)
+    if cut is None:
+        raise DriveError("No dashed separator line found in the listing doc, and the client-facing "
+                         "part couldn't be told apart from the internal notes. Ask the staff member.")
+    public = "\n".join(lines[:cut]).strip()
+    leaked = [p for p in _PHONE.findall(public) if not _COMPANY_CONTACT.search(p)]
+    if not public or leaked:
+        raise DriveError("No dashed separator line in the listing doc, and the inferred client part "
+                         "contains a non-company phone number (possibly the owner's). Ask the staff "
+                         "member to add the dashed line; don't send anything from this doc.")
+    return public, "\n".join(lines[cut:]).strip()
 
 
 def get_listing(folder_id: str, include_internal: bool = False) -> dict:
@@ -367,7 +405,7 @@ def find_posted_message(messages: list[dict], text: str) -> int | None:
 def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
                        photo_paths: list[str], subfolder: str = "") -> dict:
     """Validate a new listing and resolve its Drive parent folder. Changes nothing."""
-    split_listing(text)  # raises if there's no dashed separator between client and internal parts
+    split_listing(text, strict=True)  # new posts must have the dashed separator
     folder_name = folder_name.strip()
     if not folder_name or "," not in folder_name:
         raise DriveError("folder_name must follow 'City, sqm Area' (e.g. 'Pasay City, 8, 12, 22 Malibay').")

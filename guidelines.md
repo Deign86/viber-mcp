@@ -30,7 +30,8 @@ Ask the staff member only when:
   a `STOP` note — report exactly what failed and **don't retry the same thing on your own**;
 - the target chat or listing is ambiguous (several matches, `low_confidence`), or a GC name part is
   uncertain (e.g. "Along Sucat Road");
-- a listing doc has no dashed separator line;
+- a listing doc can't be split even by inference (no dashed line and the tool refuses, e.g. an
+  owner's number would end up in the client part) — give the staff member the Drive folder link;
 - Viber shows a confirmation dialog you weren't asked about (`confirmation_dialog_buttons`) or an
   unexpected screen.
 
