@@ -160,6 +160,14 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
     if not created["created"]:
         raise GCError("The group didn't appear after 'Start chat' — check Viber before retrying "
                       "(it may exist already).")
+    if created.get("privacy_blocked") is not None:
+        who = created["privacy_blocked"] or plan["client_number"]
+        raise GCError(f"CLIENT NOT ADDED — GC '{plan['gc_name']}' was created with the staff only: "
+                      f"{who} ({plan['client_number']}) couldn't be added because of their Viber "
+                      "privacy settings. Nothing was posted in the GC and DONE wasn't replied. Ask the "
+                      "client in their 1:1 chat to allow group invites (More → Settings → Privacy → "
+                      "Groups and Communities), then add them to the GC and post the template, "
+                      "listing and mention. Do not retry (that would make a second GC).")
     steps["group"] = created
     steps["template"] = viber_send.reply(plan["client_message"])
     if plan["listing"]:

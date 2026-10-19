@@ -646,6 +646,21 @@ def existing_group_from_dialog(texts: list[str]) -> str | None:
     return ""
 
 
+_PRIVACY_BLOCKED = re.compile(r"(.+?)\s+was not added to the group due to (?:their|his|her) privacy settings",
+                              re.I)
+
+
+def privacy_blocked_from_dialog(texts: list[str]) -> str | None:
+    """Viber's "Couldn't be added — <Name> was not added to the group due to their privacy
+    settings" dialog, shown right after "Start chat": the person's name ("" if unreadable), or
+    None if no dialog. OCR may split the sentence over lines, so they're joined first."""
+    joined = " ".join(t.strip() for t in texts)
+    m = _PRIVACY_BLOCKED.search(joined)
+    if m:
+        return m.group(1).split("Couldn't be added")[-1].strip(" .:")
+    return "" if "privacy settings" in joined.lower() and "not added" in joined.lower() else None
+
+
 def _open_new_group() -> None:
     """Open Viber's New group screen (pencil → New group). Looks at the screen before each click,
     because the pencil TOGGLES the new-chat panel: clicking it while the panel is already open
@@ -763,8 +778,24 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
         _close_new_group()
         return {"created": False, "existing_group": existing, "gc_name": gc_name,
                 "members_added": added, "client_display_name": client_display}
+    # A client whose privacy settings block group invites: the group IS created, just without
+    # them, and a "Couldn't be added" dialog pops up (sometimes a moment after the header).
+    blocked = None
+    for _ in range(4):
+        blocked = privacy_blocked_from_dialog([o["text"] for o in obs])
+        if blocked is not None or not hits:
+            break
+        time.sleep(0.8)
+        obs = _ocr_px()
+    if blocked is not None:
+        ok = next((e for e in b.elements() if e["type"] == "Button" and e["name"].strip().lower() == "ok"), None)
+        if ok:
+            b.click_at(*_mid(ok["rect"]))
+        else:
+            b.press_key("escape")
+        time.sleep(0.5)
     return {"created": bool(hits), "gc_name": gc_name, "members_added": added,
-            "client_display_name": client_display}
+            "client_display_name": client_display, "privacy_blocked": blocked}
 
 
 _ISOLATES = str.maketrans("", "", "⁨⁩")
