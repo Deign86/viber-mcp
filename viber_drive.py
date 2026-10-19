@@ -281,30 +281,34 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
     return result
 
 
-def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = False,
+def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = True,
                  dry_run: bool = False) -> dict:
-    """Send a listing to the OPEN Viber chat: its client-facing text, then its photos together.
-    The internal part of the doc is never sent."""
+    """Send a listing to the OPEN Viber chat: its client-facing text, then its photos together,
+    then its videos (a separate batch, so a big upload can't hold up the photos). Some listings
+    only have a video. The internal part of the doc is never sent."""
     import viber_send
     import viber_ui
 
     listing = get_listing(folder_id)
-    media = listing["photos"][:max(0, max_photos)]
-    if include_videos:
-        media += listing["videos"]
+    photos = listing["photos"][:max(0, max_photos)]
+    videos = listing["videos"] if include_videos else []
     plan = {"doc": listing["doc"], "text": listing["client_text"],
-            "files": [m["name"] for m in media]}
+            "files": [m["name"] for m in photos + videos]}
     if dry_run:
         return {"sent": False, "would_send": plan,
                 "note": "Nothing sent. Check the chat and the text, then call again without dry_run."}
-    paths = download([m["id"] for m in media])  # download first so a Drive error sends nothing
+    # Download first so a Drive error sends nothing.
+    photo_paths = download([m["id"] for m in photos])
+    video_paths = download([m["id"] for m in videos])
     try:
         text_result = viber_send.reply(listing["client_text"])
-        files_result = viber_ui.send_files(paths) if paths else {"sent": False, "files": []}
+        photos_result = viber_ui.send_files(photo_paths) if photo_paths else {}
+        videos_result = viber_ui.send_files(video_paths) if video_paths else {}
     finally:
-        prune_downloads()  # keep fresh photos (Viber may still be uploading); drop old ones
+        prune_downloads()  # keep fresh files (Viber may still be uploading); drop old ones
     return {"sent": True, "doc": listing["doc"], "text_verified": text_result.get("verified"),
-            "photos_sent": len(paths), "photos_verified": files_result.get("verified")}
+            "photos_sent": len(photo_paths), "photos_verified": photos_result.get("verified"),
+            "videos_sent": len(video_paths), "videos_verified": videos_result.get("verified")}
 
 
 # ------------------------------------------------------------- adding new listings

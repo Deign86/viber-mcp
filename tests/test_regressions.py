@@ -409,6 +409,38 @@ def test_send_listing_keeps_the_photos_it_just_sent(tmp_path, monkeypatch):
     assert all(p.exists() for p in photos)
 
 
+def test_send_listing_sends_the_folders_videos(monkeypatch):
+    # MONETTE-WH: the Sta. Rosa folder had only a video and no photos; send_listing skipped
+    # videos by default, so the client got the text alone. Videos now go by default, after the
+    # photos, as their own batch.
+    import sys
+    import types
+
+    import viber_drive
+
+    monkeypatch.setattr(viber_drive, "get_listing", lambda fid: {
+        "doc": "d", "client_text": "t",
+        "photos": [{"id": "p1", "name": "1.jpg"}],
+        "videos": [{"id": "v1", "name": "tour.mp4"}]})
+    monkeypatch.setattr(viber_drive, "download", lambda ids: [f"/c/{i}" for i in ids])
+    monkeypatch.setattr(viber_drive, "prune_downloads", lambda: None)
+    batches = []
+    monkeypatch.setitem(sys.modules, "viber_send",
+                        types.SimpleNamespace(reply=lambda text: {"verified": True}))
+    monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace(
+        send_files=lambda paths: batches.append(paths) or {"verified": True}))
+    out = viber_drive.send_listing("folder")
+    assert batches == [["/c/p1"], ["/c/v1"]]
+    assert out["photos_sent"] == 1 and out["videos_sent"] == 1
+
+    batches.clear()  # video-only folder: just the video batch, no empty photo send
+    monkeypatch.setattr(viber_drive, "get_listing", lambda fid: {
+        "doc": "d", "client_text": "t", "photos": [],
+        "videos": [{"id": "v1", "name": "tour.mp4"}]})
+    viber_drive.send_listing("folder")
+    assert batches == [["/c/v1"]]
+
+
 def test_blank_client_fields_are_sent_as_tilde():
     # Jensi template: blank SQM/Budget must go to the GC as "~", not empty.
     msg = logic.client_message(

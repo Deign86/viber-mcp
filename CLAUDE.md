@@ -188,7 +188,8 @@ Status:
   `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common. The doc is split at the typed dashed
   line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in
   code unless `get_listing(include_internal=True)`. `send_listing` sends the text, then the photos via
-  `send_files`; never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
+  `send_files`, then the folder's videos as a second batch (`include_videos` defaults to True —
+  some folders only have a video); never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
   `send_listing`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`.
 - **This server never writes to Drive.** Its Google identity is the read-only service account
   (`viber-drive-reader@apg-viber-assistant.iam.gserviceaccount.com`, gcloud project
