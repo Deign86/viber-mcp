@@ -109,6 +109,56 @@ def parse_template(text: str) -> dict:
     return fields
 
 
+def infer_fields(text: str, fields: dict) -> dict:
+    """Fill fields a free-form note left unlabelled ("Oliver / J and T Express / Warehouse /
+    600-1000 sqm / 0915…"): the name is the first unlabelled line with no digits, the type the
+    first line naming a property type, the size the first line mentioning sqm. Only a name and
+    a Viber number are required; the rest can come from the listing (fill_from_listing)."""
+    lines = [l.strip() for l in clean(text).split("\n") if l.strip() and not _URL_ONLY.match(l)]
+    free = [l for l in lines if not _label_of(l)]
+    if not fields.get("name"):
+        fields["name"] = next((l for l in free if not re.search(r"\d", l)), "")
+    if not fields.get("property_type"):
+        fields["property_type"] = next((l for l in free if _type_code(l)), "")
+    if not fields.get("sqm"):
+        fields["sqm"] = next((l for l in free if re.search(r"(?i)\bsq\.?\s*m|sqm", l)), "")
+    return fields
+
+
+_LISTING_TYPES = [("WAREHOUSE", "WH"), ("COMMERCIAL", "CS"), ("OFFICE", "OS"),
+                  ("CONDO", "CONDO"), ("HOUSE", "HOUSE"), ("LOT", "LOT")]
+
+
+def fill_from_listing(naming: dict, listing_name: str, listing_category: str = "") -> dict:
+    """Complete a GC name from the chosen listing ("City, sqm Area" + its category): unknown
+    type → the listing's category, "~" size → the listing's sqm, unknown place → its city. The
+    filled parts no longer count as uncertain."""
+    parts = dict(naming["parts"])
+    uncertain = list(naming["uncertain"])
+    city, _, rest = (listing_name or "").partition(",")
+    if parts.get("type") in (None, "?"):
+        cat = (listing_category or "").upper()
+        code = next((c for k, c in _LISTING_TYPES if k in cat), None)
+        if code:
+            parts["type"] = code
+            uncertain = [u for u in uncertain if not u.startswith("unknown property type")]
+    if parts.get("type") == "VIRTUALOFFICE":
+        return naming
+    if parts.get("sqm") in (None, "~"):
+        nums = re.findall(_NUM, rest)
+        if nums:
+            parts["sqm"] = nums[0].replace(",", "")
+            uncertain = [u for u in uncertain if not u.startswith("SQM not numeric")]
+    if parts.get("location") in (None, "?"):
+        loc, issue = _location_part(city)
+        if not issue:
+            parts["location"] = loc
+            uncertain = [u for u in uncertain if not u.startswith("location not")]
+    sqm_text = f"{parts['sqm']}SQM" if parts.get("sqm") not in (None, "~") else "~"
+    return {"gc_name": f"{parts['name']}-{parts['type']}-({sqm_text}, {parts['location']})",
+            "uncertain": uncertain, "parts": parts}
+
+
 def client_message(text: str) -> str:
     kept = []
     for line in clean(text).split("\n"):
@@ -116,6 +166,14 @@ def client_message(text: str) -> str:
         if label and label[0] in _CLIENT_FIELDS:
             # Staff rule: a blank field is sent as "~", never left empty.
             kept.append(line.rstrip() + ("" if label[1] else " ~"))
+    if not kept:
+        # A free-form note with no labels: post the client's fields in the template format.
+        f = infer_fields(text, parse_template(text))
+        rows = [("🏢 Company Name", "company"), ("👤 Name", "name"),
+                ("🏗️ Type of Property", "property_type"), ("📐 Preferred SQM", "sqm"),
+                ("💰 Preferred Budget", "budget"), ("📍 Preferred Location", "location"),
+                ("📱Viber", "viber")]
+        kept = [f"{label}: {f.get(key) or '~'}" for label, key in rows]
     return "\n".join(kept)
 
 

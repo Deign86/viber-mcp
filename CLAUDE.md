@@ -160,6 +160,10 @@ Status:
   privacy settings" dialog after "Start chat"; the GC exists with the staff only.
   `privacy_blocked_from_dialog` detects it, `create_group` closes it, and `create_client_gc`
   stops with CLIENT NOT ADDED before posting anything (ask the client to allow group invites).
+  Only the client's name and Viber number are required: `infer_fields` reads free-form notes
+  (first digit-free line = name, a line naming a type, a line with "sqm"), and
+  `fill_from_listing` takes a missing type/size/place from the listing folder ("City, sqm Area"
+  + category). `client_message` rebuilds the template format when the note has no labels.
 - `viber_ui.py` holds the computer-use primitives (screenshot/click/type/key/scroll/elements)
   and the actions built on them (`list_messages`, `open_image`, `unsend_message`). On Windows,
   messages are `FeedDelegate` elements; text is the child `TextEditItem` edit's value, images

@@ -44,11 +44,10 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
     """Work out everything create_client_gc would do, without changing anything."""
     cfg = _config()
     text = _template(template_n)
-    fields = logic.parse_template(text)
+    fields = logic.infer_fields(text, logic.parse_template(text))
     naming = logic.gc_name(fields)
-    name = gc_name.strip() or naming["gc_name"]
-    problems = [] if gc_name.strip() else list(naming["uncertain"])
     client_display = ""
+    problems = []
     try:
         client = logic.viber_e164(fields.get("viber") or "")
     except ValueError as exc:
@@ -79,6 +78,28 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
                         "Pass listing_folder_id (from find_listings) to include a listing.")
     if listing and listing.get("folder_id") == "none":
         listing = None
+
+    # Only the client's name and Viber number are required: a missing type, size or place is
+    # taken from the listing (its folder name "City, sqm Area" and category).
+    if listing and naming["uncertain"]:
+        if "name" not in listing:
+            try:
+                meta = viber_drive._drive().files().get(
+                    fileId=listing["folder_id"], fields="name,parents",
+                    supportsAllDrives=True).execute(num_retries=viber_drive.RETRIES)
+                listing["name"] = meta["name"]
+                listing.setdefault("category", viber_drive._drive().files().get(
+                    fileId=viber_drive._drive().files().get(
+                        fileId=meta["parents"][0], fields="parents", supportsAllDrives=True
+                    ).execute(num_retries=viber_drive.RETRIES)["parents"][0],
+                    fields="name", supportsAllDrives=True).execute(
+                        num_retries=viber_drive.RETRIES)["name"])
+            except Exception:  # noqa: BLE001 — naming help only; never block on it
+                pass
+        naming = logic.fill_from_listing(naming, listing.get("name", ""), listing.get("category", ""))
+    name = gc_name.strip() or naming["gc_name"]
+    if not gc_name.strip():
+        problems += list(naming["uncertain"])
 
     done = logic.done_text(name)
     visible = viber_ui._messages(viber_ui._backend().elements())
