@@ -187,7 +187,10 @@ Status:
   folder with one Google Doc (title starts with `*`) plus JPGs. Drive calls use
   `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common. The doc is split at the typed dashed
   line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in
-  code unless `get_listing(include_internal=True)`. `send_listing` sends the text, then the photos via
+  code unless `get_listing(include_internal=True)`. Docs with no dashed line are split by inference
+  (`split_listing`: the client part ends with our company contact block, else before the first
+  internal-looking line; it refuses if a non-company phone number would be sent).
+  `post_new_listing` still requires the line (`strict=True`). `send_listing` sends the text, then the photos via
   `send_files`, then the folder's videos as a second batch (`include_videos` defaults to True —
   some folders only have a video); never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
   `send_listing`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`.

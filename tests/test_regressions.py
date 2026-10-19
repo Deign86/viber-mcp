@@ -409,6 +409,34 @@ def test_send_listing_keeps_the_photos_it_just_sent(tmp_path, monkeypatch):
     assert all(p.exists() for p in photos)
 
 
+def test_listing_without_dashed_line_is_split_by_inference():
+    # MON-CS: the North Caloocan doc had no dashed line, so no listing could be sent. The client
+    # part ends with our company contact block; owner details below it stay internal.
+    import pytest
+
+    from viber_drive import DriveError, split_listing
+
+    doc = ("COMMERCIAL SPACE FOR RENT/LEASE in North Caloocan City\r\n\r\nFloor Area: 33 sqm\r\n"
+           "Contact Alpha Premier Realty for Inquiries & Viewing:\r\nrealty@alphapremiergroup.com\r\n"
+           "0927 555 5803 | 0915 888 9482 | 0921 217 4555\r\n\r\n1 MONTH STANDARD COMMISSION\r\n"
+           "Contact Details:\r\n• Owner Name: Anne\r\n• Contact Number: 09498657086\r\n")
+    public, internal = split_listing(doc)
+    assert public.endswith("0921 217 4555") and "09498657086" not in public
+    assert internal.startswith("1 MONTH STANDARD COMMISSION")
+
+    # No company block: cut before the first internal-looking line.
+    public, _ = split_listing("OFFICE FOR LEASE\nFloor Area: 50 sqm\nRent: 45k\nExact address: 12 X St.\n"
+                              "Owner: Y 09171234567")
+    assert public == "OFFICE FOR LEASE\nFloor Area: 50 sqm\nRent: 45k"
+
+    # An owner's number left in the inferred client part: refuse rather than leak it.
+    with pytest.raises(DriveError):
+        split_listing("OFFICE FOR LEASE\nCall 09171234567\nFloor Area: 50 sqm")
+    # New posts still require the dashed line.
+    with pytest.raises(DriveError):
+        split_listing(doc, strict=True)
+
+
 def test_send_listing_sends_the_folders_videos(monkeypatch):
     # MONETTE-WH: the Sta. Rosa folder had only a video and no photos; send_listing skipped
     # videos by default, so the client got the text alone. Videos now go by default, after the
