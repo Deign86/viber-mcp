@@ -1063,3 +1063,64 @@ def test_mention_of_a_non_member_sends_nothing(monkeypatch):
     with pytest.raises(viber_ui.UIError, match="mention list"):
         viber_ui.mention("Unknown")
     assert fake.sent is None and fake.value == ""
+
+
+class UnknownMentionBackend(MentionBackend):
+    """A new GC with the staff and one brand-new client number, which Viber's mention list
+    shows as "Unknown"."""
+
+    ROWS = ["Max Alpha", "Unknown"]
+
+
+def _run_gc_with_unknown_client(monkeypatch, fake):
+    import backends
+    import viber_drive
+    import viber_gc
+    import viber_send
+    import viber_ui
+
+    done = []
+    plan = {"ready": True, "problems": [], "gc_name": "LORI-WH-(1200-1350SQM)-CAVITE",
+            "done_reply": "DONE-LORI-WH-(1200-1350SQM)-CAVITE", "client_number": "+639531830814",
+            "client_viber_name": "Unknown", "intro_message_first": "", "client_message": "Name: Lori",
+            "listing": {"folder_id": "F"}, "templates_chat": "APG CLIENTS",
+            "template_text": "Name: Lori\nViber: 09531830814"}
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_ui.time, "sleep", lambda s: None)
+    monkeypatch.setattr(viber_gc.time, "sleep", lambda s: None)
+    monkeypatch.setattr(viber_gc, "plan_client_gc", lambda *a, **k: dict(plan))
+    monkeypatch.setattr(viber_gc, "_config", lambda: {"members": ["Max Alpha"], "self": ""})
+    monkeypatch.setattr(viber_gc, "client_name_from_chat", lambda number: "")  # no banner name
+    monkeypatch.setattr(viber_gc, "_find_message", lambda text, screens=6: {"n": 7})
+    monkeypatch.setattr(viber_ui, "create_group", lambda *a, **k: {
+        "created": True, "client_display_name": "Unknown", "existing_group": None,
+        "privacy_blocked": None})
+    monkeypatch.setattr(viber_ui, "reply_to_message",
+                        lambda n, text, send=True: done.append((n, text)) or {"sent": True})
+    monkeypatch.setattr(viber_send, "reply", lambda text: {"sent": True})
+    monkeypatch.setattr(viber_send, "search_and_open", lambda chat: {})
+    monkeypatch.setattr(viber_drive, "send_listing", lambda folder_id: {"sent": True})
+    monkeypatch.setattr(viber_drive, "prune_downloads", lambda: {})
+    return viber_gc.create_client_gc(1, dry_run=False), done
+
+
+def test_unknown_client_is_mentioned_as_unknown_and_done_is_posted(monkeypatch):
+    # 2026-10-20: brand-new numbers are "Unknown" in the picker AND the mention list, and the flow
+    # stopped with "the client's Viber name couldn't be read". Staff mention them as @Unknown.
+    fake = UnknownMentionBackend()
+    out, done = _run_gc_with_unknown_client(monkeypatch, fake)
+    assert fake.sent == "Hello po, @Unknown! Please check the listing above po."
+    assert out["done"] and out["steps"]["mention"]["mentioned"] == "Unknown"
+    assert done == [(7, "DONE-LORI-WH-(1200-1350SQM)-CAVITE")]
+
+
+def test_two_unknown_participants_stop_before_mention_and_done(monkeypatch):
+    import pytest
+    import viber_gc
+
+    fake = UnknownMentionBackend()
+    fake.ROWS = ["Unknown", "Unknown"]
+    out = None
+    with pytest.raises(viber_gc.GCError, match="ambiguous"):
+        out = _run_gc_with_unknown_client(monkeypatch, fake)
+    assert out is None and fake.sent is None and fake.value == ""
