@@ -348,10 +348,11 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
 
 
 @mcp.tool()
-def drive_sign_in() -> dict:
+def drive_sign_in(write: bool = False) -> dict:
     """Sign in to Google Drive for property listings (opens a browser the first time on this PC).
-    Other Drive tools do this automatically when needed."""
-    return viber_drive.sign_in()
+    Other Drive tools do this automatically when needed. write=True signs in the upload account
+    (the company Google account, used to add listings, docs and photos to Drive)."""
+    return viber_drive.sign_in(write)
 
 
 @mcp.tool()
@@ -393,12 +394,13 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Tr
 @mcp.tool()
 def post_new_listing(text: str, category: str, deal: str, folder_name: str,
                      photo_paths: list[str], subfolder: str = "", dry_run: bool = False) -> dict:
-    """Post a NEW listing to the staff listings GC (APR LISTING ONLY); returns the Drive upload plan.
+    """Post a NEW listing to the staff listings GC (APR LISTING ONLY) and add it to Drive.
 
     Does what staff do by hand: posts the full listing text (client part, dashed line, internal
-    part) → the photos as one album → a dashed separator. It does NOT upload to Drive: create the
-    folder, the doc and the photos in `drive_upload` with the Google Drive connector, then call
-    confirm_listing_in_drive. Refuses (before sending anything) if the text has no dashed
+    part) → the photos as one album → a dashed separator, then creates the "*<folder_name>"
+    folder, the listing doc and the photos in Drive and quote-replies "Added to Drive". (If the
+    OAuth client isn't set up on this PC it returns `drive_upload` for the Drive connector
+    instead.) Refuses (before sending anything) if the text has no dashed
     separator, a photo is missing, the category/deal/subfolder isn't found, a listing folder with
     that name already exists, or the listing is already the latest GC post. If it stops part-way
     it says what's done.
@@ -425,6 +427,33 @@ def confirm_listing_in_drive(folder_name: str, photos: int) -> dict:
     "Added to Drive [File name:*<folder_name>]" to its post in APR LISTING ONLY. Posts nothing if
     anything is missing."""
     return viber_drive.confirm_listing_in_drive(folder_name, photos)
+
+
+@mcp.tool()
+def add_listing_to_drive(text: str, category: str, deal: str, folder_name: str,
+                         photo_paths: list[str], subfolder: str = "", dry_run: bool = False) -> dict:
+    """Add a listing that's ALREADY posted in Viber (e.g. by staff) to Drive: creates (or reuses)
+    the "*<folder_name>" folder, the "*<folder_name>" Google Doc from `text`, and uploads the
+    photos as AlphaPremier_Photo_NN. Posts nothing in Viber — quote-reply its
+    `added_to_drive_reply` to the staff post yourself. Same arguments as post_new_listing; the
+    text must use the listing template with the dashed separator. Photos posted in Viber are
+    saved in Documents\\ViberDownloads (match them to the post's time)."""
+    return viber_drive.add_listing_to_drive(text, category, deal, folder_name, photo_paths,
+                                            subfolder, dry_run)
+
+
+@mcp.tool()
+def drive_upload_files(folder_id: str, paths: list[str], start: int = 1) -> dict:
+    """Upload photos/videos from this PC into a Drive folder, named AlphaPremier_Photo_NN
+    (numbered from `start`)."""
+    return {"uploaded": viber_drive.upload_files(folder_id, paths, start)}
+
+
+@mcp.tool()
+def update_listing_doc(folder_id: str, text: str) -> dict:
+    """Replace the whole text of a listing folder's Google Doc (e.g. to reformat it to the
+    listing template). The doc keeps its link. The text must have the dashed separator."""
+    return viber_drive.update_listing_doc(folder_id, text)
 
 
 @mcp.tool()

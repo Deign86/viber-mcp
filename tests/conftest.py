@@ -23,3 +23,14 @@ def fake_backend():
     backends._backend = FakeBackend()
     yield backends._backend
     backends._backend = previous
+
+
+@pytest.fixture(autouse=True)
+def no_real_drive_uploads(monkeypatch, tmp_path):
+    """Tests must never start the real OAuth sign-in (a test once opened the browser and hung):
+    point the upload client/token at files that don't exist."""
+    import viber_drive
+
+    monkeypatch.setattr(viber_drive, "CLIENT_FILE", tmp_path / "no_client.json")
+    monkeypatch.setattr(viber_drive, "WRITE_TOKEN_FILE", tmp_path / "no_token.json")
+    monkeypatch.setattr(viber_drive, "_writer_service", None)

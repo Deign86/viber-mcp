@@ -23,10 +23,15 @@ import time
 from pathlib import Path
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+# Uploads (new listing folders, docs, photos) use the company account through the OAuth client,
+# never the service account (it has 0 bytes of storage). Full "drive" is needed: drive.file can't
+# put files into the existing APR LISTING folders.
+WRITE_SCOPES = ["https://www.googleapis.com/auth/drive"]
 _HERE = Path(__file__).resolve().parent
 _DATA = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "viber-mcp"
 CLIENT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_CLIENT", _HERE / "google_oauth_client.json"))
 TOKEN_FILE = _DATA / "google_token.json"
+WRITE_TOKEN_FILE = _DATA / "google_token_write.json"
 SERVICE_ACCOUNT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_SERVICE_ACCOUNT",
                                            _DATA / "google_service_account.json"))
 CACHE_DIR = _DATA / "drive-cache"
@@ -59,12 +64,13 @@ class DriveError(Exception):
 # ------------------------------------------------------------------------------ auth
 
 
-def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE):
+def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
+           service_account_ok: bool = True):
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
 
-    if SERVICE_ACCOUNT_FILE.exists():
+    if service_account_ok and SERVICE_ACCOUNT_FILE.exists():
         # Service account (created with gcloud); the listing folder is shared with it (as an
         # editor if listings are to be added).
         from google.oauth2 import service_account
@@ -104,10 +110,32 @@ def _drive():
     return _service
 
 
-def sign_in() -> dict:
-    """Sign in to Google Drive (opens a browser the first time) and report the account."""
-    about = _drive().about().get(fields="user(displayName,emailAddress)").execute(num_retries=RETRIES)
-    return {"signed_in": True, "account": about["user"]}
+_writer_service = None
+
+
+def _writer():
+    """Drive service that can create files: the company Google account via the OAuth client
+    (browser sign-in once; the token is kept in WRITE_TOKEN_FILE)."""
+    global _writer_service
+    if _writer_service is None:
+        if not CLIENT_FILE.exists() and not WRITE_TOKEN_FILE.exists():
+            raise DriveError(f"Drive uploads aren't set up: the OAuth client file {CLIENT_FILE} is missing.")
+        from googleapiclient.discovery import build
+        creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False)
+        _writer_service = build("drive", "v3", credentials=creds, cache_discovery=False)
+    return _writer_service
+
+
+def can_upload() -> bool:
+    return CLIENT_FILE.exists() or WRITE_TOKEN_FILE.exists()
+
+
+def sign_in(write: bool = False) -> dict:
+    """Sign in to Google Drive (opens a browser the first time) and report the account.
+    write=True signs in the upload account (the company Google account, full Drive access)."""
+    svc = _writer() if write else _drive()
+    about = svc.about().get(fields="user(displayName,emailAddress)").execute(num_retries=RETRIES)
+    return {"signed_in": True, "write": write, "account": about["user"]}
 
 
 # ----------------------------------------------------------------------- primitives
@@ -204,12 +232,13 @@ def _property_folders() -> list[dict]:
             for prop in kids.get(deal["id"], []):
                 if _is_subfolder_group(prop, kids):
                     out += [{"folder_id": p["id"], "name": p["name"], "category": cat["name"],
-                             "deal": f"{deal['name']} / {prop['name']}", "modified": p["modifiedTime"]}
+                             "deal": f"{deal['name']} / {prop['name']}", "modified": p["modifiedTime"],
+                             "parent_id": prop["id"]}
                             for p in kids[prop["id"]]]
                     continue
                 out.append({"folder_id": prop["id"], "name": prop["name"],
                             "category": cat["name"], "deal": deal["name"],
-                            "modified": prop["modifiedTime"]})
+                            "modified": prop["modifiedTime"], "parent_id": deal["id"]})
     _tree_cache = (time.time(), out)
     return out
 
@@ -403,8 +432,10 @@ def find_posted_message(messages: list[dict], text: str) -> int | None:
 
 
 def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
-                       photo_paths: list[str], subfolder: str = "") -> dict:
-    """Validate a new listing and resolve its Drive parent folder. Changes nothing."""
+                       photo_paths: list[str], subfolder: str = "",
+                       allow_existing: bool = False) -> dict:
+    """Validate a new listing and resolve its Drive parent folder. Changes nothing.
+    allow_existing: a folder of that name in the same parent is fine (it gets reused)."""
     split_listing(text, strict=True)  # new posts must have the dashed separator
     folder_name = folder_name.strip()
     if not folder_name or "," not in folder_name:
@@ -423,6 +454,8 @@ def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
         path += f" / {parent['name']}"
     clash = [p for p in _property_folders()
              if p["name"].strip().lstrip("*").strip().casefold() == folder_name.casefold()]
+    if allow_existing:
+        clash = [p for p in clash if p.get("parent_id") != parent["id"]]
     if clash:
         raise DriveError(f"A listing folder named '{folder_name}' already exists "
                          f"({clash[0]['category']} / {clash[0]['deal']}) — it may already be posted. "
@@ -444,6 +477,108 @@ def drive_upload_plan(text: str, plan: dict, added: str) -> dict:
         "photos": [{"path": p, "name": f"AlphaPremier_Photo_{i:02d}{Path(p).suffix.lower() or '.jpg'}"}
                    for i, p in enumerate(plan["photos"], 1)],
     }
+
+
+_IMAGE_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+                ".webp": "image/webp", ".mp4": "video/mp4", ".mov": "video/quicktime"}
+
+
+def _find_child(svc, parent_id: str, name: str, mime: str) -> dict | None:
+    q = (f"'{parent_id}' in parents and name = '{_quote(name)}' and mimeType = '{mime}' "
+         "and trashed = false")
+    files = svc.files().list(q=q, fields="files(id,name)", supportsAllDrives=True,
+                             includeItemsFromAllDrives=True).execute(num_retries=RETRIES).get("files", [])
+    return files[0] if files else None
+
+
+def upload_files(folder_id: str, paths: list[str], start: int = 1) -> list[dict]:
+    """Upload photos/videos into a Drive folder as AlphaPremier_Photo_NN.<ext> (numbering from
+    `start`). Returns [{id, name}]."""
+    from googleapiclient.http import MediaFileUpload
+
+    svc = _writer()
+    out = []
+    for i, p in enumerate(paths, start):
+        path = Path(p).expanduser().resolve()
+        if not path.is_file():
+            raise DriveError(f"File not found: {path}")
+        ext = path.suffix.lower() or ".jpg"
+        mime = _IMAGE_TYPES.get(ext, "application/octet-stream")
+        media = MediaFileUpload(str(path), mimetype=mime, resumable=path.stat().st_size > 5_000_000)
+        f = svc.files().create(body={"name": f"AlphaPremier_Photo_{i:02d}{ext}", "parents": [folder_id]},
+                               media_body=media, fields="id,name",
+                               supportsAllDrives=True).execute(num_retries=RETRIES)
+        out.append(f)
+    return out
+
+
+def upload_listing(upload: dict) -> dict:
+    """Create a drive_upload_plan in Drive with the company account: the '*' folder (reused if
+    it's already there), the '*' listing doc as a Google Doc (skipped if it exists), then the
+    photos, numbered after any photos already in the folder."""
+    from googleapiclient.http import MediaInMemoryUpload
+
+    global _tree_cache
+    svc = _writer()
+    name = upload["folder_name"]
+    folder = _find_child(svc, upload["parent_folder_id"], name, FOLDER)
+    created_folder = folder is None
+    if folder is None:
+        folder = svc.files().create(body={"name": name, "mimeType": FOLDER,
+                                          "parents": [upload["parent_folder_id"]]},
+                                    fields="id,name", supportsAllDrives=True).execute(num_retries=RETRIES)
+    doc = _find_child(svc, folder["id"], upload["doc_title"], GDOC)
+    created_doc = doc is None
+    if doc is None:
+        media = MediaInMemoryUpload(upload["doc_text"].encode("utf-8"), mimetype="text/plain")
+        doc = svc.files().create(body={"name": upload["doc_title"], "mimeType": GDOC,
+                                       "parents": [folder["id"]]},
+                                 media_body=media, fields="id,name",
+                                 supportsAllDrives=True).execute(num_retries=RETRIES)
+    existing = svc.files().list(
+        q=f"'{folder['id']}' in parents and mimeType contains 'image/' and trashed = false",
+        fields="files(id)", supportsAllDrives=True,
+        includeItemsFromAllDrives=True).execute(num_retries=RETRIES).get("files", [])
+    photos = upload_files(folder["id"], [p["path"] for p in upload.get("photos", [])],
+                          start=len(existing) + 1) if upload.get("photos") else []
+    _tree_cache = None
+    return {"folder_id": folder["id"], "folder_created": created_folder,
+            "doc_id": doc["id"], "doc_created": created_doc, "photos_uploaded": len(photos),
+            "folder_url": f"https://drive.google.com/drive/folders/{folder['id']}"}
+
+
+def update_listing_doc(folder_id: str, text: str) -> dict:
+    """Replace the whole text of a listing folder's '*' Google Doc (e.g. to reformat it). The
+    doc keeps its id/link. Refuses text without the dashed separator."""
+    from googleapiclient.http import MediaInMemoryUpload
+
+    split_listing(text, strict=True)
+    svc = _writer()
+    docs = [f for f in _children(folder_id) if f["mimeType"] == GDOC]
+    if len(docs) != 1:
+        raise DriveError(f"Expected one Google Doc in the folder, found {len(docs)}.")
+    media = MediaInMemoryUpload(text.strip().encode("utf-8"), mimetype="text/plain")
+    svc.files().update(fileId=docs[0]["id"], media_body=media,
+                       supportsAllDrives=True).execute(num_retries=RETRIES)
+    return {"updated": True, "doc_id": docs[0]["id"], "doc": docs[0]["name"]}
+
+
+def add_listing_to_drive(text: str, category: str, deal: str, folder_name: str,
+                         photo_paths: list[str], subfolder: str = "",
+                         dry_run: bool = False) -> dict:
+    """Add a listing that is ALREADY posted (e.g. by staff) to Drive: folder + doc + photos.
+    Does not post anything in Viber."""
+    from datetime import date
+
+    plan = _check_new_listing(text, category, deal, folder_name, photo_paths, subfolder,
+                              allow_existing=True)
+    today = date.today()
+    upload = drive_upload_plan(text, plan, f"{today:%B} {today.day}, {today.year}")
+    if dry_run:
+        return {"uploaded": False, "drive_upload": upload, "note": "Nothing created."}
+    result = upload_listing(upload)
+    result["added_to_drive_reply"] = added_to_drive_reply(plan["folder_name"])
+    return result
 
 
 def is_listings_gc(matched: str) -> bool:
@@ -478,10 +613,10 @@ def _quote_reply_posted(text: str, reply_text: str, tries: int = 8) -> dict:
 def post_new_listing(text: str, category: str, deal: str, folder_name: str,
                      photo_paths: list[str], subfolder: str = "", dry_run: bool = False) -> dict:
     """Post a NEW listing in the listings GC the way staff do (full text incl. the internal part
-    below the dashed line, then the photos, then a dashed separator) and return the Drive upload
-    plan. Uploading is done with the Drive connector (this server's Google identity is a
-    read-only service account with no storage); then confirm_listing_in_drive posts the
-    'Added to Drive' reply. Everything is checked before anything is sent."""
+    below the dashed line, then the photos, then a dashed separator), then add it to Drive with
+    the company account (upload_listing) and post the 'Added to Drive' reply. Without the OAuth
+    client it returns the upload plan for the Drive connector instead (the read-only service
+    account has no storage). Everything is checked before anything is sent."""
     from datetime import date
 
     import viber_send
@@ -516,8 +651,17 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
                         "rest by hand, don't re-run (it would post the listing twice).")
         return done
     done["drive_upload"] = upload
-    done["next"] = ("Create the folder, the doc and the photos in drive_upload with the Drive "
-                    "connector, then call confirm_listing_in_drive(folder_name, photo count).")
+    if not can_upload():
+        done["next"] = ("Drive uploads aren't set up on this PC: create the folder, the doc and the "
+                        "photos in drive_upload with the Drive connector, then call "
+                        "confirm_listing_in_drive(folder_name, photo count).")
+        return done
+    try:
+        done["drive"] = upload_listing(upload)
+        done["confirmed"] = confirm_listing_in_drive(plan["folder_name"], len(plan["photos"]))
+    except Exception as e:
+        done["STOP"] = (f"Posted in the GC, but adding it to Drive stopped: {e}. Re-run "
+                        "add_listing_to_drive (it reuses what's there), then confirm_listing_in_drive.")
     return done
 
 

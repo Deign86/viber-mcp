@@ -197,20 +197,29 @@ Status:
   `post_new_listing` still requires the line (`strict=True`). `send_listing` sends the text, then the photos via
   `send_files`, then the folder's videos as a second batch (`include_videos` defaults to True —
   some folders only have a video); never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
-  `send_listing`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`.
-- **This server never writes to Drive.** Its Google identity is the read-only service account
+  `send_listing`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`,
+  `add_listing_to_drive`, `drive_upload_files`, `update_listing_doc`.
+- **Two Google identities.** Reads use the read-only service account
   (`viber-drive-reader@apg-viber-assistant.iam.gserviceaccount.com`, gcloud project
-  `apg-viber-assistant`); service accounts have 0 bytes of storage, so uploads failed with
-  `storageQuotaExceeded` after creating an empty folder. Uploads go through the Google Drive
-  connector (thealphapremiergroup@gmail.com).
+  `apg-viber-assistant`). Service accounts have 0 bytes of storage (uploads failed with
+  `storageQuotaExceeded`), so **writes never use it**: `_writer()` signs in the company account
+  (thealphapremiergroup@gmail.com) through the OAuth desktop client `google_oauth_client.json`
+  (git-ignored; client "Viber MCP" in that project) with the full `drive` scope (`drive.file` can't
+  write into the existing APR LISTING folders); token in `%LOCALAPPDATA%\viber-mcp\google_token_write.json`.
+  `drive_sign_in(write=True)` does the one-time browser consent. While the consent screen is in
+  "Testing" the refresh token expires after 7 days and the next upload reopens the browser.
+  `upload_listing` reuses an existing `*<name>` folder/doc and numbers photos after the ones
+  already there. Without the client file, `post_new_listing` falls back to returning the plan for
+  the Drive connector. Tests patch `CLIENT_FILE`/`WRITE_TOKEN_FILE` away (conftest autouse) — a
+  test once opened the real consent page and hung.
 - `post_new_listing` (viber_drive.py) validates everything first (separator, photos,
   category/deal[/subfolder] via `pick_folder`, no existing folder of that name), opens
   `VIBER_MCP_LISTINGS_GC` (default `APR LISTING ONLY`; `is_listings_gc` tolerates OCR junk like a
   trailing "w"), refuses if the listing is already the latest post, posts the text, confirms it is
   on screen (`find_posted_message`, which strips Viber's U+2068/U+2069 isolate marks — `reply`'s
-  `verified` gives false negatives on long texts), then photos → dashed separator, and returns
-  `drive_upload` (parent folder id, folder name, doc title/text with `Added to Drive: <date>`,
-  `AlphaPremier_Photo_NN` names). `confirm_listing_in_drive` checks folder/doc/photo count in Drive,
+  `verified` gives false negatives on long texts), then photos → dashed separator, then
+  `upload_listing(drive_upload)` (parent folder id, folder name, doc title/text with
+  `Added to Drive: <date>`, `AlphaPremier_Photo_NN` names) and `confirm_listing_in_drive`. `confirm_listing_in_drive` checks folder/doc/photo count in Drive,
   then quote-replies `Added to Drive [File name:*<name>]`. A failure after the first GC send returns
   `STOP` with what's done instead of raising — never re-run it.
 - Test any tool with `uv run client.py call <tool> '<json>'`; element ids from `list_elements`

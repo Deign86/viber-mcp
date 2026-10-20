@@ -54,15 +54,17 @@ for anything that goes to a client. Never mix photos from a different listing.
 "Send my completed listings to the listings GC / add them to Drive" → per listing, in order:
 1. `post_new_listing` — posts the full listing in APR LISTING ONLY (staff GC, so the internal part
    below the dashed line is included), the photos as one album right after it, a dashed
-   separator; returns `drive_upload`. Post every listing this way first so the GC reads
-   text → photos → separator for each, with nothing in between.
-2. Upload with the **Google Drive connector** (never this server — its service account has no
-   storage): in `drive_upload.parent_folder_id` create the folder `folder_name` (new listings
-   carry the `*` identifier on the folder name too, e.g. `*Cavite, 1,416 General Trias`), the Google Doc
-   `doc_title` from `doc_text`, and the photos named as listed. If the connector can't take a
-   photo (it needs the file inline), upload it with Drive in the browser into the same folder.
-3. `confirm_listing_in_drive(folder_name, photos)` — checks the folder, doc and photo count in
-   Drive, then quote-replies `Added to Drive [File name:*<folder_name>]` to the post.
+   separator; then creates the `*<folder_name>` folder, the listing Google Doc and the photos in
+   Drive with the company account and quote-replies `Added to Drive [File name:*<folder_name>]`.
+   If it returns `STOP` after posting, don't re-run it: run `add_listing_to_drive` (it reuses
+   what's already there), then `confirm_listing_in_drive(folder_name, photos)`.
+2. Only if it returns `drive_upload` with a `next` saying uploads aren't set up on this PC: create
+   the folder/doc/photos with the Google Drive connector, then `confirm_listing_in_drive`.
+- **A listing staff already posted** (e.g. upped by a coworker): `add_listing_to_drive` with the
+  text reformatted to the listing template and the photo paths (Viber saves posted photos in
+  `Documents\ViberDownloads`; match the post's time and look at them), then quote-reply its
+  `added_to_drive_reply` to the staff post. `drive_upload_files` adds photos to an existing folder;
+  `update_listing_doc` rewrites a listing doc in place (same link).
 - **Lots** go one level deeper: `category="CONDO / HOUSE AND LOT"`, `deal="LEASE"` or `"SALE"`,
   `subfolder="LOT"` (condos/houses: `"CONDO / HOUSE"`).
 - **Only listings marked complete** (address, final price, owner name and number on file). Skip

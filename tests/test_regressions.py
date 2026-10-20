@@ -714,10 +714,10 @@ def test_new_listing_dry_run_sends_nothing_and_plans_the_upload(monkeypatch):
     assert [p["name"] for p in up["photos"]] == ["AlphaPremier_Photo_01.jpg", "AlphaPremier_Photo_02.png"]
 
 
-def test_new_listing_posts_text_photos_separator_and_never_uploads(monkeypatch):
+def test_new_listing_without_oauth_client_returns_the_plan(monkeypatch):
     # The Drive write ran as the read-only service account (0 bytes of storage): the folder was
-    # created, then the doc upload failed with storageQuotaExceeded. Uploads now go through the
-    # Drive connector; the server only posts and returns the plan.
+    # created, then the doc upload failed with storageQuotaExceeded. Uploads never use the service
+    # account; without the OAuth client the server only posts and returns the plan.
     import viber_drive
 
     monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
@@ -726,7 +726,69 @@ def test_new_listing_posts_text_photos_separator_and_never_uploads(monkeypatch):
     assert out["posted"] is True and "STOP" not in out
     assert gc.sent == ["t\n---\ni", ["C:/p/a.JPG", "C:/p/b.png"], viber_drive.GC_SEPARATOR]
     assert out["drive_upload"]["parent_folder_id"] == "d"
-    assert not hasattr(viber_drive, "add_listing_to_drive") and not hasattr(viber_drive, "_drive_write")
+    assert "drive" not in out and "connector" in out["next"]
+
+
+def test_new_listing_uploads_to_drive_and_confirms(monkeypatch):
+    # With the OAuth client the server adds the listing to Drive itself and posts the reply.
+    import viber_drive
+
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    monkeypatch.setattr(viber_drive, "can_upload", lambda: True)
+    calls = []
+    monkeypatch.setattr(viber_drive, "upload_listing", lambda up: calls.append(up) or {"folder_id": "F"})
+    monkeypatch.setattr(viber_drive, "confirm_listing_in_drive",
+                        lambda name, n: {"confirmed": True, "name": name, "photos": n})
+    _GC().install(monkeypatch)
+    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", ["C:/p/a.JPG"])
+    assert out["drive"] == {"folder_id": "F"} and calls[0]["folder_name"].startswith("*")
+    assert out["confirmed"] == {"confirmed": True, "name": "Quezon City, 860 Apolonio Samson", "photos": 2}
+
+
+class _FakeWriter:
+    """Records Drive create/list calls; `existing` maps (parent, name, mime) -> id."""
+
+    def __init__(self, existing=None, images=0):
+        self.existing, self.images, self.created = existing or {}, images, []
+
+    def files(self):
+        return self
+
+    def list(self, q="", **kw):
+        if "mimeType contains 'image/'" in q:
+            return _Exec({"files": [{"id": f"img{i}"} for i in range(self.images)]})
+        hit = [v for (p, n, m), v in self.existing.items() if f"'{p}' in parents" in q
+               and f"name = '{n}'" in q and m in q]
+        return _Exec({"files": [{"id": hit[0], "name": "x"}] if hit else []})
+
+    def create(self, body=None, **kw):
+        self.created.append(body)
+        return _Exec({"id": f"new{len(self.created)}", "name": body["name"]})
+
+
+class _Exec:
+    def __init__(self, v):
+        self.v = v
+
+    def execute(self, **kw):
+        return self.v
+
+
+def test_upload_listing_reuses_folder_and_numbers_after_existing_photos(monkeypatch, tmp_path):
+    # A folder made by hand earlier must be reused (not duplicated) and new photos must not
+    # overwrite-number the ones already there.
+    import viber_drive
+
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"x")
+    w = _FakeWriter(existing={("P", "*X, 1 Y", viber_drive.FOLDER): "F1"}, images=2)
+    monkeypatch.setattr(viber_drive, "_writer", lambda: w)
+    out = viber_drive.upload_listing({"parent_folder_id": "P", "folder_name": "*X, 1 Y",
+                                      "doc_title": "*X, 1 Y", "doc_text": "a\n---\nb",
+                                      "photos": [{"path": str(photo), "name": "ignored"}]})
+    assert out["folder_id"] == "F1" and out["folder_created"] is False and out["doc_created"] is True
+    assert [b["name"] for b in w.created] == ["*X, 1 Y", "AlphaPremier_Photo_03.jpg"]
+    assert w.created[0]["mimeType"] == viber_drive.GDOC and w.created[0]["parents"] == ["F1"]
 
 
 def test_new_listing_accepts_ocr_junk_after_the_gc_name(monkeypatch):
