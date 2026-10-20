@@ -858,14 +858,19 @@ def send_with_mention(before: str, display_name: str, after: str = "",
     want = _norm(display_name)
     # Typing the start of the name filters Viber's mention list (it only shows a few rows).
     first = display_name.split()[0] if display_name.split() else ""
-    query = f"@{first[:4]}"
+    query = f"@{first[:3] if is_placeholder_name(display_name) else first[:4]}"
     baseline = {o["text"] for o in _mention_zone(b)}  # chat text that was there before the list
     b.type_into_focus(before + query)
     time.sleep(1.5)
     rows = [o for o in _mention_zone(b) if o["text"] not in baseline]
-    if not any(_norm(o["text"]) == want for o in rows):
+    hits = sum(_norm(o["text"]) == want for o in rows)
+    if not hits:
         b.delete()
         raise UIError(f"'{display_name}' isn't in this chat's mention list.")
+    if hits > 1:  # e.g. two brand-new numbers, both "Unknown": either pick could be wrong
+        b.delete()
+        raise UIError(f"{hits} participants are named '{display_name}' in the mention list — "
+                      "ambiguous; nothing sent.")
     # Which row is highlighted first can't be read from OCR, so try each until the inserted
     # mention is exactly this name.
     for downs in range(min(len(rows), 8)):
@@ -882,11 +887,24 @@ def send_with_mention(before: str, display_name: str, after: str = "",
         b.delete()
         raise UIError(f"Couldn't insert a mention of exactly '{display_name}'; nothing sent.")
     # A space right after the mention closes the list; sending while it's open can swap the pick.
-    b.type_into_focus(after if after[:1].isspace() else " " + after)
+    glue = bool(after) and not after[:1].isspace()  # punctuation right after the name: "@Unknown!"
+    b.type_into_focus(" " if glue else after if after[:1].isspace() else " " + after)
     time.sleep(0.6)
     if any(want in _norm(o["text"]) for o in _mention_zone(b) if o["text"] not in baseline):
         b.press_key("escape")
         time.sleep(0.4)
+    if glue:
+        # The list is shut now; drop the closing space so the punctuation follows the name.
+        for _ in range(2):  # Viber may have added its own space after the mention too
+            if b._value().translate(_ISOLATES).endswith((" ", " ")):
+                b.press_key("backspace")
+                time.sleep(0.3)
+        if not mention_inserted(b._value(), before, display_name):
+            # Backspace took the mention with it: start over, keeping the space.
+            b.delete()
+            return send_with_mention(before, display_name, " " + after, quote_n)
+        b.type_into_focus(after)
+        time.sleep(0.3)
     value = b._value()
     if not mention_inserted(value, before, display_name, after):
         b.delete()
@@ -923,11 +941,11 @@ def mention_opens_number(display_name: str, number: str) -> bool | None:
     return None if before else after  # already on screen before the click: inconclusive
 
 
-def mention(display_name: str, greeting: str = "Hello", number: str = "") -> dict:
-    """Send '<greeting> @<display_name>' in the open chat (the person is notified). With
+def mention(display_name: str, greeting: str = "Hello", number: str = "", after: str = "") -> dict:
+    """Send '<greeting> @<display_name><after>' in the open chat (the person is notified). With
     `number`, also check the sent mention opens that number's chat ("verified_number") —
     which leaves that 1:1 chat open, not the group."""
-    sent = send_with_mention(f"{greeting} ", display_name)
+    sent = send_with_mention(f"{greeting} ", display_name, after)
     if number:
         sent["verified_number"] = mention_opens_number(display_name, number)
     return sent

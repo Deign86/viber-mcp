@@ -151,10 +151,16 @@ Status:
   and the mention list aren't in the UIA tree — rows are found by OCR; OCR confuses I/l/1 and O/0,
   so names are compared after folding those (`_norm`, `viber_send._ocr_fold`).
   The picker labels unsaved numbers "Unknown"; their Viber name comes from the 1:1 chat's
-  "<Name> +63… is not in your contact list" banner (`viber_gc.client_name_from_chat`). Mentions
-  are picked with Down×k + Tab and accepted only if the box holds exactly `@<name>`
+  "<Name> +63… is not in your contact list" banner (`viber_gc.client_name_from_chat`). When no
+  name can be read (brand-new numbers are "Unknown" in the mention list too), the client is
+  mentioned as `@Unknown` — staff expect that: "Hello po, @Unk" → pick the row → "Hello po,
+  @Unknown! Please check the listing above po." → DONE. `send_with_mention` refuses (nothing sent,
+  flow stops before DONE) when more than one mention-list row is exactly the name (two "Unknown"s).
+  Mentions are picked with Down×k + Tab and accepted only if the box holds exactly `@<name>`
   (`mention_inserted` — "Anthony" is inside "Mark Anthony Santos"); then a space closes the list
-  before send (sending with it open sent the highlighted, wrong person). Clicking a sent mention
+  before send (sending with it open sent the highlighted, wrong person). Punctuation right after
+  the name ("@Unknown!") is typed after that space is backspaced away; if the backspace takes the
+  mention with it, it starts over keeping the space. Clicking a sent mention
   opens that person's 1:1 chat (number under the name, or in the banner) — `mention_opens_number`.
   A client whose privacy settings block group invites gets a "Couldn't be added … due to their
   privacy settings" dialog after "Start chat"; the GC exists with the staff only.

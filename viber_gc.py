@@ -195,11 +195,19 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
         steps["listing"] = viber_drive.send_listing(plan["listing"]["folder_id"])
     if viber_ui.is_placeholder_name(client_name):
         client_name = created["client_display_name"]
+    greeting, after = "Hello", ""
     if viber_ui.is_placeholder_name(client_name):
+        # Brand-new numbers are "Unknown" in the picker and the mention list too; staff mention
+        # them as @Unknown. send_with_mention refuses if more than one participant is "Unknown".
+        client_name, greeting = "Unknown", "Hello po,"
+        after = "! Please check the listing above po." if plan["listing"] else "!"
+    try:
+        steps["mention"] = viber_ui.mention(client_name, greeting, number=plan["client_number"],
+                                            after=after)
+    except viber_ui.UIError as exc:
         raise GCError(f"GC '{plan['gc_name']}' was created and the template/listing posted, but the "
-                      f"client's Viber name couldn't be read (picker shows '{client_name}'), so they "
-                      "weren't mentioned and DONE wasn't replied. Report this and stop; do not retry.")
-    steps["mention"] = viber_ui.mention(client_name, number=plan["client_number"])
+                      f"client couldn't be mentioned as @{client_name} ({exc}), so DONE wasn't "
+                      "replied. Report this and stop; do not retry.") from exc
 
     # Back to the templates chat: quote-reply DONE to the original template.
     chat = done_chat or plan["templates_chat"]
