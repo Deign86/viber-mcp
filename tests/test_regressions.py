@@ -1065,6 +1065,16 @@ def test_mention_of_a_non_member_sends_nothing(monkeypatch):
     assert fake.sent is None and fake.value == ""
 
 
+def test_same_listing_with_brgy_prefix_is_a_duplicate():
+    # "*Quezon City, 36 Brgy. Vasra" was in Drive already; "Quezon City, 36 Vasra" got added
+    # again because the duplicate check compared exact names.
+    import viber_drive
+    assert viber_drive.listing_key("*Quezon City, 36 Brgy. Vasra") == \
+        viber_drive.listing_key("Quezon City, 36 Vasra")
+    assert viber_drive.listing_key("Quezon City, 36 Vasra") != \
+        viber_drive.listing_key("Quezon City, 360 Vasra")
+
+
 class UnknownMentionBackend(MentionBackend):
     """A new GC with the staff and one brand-new client number, which Viber's mention list
     shows as "Unknown"."""
