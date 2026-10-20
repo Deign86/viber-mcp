@@ -431,6 +431,14 @@ def find_posted_message(messages: list[dict], text: str) -> int | None:
     return None
 
 
+def listing_key(name: str) -> str:
+    """A folder name reduced for duplicate checks: staff write the same place as
+    '*Quezon City, 36 Brgy. Vasra' and 'Quezon City, 36 Vasra', so drop the '*', barangay
+    prefixes and punctuation."""
+    words = re.sub(r"[^\w]+", " ", name.casefold()).split()
+    return " ".join(w for w in words if w not in ("brgy", "bgy", "barangay"))
+
+
 def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
                        photo_paths: list[str], subfolder: str = "",
                        allow_existing: bool = False) -> dict:
@@ -453,7 +461,7 @@ def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
                              subfolder, "subfolder")
         path += f" / {parent['name']}"
     clash = [p for p in _property_folders()
-             if p["name"].strip().lstrip("*").strip().casefold() == folder_name.casefold()]
+             if listing_key(p["name"]) == listing_key(folder_name)]
     if allow_existing:
         clash = [p for p in clash if p.get("parent_id") != parent["id"]]
     if clash:

@@ -213,7 +213,8 @@ Status:
   the Drive connector. Tests patch `CLIENT_FILE`/`WRITE_TOKEN_FILE` away (conftest autouse) — a
   test once opened the real consent page and hung.
 - `post_new_listing` (viber_drive.py) validates everything first (separator, photos,
-  category/deal[/subfolder] via `pick_folder`, no existing folder of that name), opens
+  category/deal[/subfolder] via `pick_folder`, no existing folder of that name — compared by `listing_key`, which ignores `*`, "Brgy." and
+  punctuation), opens
   `VIBER_MCP_LISTINGS_GC` (default `APR LISTING ONLY`; `is_listings_gc` tolerates OCR junk like a
   trailing "w"), refuses if the listing is already the latest post, posts the text, confirms it is
   on screen (`find_posted_message`, which strips Viber's U+2068/U+2069 isolate marks — `reply`'s
