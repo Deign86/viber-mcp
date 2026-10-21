@@ -34,6 +34,11 @@ naming, `pending_templates`, `choose_listing`) and pure helpers in `viber_ui.py`
 `_preview`, `find_number_row`, ...) so it can be tested with fixture data; UI-structure tests inject a
 fake backend via `backends._backend` (no module mocking). **Every bug found on the live app gets a
 regression test** in `tests/test_regressions.py` (or the matching test file) before/with the fix.
+Flows that poll (`_poll`) are tested with stateful fakes (`ChatBackend`, `PickerBackend`,
+`PanelBackend`, `GroupFlowBackend` in `test_regressions.py`) that change state after N reads; a
+fake that must make a poll time out uses `_use(..., fast_clock=True)` so the deadline is virtual.
+`tests/test_windows_backend.py` unit-tests the Windows backend (cached UIA walk, `wait_still`,
+`observe(region)`, value caching, `open_url`) with fake COM elements; it skips off Windows.
 
 Then **verify on the real app** with `client.py` (or `client.py call <tool> '<json>'`) and screenshots —
 the returned `verified` flag is best-effort and gives false negatives. Only test writes in My Notes.
@@ -97,6 +102,27 @@ Status:
   (AttachThreadInput trick; activation arrives asynchronously, so wait for it before restoring).
 - **Search-result UIA delegates are whole sections**, not rows — click the OCR'd row position.
 - Capture with `PrintWindow(..., PW_RENDERFULLCONTENT)`; it works while Viber is covered.
+- **Speed (profiled 2026-10-21 on the live app).** OCR takes the raw BGRA pixels straight into a
+  `SoftwareBitmap` (the PNG round trip cost more than recognition; words are identical).
+  `observe(region=(l, t, r, b))` crops before OCR — the sidebar is ~5x cheaper, the header band
+  ~20x; it's a *hint* (macOS ignores it), so callers still filter by x/y. UIA is read through
+  `_levels()` (one `FindAllBuildCache` per tree level, `_Node`s with cached properties) — never
+  go back to per-property `Control` reads in loops. The message/search box located by
+  `click_compose`/`click_search` is kept (`_target_node`) so `_value()` polls cost ~1 ms; anything
+  that can navigate (`click_at`, `click_result`, `press_key`, `open_url`) drops it. Wheel notches
+  are posted `_WHEEL_GAP` apart (5 ms; 30 ms made a 60-notch scroll take 2 s). `open_url`'s
+  foreground guard runs in a thread so chat polling starts at once. Prefer `viber_send._poll`
+  over fixed sleeps; `number_confirmed` accepts an unsaved number's chat from its "not in your
+  contact list" banner instead of the 4 s settle (never from the header: its band overlaps the
+  first message's). GC flow (profiled with a test group): `_ocr_px(region_px=...)` reads only
+  the side panel / mention zone, `_SB_CACHE` keeps the sidebar edge (no UIA walk per read), the
+  picker/rename/info-panel steps poll UIA state instead of sleeping, and the post-Save
+  `hold_foreground` runs in a thread. A tick went 3.4 s → 1.7 s, the mention 6.6 s → 3.3 s.
+  **Never walk the UIA tree while Qt animates** (a panel sliding in, a page fading): each
+  round trip then waits about a frame, so a ~50 ms walk takes >1 s. After a click that opens
+  or changes a panel, call `backend.wait_still()` (two identical PrintWindow captures) and
+  then walk once; `_levels` also fetches two levels per call (children + cached grandchildren)
+  to halve the round trips.
 - The "not in your contact list" banner appears on every unsaved-number chat — not an error.
 
 **Linux:** hardest target — Wayland heavily restricts screen capture and synthetic input; X11

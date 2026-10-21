@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
-import io
+import hashlib
 import os
 import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -35,12 +36,14 @@ import win32gui
 import win32process
 import win32ui
 from PIL import Image
+from uiautomation.uiautomation import _AutomationClient  # the raw IUIAutomation (for caching)
 
 from . import _winlogic as wl
 from .base import Backend, OCRError
 
 _VIBER_EXE = "viber.exe"
 _PW_RENDERFULLCONTENT = 2
+_WHEEL_GAP = 0.005  # between posted wheel notches; Qt queues them (30 ms each made 60 notches ~2 s)
 
 try:
     ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # per-monitor v2
@@ -52,14 +55,10 @@ _ocr_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="viber-ocr")
 _engine = None
 
 
-async def _recognize(png: bytes):
-    """Return (list of lines, each a list of (text, x, y, w, h) words in image px)."""
+def _get_engine():
     global _engine
-    from winrt.windows.graphics.imaging import BitmapDecoder
-    from winrt.windows.media.ocr import OcrEngine
-    from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
-
     if _engine is None:
+        from winrt.windows.media.ocr import OcrEngine
         eng = OcrEngine.try_create_from_user_profile_languages()
         if eng is None:
             from winrt.windows.globalization import Language
@@ -70,23 +69,29 @@ async def _recognize(png: bytes):
                 "Settings > Time & language > Language & region > Add a language (English)."
             )
         _engine = eng
+    return _engine
 
-    stream = InMemoryRandomAccessStream()
-    writer = DataWriter(stream)
-    writer.write_bytes(png)
-    await writer.store_async()
-    await writer.flush_async()
-    writer.detach_stream()
-    stream.seek(0)
-    decoder = await BitmapDecoder.create_async(stream)
-    bitmap = await decoder.get_software_bitmap_async()
-    result = await _engine.recognize_async(bitmap)
+
+async def _recognize(bgra: bytes, width: int, height: int):
+    """OCR raw BGRA pixels. Returns a list of lines, each a list of (text, x, y, w, h) words in
+    image px. The pixels go straight into a SoftwareBitmap: the PNG encode + decode round trip
+    this replaced cost more than the recognition itself (and gave identical words)."""
+    from winrt.windows.graphics.imaging import BitmapAlphaMode, BitmapPixelFormat, SoftwareBitmap
+    from winrt.windows.storage.streams import DataWriter
+
+    engine = _get_engine()
+    writer = DataWriter()
+    writer.write_bytes(bgra)
+    bitmap = SoftwareBitmap(BitmapPixelFormat.BGRA8, width, height, BitmapAlphaMode.IGNORE)
+    bitmap.copy_from_buffer(writer.detach_buffer())
+    result = await engine.recognize_async(bitmap)
     return [[(w.text, w.bounding_rect.x, w.bounding_rect.y, w.bounding_rect.width,
               w.bounding_rect.height) for w in line.words] for line in result.lines]
 
 
-def _ocr_png(png: bytes):
-    return asyncio.run(_recognize(png))
+def _ocr_image(img: Image.Image):
+    """OCR a PIL image (any mode) — runs on the OCR thread, which owns the engine."""
+    return asyncio.run(_recognize(img.convert("RGBA").tobytes("raw", "BGRA"), img.width, img.height))
 
 
 # ---- UI Automation — COM objects stay on one initialized thread -----------------------
@@ -103,18 +108,85 @@ def _is_main_window(hwnd: int) -> bool:
     return "viber" in win32gui.GetWindowText(hwnd).lower()
 
 
-def _find_desc(root, predicate, max_depth: int = 6):
-    """First descendant (breadth-first) satisfying `predicate`, or None."""
-    level = [root]
-    for _ in range(max_depth):
+# Properties fetched in bulk for every element of a tree level (one cross-process call per
+# level via FindAllBuildCache). uiautomation's Control wrappers fetch each property with its own
+# round trip, which made a walk of Viber's tree take ~2x longer and a value read ~50x longer.
+_UIA_PROPS = (auto.PropertyId.BoundingRectangleProperty, auto.PropertyId.ControlTypeProperty,
+              auto.PropertyId.NameProperty, auto.PropertyId.AutomationIdProperty,
+              auto.PropertyId.ClassNameProperty, auto.PropertyId.ValueValueProperty)
+_SCOPE_CHILDREN = 2  # TreeScope_Children
+_SCOPE_ELEMENT_CHILDREN = 3  # TreeScope_Element | TreeScope_Children (cache the children too)
+_uia_cache: dict = {}  # per-process COM objects (request, condition), created on the UIA thread
+
+
+class _Node:
+    """One UIA element with its properties read from the cache. Attribute names match the
+    uiautomation Control ones the predicates use (ControlTypeName, ClassName, AutomationId)."""
+    __slots__ = ("element", "parent", "index", "ControlTypeName", "ClassName", "AutomationId",
+                 "Name", "Value", "rect", "_pattern")
+
+    def __init__(self, element, parent: "_Node | None") -> None:
+        self.element, self.parent, self.index, self._pattern = element, parent, None, None
+        get = element.GetCachedPropertyValue
+        self.ControlTypeName = auto.ControlTypeNames.get(get(auto.PropertyId.ControlTypeProperty), "")
+        self.ClassName = get(auto.PropertyId.ClassNameProperty) or ""
+        self.AutomationId = get(auto.PropertyId.AutomationIdProperty) or ""
+        self.Name = get(auto.PropertyId.NameProperty) or ""
+        value = get(auto.PropertyId.ValueValueProperty)
+        self.Value = value if isinstance(value, str) else ""
+        rect = get(auto.PropertyId.BoundingRectangleProperty)
+        try:  # SAFEARRAY of left, top, width, height
+            self.rect = (rect[0], rect[1], rect[0] + rect[2], rect[1] + rect[3])
+        except (TypeError, IndexError):
+            self.rect = (0, 0, 0, 0)
+
+    def value_pattern(self):
+        """The live ValuePattern (cached on the node: ~1 ms per read instead of a re-find)."""
+        if self._pattern is None:
+            self._pattern = auto.Control.CreateControlFromElement(self.element).GetValuePattern()
+        return self._pattern
+
+
+def _levels(hwnd: int, max_depth: int):
+    """Yield _Nodes of Viber's UIA tree breadth-first (parents before children), fetching two
+    levels (children + their cached children) with their properties per call: each call is a
+    round trip to Viber's GUI thread, which costs about a frame while Qt animates. Must run on
+    the UIA thread. Depth-limited because Qt's tree can loop back on itself while the Sponsored
+    ad shows."""
+    if not _uia_cache:
+        ua = _AutomationClient.instance().IUIAutomation
+        request = ua.CreateCacheRequest()
+        for prop in _UIA_PROPS:
+            request.AddProperty(prop)
+        request.TreeFilter = ua.RawViewCondition  # the same view uiautomation's walker uses
+        request.TreeScope = _SCOPE_ELEMENT_CHILDREN
+        _uia_cache.update(ua=ua, request=request, condition=ua.CreateTrueCondition())
+    ua, request, condition = _uia_cache["ua"], _uia_cache["request"], _uia_cache["condition"]
+    level, depth = [(ua.ElementFromHandle(hwnd), None)], 0
+    while level and depth < max_depth:
         nxt = []
-        for ctrl in level:
-            for child in ctrl.GetChildren():
-                if predicate(child):
-                    return child
-                nxt.append(child)
-        level = nxt
-    return None
+        for element, parent in level:
+            found = element.FindAllBuildCache(_SCOPE_CHILDREN, condition, request)
+            for i in range(found.Length):
+                node = _Node(found.GetElement(i), parent)
+                yield node
+                if depth + 1 >= max_depth:
+                    continue
+                try:
+                    kids = node.element.GetCachedChildren()
+                    count = kids.Length
+                except (ValueError, AttributeError, OSError):  # a leaf: NULL cached children
+                    continue
+                for j in range(count):
+                    kid = _Node(kids.GetElement(j), node)
+                    yield kid
+                    nxt.append((kid.element, kid))
+        level, depth = nxt, depth + 2
+
+
+def _find_desc(hwnd: int, predicate, max_depth: int = 6) -> _Node | None:
+    """First descendant (breadth-first) satisfying `predicate`, or None. UIA thread only."""
+    return next((n for n in _levels(hwnd, max_depth) if predicate(n)), None)
 
 
 _QML_SUFFIX = re.compile(r"(_QMLTYPE_\d+|_QML_\d+)+$")
@@ -139,18 +211,6 @@ _BUTTONS = {
 def _short_class(cls: str) -> str:
     """'RemixImageButton_QMLTYPE_475' -> 'RemixImageButton' (the numbers change between runs)."""
     return _QML_SUFFIX.sub("", cls)
-
-
-def _walk(root, max_depth: int = 9):
-    """Yield (control, parent_control) breadth-first."""
-    level = [(root, None)]
-    for _ in range(max_depth):
-        nxt = []
-        for ctrl, _parent in level:
-            for child in ctrl.GetChildren():
-                yield child, ctrl
-                nxt.append((child, ctrl))
-        level = nxt
 
 
 def _restore_foreground(prev: int) -> None:
@@ -202,12 +262,14 @@ def _is_send(c) -> bool:
 class WindowsBackend(Backend):
     name = "windows"
     input_confirmed = True  # _enter/delete wait on the box's UIA value
+    panel_shifts_send = False  # the send button is found by identity, so no panel check
 
     def __init__(self) -> None:
         self._pids: set[int] = set()
         self._pids_at = 0.0
         self._staged: str | None = None   # text "on the clipboard" (never the real clipboard)
         self._target = _is_compose        # element that type/paste/delete act on
+        self._target_node: _Node | None = None  # that element, once located (value reads)
 
     # --- app / window ----------------------------------------------------------------
     def _viber_pids(self) -> set[int]:
@@ -257,12 +319,16 @@ class WindowsBackend(Backend):
         # The viber:// handler makes Viber navigate; Windows may raise its window. Hand the
         # foreground back to whatever the user was working in.
         prev = win32gui.GetForegroundWindow()
+        self._target_node = None
         os.startfile(wl.normalize_viber_url(url))
-        for _ in range(10):
-            time.sleep(0.3)
-            if win32gui.GetForegroundWindow() != prev:
-                break
-        _restore_foreground(prev)
+
+        def guard():  # off the caller's thread: it can start polling for the chat right away
+            for _ in range(10):
+                time.sleep(0.3)
+                if win32gui.GetForegroundWindow() != prev:
+                    break
+            _restore_foreground(prev)
+        threading.Thread(target=guard, name="viber-fg-guard", daemon=True).start()
 
     # --- perception ------------------------------------------------------------------
     def grab(self):
@@ -290,14 +356,32 @@ class WindowsBackend(Backend):
             win32gui.ReleaseDC(hwnd, hdc)
         return img, (l, t, r, b)
 
-    def observe(self) -> list[dict]:
+    def wait_still(self, timeout: float = 2.0, interval: float = 0.06) -> float:
+        """Block until two captures `interval` apart are identical (a sliding panel or a popup
+        has finished animating), or `timeout`. UIA calls made while Qt animates each wait about
+        a frame, so a tree walk then takes >1 s instead of ~50 ms: settle first, walk once.
+        Returns the seconds waited."""
+        start, last = time.monotonic(), None
+        time.sleep(interval)  # let the posted click reach Qt before the first frame
+        while True:
+            img, _ = self.grab()
+            digest = hashlib.blake2b(img.tobytes(), digest_size=8).digest()
+            if digest == last or time.monotonic() - start >= timeout:
+                return time.monotonic() - start
+            last = digest
+            time.sleep(interval)
+
+    def observe(self, region=None) -> list[dict]:
         img, _ = self.grab()
-        if img.width < 1400:  # Windows OCR is more accurate on larger text
-            img = img.resize((img.width * 2, img.height * 2))
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
+        full_w, full_h = img.size
+        scale = 2 if full_w < 1400 else 1  # Windows OCR is more accurate on larger text
+        box = wl.region_box(region, full_w, full_h)
+        if box is not None:
+            img = img.crop(box)  # OCR cost scales with the area: the sidebar is ~1/5 of a read
+        if scale != 1:
+            img = img.resize((img.width * scale, img.height * scale))
         try:
-            lines = _ocr_pool.submit(_ocr_png, buf.getvalue()).result(timeout=40)
+            lines = _ocr_pool.submit(_ocr_image, img).result(timeout=40)
         except OCRError:
             raise
         except ImportError as exc:
@@ -305,22 +389,23 @@ class WindowsBackend(Backend):
         except Exception as exc:
             raise OCRError(f"Windows OCR failed: {exc!r}") from exc
         segs = [s for words in lines for s in wl.split_line(words)]
-        return wl.to_observations(segs, img.width, img.height)
+        obs = wl.to_observations(segs, img.width, img.height)
+        if box is not None:
+            obs = wl.offset_observations(obs, box, full_w, full_h)
+        return obs
 
     # --- UIA element access (locate + read only; UIA writes make Qt activate the window) --
-    def _rect(self, predicate, what: str) -> tuple[int, int, int, int]:
-        def run():
-            el = _find_desc(auto.ControlFromHandle(self._hwnd()), predicate)
-            if el is None:
-                return None
-            r = el.BoundingRectangle
-            return r.left, r.top, r.right, r.bottom
-        rect = _on_uia(run)
-        if rect is None and self._dismiss_ad():
-            rect = _on_uia(run)
-        if rect is None:
+    def _locate(self, predicate, what: str) -> _Node:
+        hwnd = self._hwnd()
+        node = _on_uia(_find_desc, hwnd, predicate)
+        if node is None and self._dismiss_ad():
+            node = _on_uia(_find_desc, hwnd, predicate)
+        if node is None:
             raise OCRError(f"Viber's {what} was not found (is a chat open?).")
-        return rect
+        return node
+
+    def _rect(self, predicate, what: str) -> tuple[int, int, int, int]:
+        return self._locate(predicate, what).rect
 
     def _dismiss_ad(self) -> bool:
         """Close the "Sponsored" ad if it's showing and hiding the chat pane from UIA (see
@@ -337,10 +422,36 @@ class WindowsBackend(Backend):
         return True
 
     def _value(self) -> str:
+        """The target field's text. Reads the element located by the last click_compose /
+        click_search (~1 ms); re-finds it when it's gone (Qt rebuilt the page) or unknown."""
+        hwnd = self._hwnd()
+
         def run():
-            el = _find_desc(auto.ControlFromHandle(self._hwnd()), self._target)
-            return el.GetValuePattern().Value if el else ""
+            node = self._target_node
+            if node is not None:
+                try:
+                    pattern = node.value_pattern()
+                    if pattern is not None:
+                        return pattern.Value
+                except Exception:  # noqa: BLE001 — element gone: fall through to a re-find
+                    pass
+            node = _find_desc(hwnd, self._target)
+            self._target_node = node
+            pattern = node.value_pattern() if node is not None else None
+            return pattern.Value if pattern is not None else ""
         return _on_uia(run)
+
+    def _set_value(self, text: str, what: str = "text box") -> None:
+        """UIA SetValue on the target field (makes Qt activate Viber — foreground is guarded)."""
+        hwnd = self._hwnd()
+
+        def run():
+            node = self._target_node or _find_desc(hwnd, self._target)
+            pattern = node.value_pattern() if node is not None else None
+            if pattern is None:
+                raise OCRError(f"Viber's {what} was not found (is a chat open?).")
+            pattern.SetValue(text)
+        _uia_write_keeping_focus(run)
 
     # --- posted input: goes to Viber's window queue, never to the cursor/keyboard ------
     def _post_click(self, x: float, y: float) -> None:
@@ -352,9 +463,11 @@ class WindowsBackend(Backend):
         time.sleep(0.05)
         win32gui.PostMessage(hwnd, win32con.WM_LBUTTONUP, 0, lp)
 
-    def _click_element(self, predicate, what: str) -> None:
-        l, t, r, b = self._rect(predicate, what)
+    def _click_element(self, predicate, what: str) -> _Node:
+        node = self._locate(predicate, what)
+        l, t, r, b = node.rect
         self._post_click((l + r) / 2, (t + b) / 2)
+        return node
 
     def _post_key(self, vk: int) -> None:
         hwnd = self._hwnd()
@@ -366,7 +479,7 @@ class WindowsBackend(Backend):
         while time.time() < deadline:
             if self._value() == expected:
                 return True
-            time.sleep(0.15)
+            time.sleep(0.05)  # a cached value read costs ~1 ms, so poll often
         return False
 
     def _enter(self, text: str) -> None:
@@ -380,12 +493,7 @@ class WindowsBackend(Backend):
                     win32gui.PostMessage(hwnd, win32con.WM_CHAR, ord(ch), 1)
             if self._wait_value(text, timeout=1.0 + len(text) / 200):
                 return
-        def run():
-            el = _find_desc(auto.ControlFromHandle(hwnd), self._target)
-            if el is None:
-                raise OCRError("Viber's text box was not found (is a chat open?).")
-            el.GetValuePattern().SetValue(text)
-        _uia_write_keeping_focus(run)
+        self._set_value(text)
         if not self._wait_value(text, timeout=8.0):
             raise OCRError("Could not enter the text into Viber.")
 
@@ -417,13 +525,7 @@ class WindowsBackend(Backend):
                 self._post_key(win32con.VK_BACK)
             if self._wait_value(""):
                 return
-        hwnd, target = self._hwnd(), self._target
-
-        def run():
-            el = _find_desc(auto.ControlFromHandle(hwnd), target)
-            if el is not None:
-                el.GetValuePattern().SetValue("")
-        _uia_write_keeping_focus(run)
+        self._set_value("")
         if not self._wait_value("", timeout=5.0):
             raise OCRError("Could not clear the existing text in Viber.")
 
@@ -435,12 +537,12 @@ class WindowsBackend(Backend):
     # --- element actions -------------------------------------------------------------
     def click_compose(self) -> None:
         self._target = _is_compose
-        self._click_element(_is_compose, "message box")
+        self._target_node = self._click_element(_is_compose, "message box")
         time.sleep(0.25)  # let Qt move focus before keys arrive
 
     def click_search(self) -> None:
         self._target = _is_search
-        self._click_element(_is_search, "search box")
+        self._target_node = self._click_element(_is_search, "search box")
         time.sleep(0.25)
 
     def click_send(self) -> None:
@@ -448,6 +550,7 @@ class WindowsBackend(Backend):
 
     def click_result(self, norm_y: float) -> None:
         """Click the left-column row whose text top is at normalized window height `norm_y`."""
+        self._target_node = None  # opening a chat rebuilds the page
         l, t, r, b = win32gui.GetWindowRect(self._hwnd())
         self._post_click(l + (r - l) * 0.15, t + (b - t) * norm_y + 8)
 
@@ -469,7 +572,7 @@ class WindowsBackend(Backend):
         step = 1 if notches > 0 else -1
         for _ in range(abs(notches)):
             win32gui.PostMessage(hwnd, win32con.WM_MOUSEWHEEL, ((120 * step) & 0xFFFF) << 16, lp)
-            time.sleep(0.03)
+            time.sleep(_WHEEL_GAP)
 
     # --- computer-use primitives (coordinates = pixels in the screenshot image) --------
     def screenshot(self):
@@ -485,6 +588,7 @@ class WindowsBackend(Backend):
             raise ValueError("button must be 'left', 'right' or 'middle'")
         down, up, dbl, mk = _BUTTONS[button]
         hwnd = self._hwnd()
+        self._target_node = None  # a click anywhere may navigate
         sx, sy = self._to_screen(x, y)
         self._last_click = (sx, sy)
         cx, cy = win32gui.ScreenToClient(hwnd, (int(sx), int(sy)))
@@ -504,6 +608,7 @@ class WindowsBackend(Backend):
         if vk is None:
             raise ValueError(f"Unknown key {key!r}. Supported: {', '.join(sorted(_KEYS))}. "
                              "Modifier shortcuts (Ctrl+...) can't be sent in the background.")
+        self._target_node = None  # Escape/Enter may close or change the page
         for _ in range(max(1, min(int(repeat), 100))):
             self._post_key(vk)
             time.sleep(0.03)
@@ -535,7 +640,7 @@ class WindowsBackend(Backend):
         for _ in range(abs(int(notches))):
             win32gui.PostMessage(self._hwnd(), win32con.WM_MOUSEWHEEL,
                                  ((120 * step) & 0xFFFF) << 16, lp)
-            time.sleep(0.03)
+            time.sleep(_WHEEL_GAP)
 
     def elements(self) -> list[dict]:
         """Visible UI elements: type, name, short class, text (edits), parent index, and
@@ -562,26 +667,21 @@ class WindowsBackend(Backend):
 
         def run():
             l, t, r, b = win32gui.GetWindowRect(hwnd)
-            out, index_of, alive = [], {}, []  # `alive` keeps id() keys from being reused
-            for ctrl, parent in _walk(auto.ControlFromHandle(hwnd)):
-                alive.append(ctrl)
-                rect = ctrl.BoundingRectangle
-                if rect.right <= rect.left or rect.bottom <= rect.top:
+            out = []
+            for node in _levels(hwnd, max_depth=9):
+                nl, nt, nr, nb = node.rect
+                if nr <= nl or nb <= nt:
                     continue
-                if rect.right < l or rect.left > r or rect.bottom < t or rect.top > b:
+                if nr < l or nl > r or nb < t or nt > b:
                     continue  # scrolled out of view
-                text = ""
-                if ctrl.ControlTypeName == "EditControl":
-                    pattern = ctrl.GetPattern(auto.PatternId.ValuePattern)
-                    text = pattern.Value if pattern else ""
-                index_of[id(ctrl)] = len(out)
+                node.index = len(out)
                 out.append({
-                    "type": ctrl.ControlTypeName.removesuffix("Control"),
-                    "name": ctrl.Name,
-                    "class": _short_class(ctrl.ClassName),
-                    "text": text,
-                    "parent": index_of.get(id(parent)),
-                    "rect": [rect.left - l, rect.top - t, rect.right - l, rect.bottom - t],
+                    "type": node.ControlTypeName.removesuffix("Control"),
+                    "name": node.Name,
+                    "class": _short_class(node.ClassName),
+                    "text": node.Value if node.ControlTypeName == "EditControl" else "",
+                    "parent": node.parent.index if node.parent is not None else None,
+                    "rect": [nl - l, nt - t, nr - l, nb - t],
                 })
             return out
         return _on_uia(run)
@@ -655,8 +755,7 @@ class WindowsBackend(Backend):
         hwnd = self._hwnd()
 
         def found():
-            root = auto.ControlFromHandle(hwnd)
-            return {name: _find_desc(root, pred) is not None for name, pred in
+            return {name: _find_desc(hwnd, pred) is not None for name, pred in
                     (("search_box", _is_search), ("compose_box", _is_compose),
                      ("send_button", _is_send))}
         return {"hwnd": hwnd, "title": win32gui.GetWindowText(hwnd),
