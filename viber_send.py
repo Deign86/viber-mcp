@@ -94,21 +94,73 @@ def resolve_recipient(to: str) -> tuple[str, str | None]:
 # ----------------------------------------------------------------------------- open / send
 
 
-def _wait_for_sendable_chat(number: str, name: str | None, timeout: float = 12.0) -> str:
-    """Poll the Viber window (via OCR) until a sendable chat is visible.
+# The chat pane's header: title, then the number / status line. 64 px below the pane's top keeps
+# the band clear of the first message, which can start right under the header bar (72 px).
+_HEADER_PX = 64
+_HEADER_BOTTOM_DEFAULT = 0.135
+_HEADER_X = (0.28, 0.7)
 
-    Success signals (any one, and no error screen):
-      - the contact `name` (first token) is visible in the header/list, OR
-      - the compose placeholder "type a message" is visible (empty draft), OR
-      - a settle period passed with no error screen (number-addressed, saved contact whose
-        header shows a name we don't know).
-    Raises SendError if the number is not a Viber user or nothing sendable appears in time.
+
+def _header_bottom() -> float:
+    """Normalized y under which the open chat's header lies, from the chat pane's UIA rect (the
+    window's title bar height varies); a window fraction where UIA isn't available."""
+    try:
+        pane = next((e for e in backend.elements() if e["class"] == "StackView"), None)
+        height = backend.screenshot().height
+    except (NotImplementedError, AttributeError, viber_ocr.OCRError):
+        return _HEADER_BOTTOM_DEFAULT
+    if pane is None or not height:
+        return _HEADER_BOTTOM_DEFAULT
+    return (pane["rect"][1] + _HEADER_PX) / height
+
+
+def header_lines(obs: list[dict], header_bottom: float) -> list[str]:
+    """OCR lines inside the chat pane's header band (not the sidebar, not the messages)."""
+    return [o["text"] for o in obs if _HEADER_X[0] <= o["x"] < _HEADER_X[1] and o["y"] < header_bottom]
+
+
+def header_key(lines: list[str]) -> frozenset:
+    """What identifies a header across OCR reads: its longer words, folded (the short junk OCR
+    makes of icons differs read to read)."""
+    return frozenset(w for w in _ocr_fold(re.sub(r"[^a-z0-9 ]", "", " ".join(lines).lower())).split()
+                     if len(w) >= 3)
+
+
+def chat_confirmed(obs: list[dict], number: str, name: str | None, header_bottom: float) -> bool:
+    """Strong evidence that the open chat is `number`/`name`'s: the number in the chat header
+    (a saved contact's chat shows it under the name; an unsaved number IS the title), the
+    "<Name> +63… is not in your contact list" banner, or the header title matching `name`
+    (prefix-tolerant: group titles are truncated). Nothing in the sidebar or the messages counts
+    — the contact's name in the chat list, the compose placeholder, or their number inside a
+    message used to confirm the wrong chat."""
+    want_digits = _digits(number or "")[-9:]
+    want_name = _ocr_fold(re.sub(r"[^a-z0-9]", "", (name or "").lower()))
+    for text in header_lines(obs, header_bottom):
+        if len(want_digits) >= 7 and want_digits in _digits(text):
+            return True
+        got = _ocr_fold(re.sub(r"[^a-z0-9]", "", text.lower()))
+        if len(want_name) >= 3 and len(got) >= 4 and (want_name.startswith(got) or got.startswith(want_name)):
+            return True
+    return number_confirmed(obs, number or "")
+
+
+def _wait_for_sendable_chat(number: str, name: str | None, timeout: float = 12.0,
+                            previous_header: frozenset | None = None,
+                            header_bottom: float | None = None) -> str:
+    """Poll the Viber window (via OCR) until `number`/`name`'s chat is confirmed open.
+
+    Strong confirmation (`chat_confirmed`): the number or the name in the chat pane's header, or
+    the number in the "not in your contact list" banner. Without one, the chat is accepted only
+    after a settle period with no error screen AND a header different from `previous_header`
+    (the chat open before navigating) — Viber's viber:// link sometimes doesn't navigate, and
+    accepting the previous chat sent messages to the wrong person.
+    Raises SendError if the number is not a Viber user or nothing is confirmed in time.
     Returns the OCR text of the confirmed chat.
     """
     deadline = time.time() + timeout
-    name_token = (name or "").strip().split()[0].lower() if name else ""
     started = time.time()
-    last = ""
+    header_bottom = _header_bottom() if header_bottom is None else header_bottom
+    last, changed = "", previous_header is None
     while time.time() < deadline:
         try:
             obs = backend.observe()
@@ -121,15 +173,18 @@ def _wait_for_sendable_chat(number: str, name: str | None, timeout: float = 12.0
             raise SendError(f"{number} is not a Viber user — cannot send a message.")
         if "cannot add yourself" in last:
             raise SendError("Cannot message your own number (Viber blocks self-chat via number).")
-        if name_token and name_token in last:
+        if chat_confirmed(obs, number, name, header_bottom):
             return last
-        if "type a message" in last:
-            return last
-        if number_confirmed(obs, number):
-            return last  # the number is the chat's title / in its banner: no need to settle
-        if not name_token and time.time() - started >= 4.0:
-            return last  # number-addressed, no error after settle — accept
+        changed = changed or header_key(header_lines(obs, header_bottom)) != previous_header
+        if changed and time.time() - started >= 4.0:
+            return last  # no error after the settle and not the chat we came from — accept
         time.sleep(0.5)
+    if not changed:
+        raise SendError(
+            f"The open chat didn't change after asking Viber to open {number} (its viber:// link "
+            "sometimes doesn't navigate). If that chat is already the open one, use reply; "
+            "otherwise open it by name with search_and_open. Nothing was sent."
+        )
     raise SendError(
         f"Timed out opening {number}'s chat. Viber may be slow/minimized, the number may be "
         "unreachable, or (for a name) the contact's chat didn't come to the front."
@@ -169,9 +224,16 @@ def open_chat(to: str, confirm: bool = True) -> str:
     if not viber_is_running():
         raise SendError("Viber is not running. Launch and sign in to Viber first.")
     number, name = resolve_recipient(to)
+    # Remember the header of the chat open NOW: a chat is accepted without strong proof only
+    # once the header has changed from this (viber:// sometimes doesn't navigate).
+    header_bottom = _header_bottom()
+    try:
+        previous = header_key(header_lines(backend.observe(region=_HEADER_REGION), header_bottom))
+    except viber_ocr.OCRError:
+        previous = None
     backend.open_url(f"viber://chat?number={number}")
     if confirm:
-        _wait_for_sendable_chat(number, name)
+        _wait_for_sendable_chat(number, name, previous_header=previous, header_bottom=header_bottom)
     else:
         time.sleep(5.0)  # desktop needs a few seconds to navigate
     return number
@@ -388,7 +450,7 @@ def _poll(check, timeout: float, first: float = 0.0, interval: float = 0.1):
 _RESULT_HEADERS = {"conversations", "contacts", "groups", "businesses", "channels", "communities"}
 # OCR regions (hints for the backend): the results/chat list column, and the chat header band.
 _RESULTS_REGION = (0, 0, 0.36, 1)
-_HEADER_REGION = (0, 0, 1, 0.14)
+_HEADER_REGION = (0, 0, 1, 0.16)
 
 
 def _await_results(name: str, timeout: float = 2.4):

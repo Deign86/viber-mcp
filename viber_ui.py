@@ -6,6 +6,7 @@ All coordinates exposed to callers are pixels in the image `screenshot()` return
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import threading
@@ -353,13 +354,40 @@ def _resend_button(elements: list[dict]):
                  and e["name"].lower().startswith("resend")), None)
 
 
+def _feed_still(b, timeout: float, interval: float = 0.3, frames: int = 4) -> bool:
+    """Wait until the message feed has stopped changing (`frames` consecutive identical captures
+    `interval` apart) or `timeout`. While an album uploads, Viber animates a progress ring on
+    the bubbles (nothing of it is in the UIA tree); a still feed means the album is sent, or
+    failed with the not-sent banner up. Returns whether it went still. Backends without
+    captures just wait `timeout`."""
+    try:
+        els = b.elements()
+        chat = next(e for e in els if e["class"] == "StackView")
+        box = tuple(int(v) for v in _feed_view(els, chat))
+        b.screenshot().crop(box)
+    except (NotImplementedError, AttributeError, StopIteration):
+        time.sleep(timeout)
+        return False
+    deadline, last, same = time.time() + timeout, None, 0
+    while time.time() < deadline:
+        time.sleep(interval)
+        digest = hashlib.blake2b(b.screenshot().crop(box).tobytes(), digest_size=8).digest()
+        same = same + 1 if digest == last else 0
+        last = digest
+        if same >= frames - 1:
+            return True
+    return False
+
+
 def _settle_and_resend(n_files: int, max_attempts: int = 2) -> dict:
-    """Give the upload time to finish, then press Resend while the not-sent banner shows."""
+    """Wait for the upload to finish (the feed goes still), then press Resend while the not-sent
+    banner shows. The old fixed wait (4 s + 1.5 s per file, at most 30 s) is now only the cap:
+    a few photos are sent, ticks and all, in about two seconds."""
     b = _backend()
-    settle = min(4 + 1.5 * n_files, 30)
+    cap = min(4 + 1.5 * n_files, 30)
     attempts = 0
     while True:
-        time.sleep(settle)
+        _feed_still(b, timeout=cap)
         button = _resend_button(b.elements())
         if button is None:
             return {"attempts": attempts, "still_unsent": False}

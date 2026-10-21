@@ -145,9 +145,14 @@ Status:
   (`_side_panel_open` via OCR markers) and closes them.
 - **Click the send button; do not press Return.** "Send message on Enter" may be off, in which case
   Return just inserts a newline.
-- **`viber://chat?number=` navigation is slow (~seconds) and mobile-first.** Never assume the chat
-  opened immediately — poll via OCR (`_wait_for_sendable_chat`). It also errors "isn't on Viber" for
-  non-users and "cannot add yourself" for the user's own number (My Notes is separate).
+- **`viber://chat?number=` navigation is slow (~seconds), mobile-first, and sometimes doesn't
+  navigate at all.** Never assume the chat opened — poll via OCR (`_wait_for_sendable_chat`), and
+  confirm it ONLY from the chat pane's header band (`chat_confirmed`: the number under the name,
+  the unsaved-number banner, or the title matching the name) — never from the sidebar, the compose
+  placeholder or message text, which all belong to whatever chat was open before (that sent
+  messages to the wrong person). Without strong proof a chat is accepted after a 4 s settle only
+  if its header differs from the one captured before `open_url`. It also errors "isn't on Viber"
+  for non-users and "cannot add yourself" for the user's own number (My Notes is separate).
 - **Search results are substring-matched and alphabetically sorted**, so the first row is often wrong
   (searching "Ivy" lists "Divya" first). `_find_result_row` scores exact/prefix over substring and
   clicks the matched row's actual OCR position; excludes the search-bar text (y<0.12), section
@@ -224,7 +229,11 @@ Status:
   re-activates Viber, so focus is handed back immediately. The preview overlay: the caption `Edit`
   (class `TextArea`); the overlay container is the caption's grandparent; send is a `RoundIconButton`
   child of the overlay; add-more is the `IconButton` child of the overlay just above the caption
-  (NOT the overlay's close X `IconButton` at the top right). `dry_run` stops before send.
+  (NOT the overlay's close X `IconButton` at the top right). `dry_run` stops before send. After
+  the send, `_settle_and_resend` waits for the feed to stop changing (`_feed_still`: Viber
+  animates a progress ring on the bubbles while uploading; nothing of it is in UIA, and the
+  delivered ticks show once it's still) instead of a fixed 4 s + 1.5 s/file, which is now only
+  the cap; then it presses the not-sent banner's Resend if it shows.
 - `viber_drive.py` — Google Drive listings (read-only OAuth desktop flow). Client file
   `google_oauth_client.json` next to `server.py` (git-ignored) or env `VIBER_MCP_GOOGLE_CLIENT`;
   token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads go to

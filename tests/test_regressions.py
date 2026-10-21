@@ -2113,3 +2113,170 @@ def test_mention_opens_number_polls_for_the_number_after_the_click(monkeypatch):
     assert 0.4 * 1100 < x < 0.6 * 1100 and abs(y - 0.51 * 967) < 2   # inside the "@shiso alpha" token
     assert sum(slept) < 1.0  # was a fixed 1.5 s
     assert viber_ui.mention_opens_number("shiso alpha", "+639175177830") is None  # already visible: inconclusive
+
+
+# ------------------------------------------- the right chat: header-only confirmation (2026-10-21)
+# open_chat used to accept a chat once the contact's first name appeared ANYWHERE in the window
+# (the sidebar row counts) or the compose placeholder showed — both true of the chat it came from
+# when viber:// didn't navigate, which is how messages went to the wrong person.
+
+
+def test_chat_confirmed_only_by_the_header_or_the_banner():
+    from viber_send import chat_confirmed
+    hb = (71 + 64) / 967
+    saved = [_obs("shiso alpha", 0.349, 0.094), _obs("+639620429272", 0.35, 0.119)]
+    assert chat_confirmed(saved, "+639620429272", None, hb)                 # the number under the name
+    assert chat_confirmed(saved, "+639620429272", "Narci", hb)              # even when the alias differs
+    assert chat_confirmed(saved, "", "shiso alpha", hb)                     # by name
+    assert chat_confirmed([_obs("TESTCLIENT-WH-(300S...", 0.35, 0.094)], "", "TESTCLIENT-WH-(300SQM, PASIG)", hb)
+    assert chat_confirmed([_obs("Max Alpha", 0.35, 0.094)], "", "Max", hb)  # a search query is a prefix
+    banner = [_obs("Rafael +639175177830 is not in your contact list - save it", 0.31, 0.16)]
+    assert chat_confirmed(banner, "+639175177830", None, hb)
+    # Never from the sidebar, the compose placeholder, or a message that holds the number/name.
+    assert not chat_confirmed([_obs("shiso alpha", 0.05, 0.3)], "", "shiso alpha", hb)
+    assert not chat_confirmed([_obs("Type a message...", 0.4, 0.96)], "+639620429272", None, hb)
+    assert not chat_confirmed([_obs("Viber: 09620429272", 0.35, 0.3)], "+639620429272", None, hb)
+    assert not chat_confirmed([_obs("Viber: 09620429272", 0.35, hb + 0.001)], "+639620429272", None, hb)
+    assert not chat_confirmed([_obs("Maxine Cruz", 0.35, 0.094)], "", "Max Alpha", hb)
+    assert not chat_confirmed([_obs("Rakuten Viber", 0.035, 0.011)], "", "Rak", hb)   # the title bar
+
+
+def test_header_key_ignores_ocr_junk_but_tells_chats_apart():
+    from viber_send import header_key
+    a = header_key(["Viber Out", "shiso alpha", "Q +8 00", "+639620429272"])
+    assert a == header_key(["Viber Out", "shiso alpha", "00 0", "+63962O429272"])   # junk and O/0 slips
+    assert header_key(["Viber Out", "Max Alpha"]) != a
+    assert header_key(["Viber Out", "Max Alpha"]) != header_key(["Viber Out", "Jean Alpha"])
+
+
+class OpenChatBackend:
+    """What the window shows on each read after a viber:// open: `pages` in order, the last one
+    repeating (one page = the chat didn't navigate)."""
+    def __init__(self, pages):
+        self.pages, self.reads, self.urls = pages, 0, []
+
+    def app_running(self): return True
+    def elements(self): return [_ui("Pane", "StackView", [308, 71, 1100, 959])]
+    def screenshot(self): return _Img()
+    def open_url(self, url): self.urls.append(url)
+
+    def observe(self, region=None):
+        page = self.pages[min(self.reads, len(self.pages) - 1)]
+        self.reads += 1
+        return page
+
+
+PREVIOUS_CHAT = [_obs("Max Alpha", 0.35, 0.094), _obs("Type a message...", 0.4, 0.96), _obs("shiso alpha", 0.05, 0.5)]
+
+
+def _open_chat_with(monkeypatch, pages, number):
+    import viber_send
+    fake = OpenChatBackend(pages)
+    monkeypatch.setattr(viber_send, "backend", fake)
+    monkeypatch.setattr(viber_send, "resolve_recipient", lambda to: (number, None))
+    clock = [0.0]
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(viber_send.time, "time", lambda: clock[0])
+    monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock[0])
+    return fake, clock
+
+
+def test_open_chat_refuses_the_chat_it_came_from(monkeypatch):
+    # viber:// didn't navigate: the previous chat stays, its box empty, the wanted contact's
+    # name in the sidebar. Both used to pass as "sendable".
+    import pytest
+    import viber_send
+    fake, clock = _open_chat_with(monkeypatch, [PREVIOUS_CHAT], "+639620429272")
+    with pytest.raises(viber_send.SendError, match="didn't change"):
+        viber_send.open_chat("+639620429272")
+    assert fake.urls == ["viber://chat?number=+639620429272"] and clock[0] >= 12
+
+
+def test_open_chat_accepts_a_saved_contact_from_the_number_under_the_name(monkeypatch):
+    import viber_send
+    opened = [_obs("shiso alpha", 0.349, 0.094), _obs("+639620429272", 0.35, 0.119)]
+    fake, clock = _open_chat_with(monkeypatch, [PREVIOUS_CHAT, PREVIOUS_CHAT, opened], "+639620429272")
+    assert viber_send.open_chat("+639620429272") == "+639620429272"
+    assert clock[0] < 2.0  # no settle period
+
+
+def test_open_chat_settles_only_once_the_header_changed(monkeypatch):
+    # Neither the number nor a known name in the header (a saved contact whose chat hides the
+    # number): accepted after the settle, and only because the header isn't the previous one.
+    import viber_send
+    other = [_obs("Anne", 0.35, 0.094), _obs("Type a message...", 0.4, 0.96)]
+    fake, clock = _open_chat_with(monkeypatch, [PREVIOUS_CHAT, other], "+639170000000")
+    assert viber_send.open_chat("+639170000000") == "+639170000000"
+    assert 4.0 <= clock[0] < 6.0
+
+
+def test_open_chat_still_reports_non_viber_numbers(monkeypatch):
+    import pytest
+    import viber_send
+    _open_chat_with(monkeypatch, [PREVIOUS_CHAT, [_obs("This number isn't on Viber", 0.4, 0.5)]], "+10000000000")
+    with pytest.raises(viber_send.SendError, match="not a Viber user"):
+        viber_send.open_chat("+10000000000")
+
+
+# ------------------------------------------- send_files: wait for the upload, not a fixed time
+# The fixed 4 s + 1.5 s per file (up to 30 s) after an album was idle time: five cached photos
+# show their delivered ticks 1.6 s after the preview closes. Viber animates a progress ring on
+# the bubbles while uploading (nothing of it is in UIA), so the feed going still is the signal.
+
+
+class UploadBackend:
+    """Captures of the feed keep changing for `moving` reads (the progress ring), then hold
+    still; with `banner`, the not-sent banner shows once it's still until Resend is pressed."""
+    def __init__(self, moving=5, banner=False):
+        self.moving, self.banner, self.reads, self.clicks = moving, banner, 0, []
+
+    class _Shot:
+        def __init__(self, data): self.data = data
+        def crop(self, box): return self
+        def tobytes(self): return self.data
+
+    def screenshot(self):
+        self.reads += 1
+        return self._Shot(min(self.reads, self.moving).to_bytes(4, "big"))
+
+    def elements(self):
+        els = [_ui("Pane", "StackView", [308, 71, 1100, 959]), _ui("Edit", "QQuickTextEdit", [320, 900, 760, 940])]
+        if self.banner and self.reads > self.moving and not self.clicks:
+            els.append(_ui("Button", "BannerButton", [968, 155, 1044, 175], name="Resend all"))
+        return els
+
+    def click_at(self, x, y, button="left", double=False): self.clicks.append((x, y))
+
+
+def test_send_settle_returns_once_the_feed_stops_moving(monkeypatch):
+    import viber_ui
+    fake = UploadBackend(moving=6)
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(20) == {"attempts": 0, "still_unsent": False}  # fixed wait was 30 s
+    assert 1.5 <= sum(slept) <= 4.0  # ~6 moving reads, then 4 identical ones at 0.3 s
+
+
+def test_send_settle_presses_resend_when_the_banner_follows_the_upload(monkeypatch):
+    import viber_ui
+    fake = UploadBackend(moving=3, banner=True)
+    _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(3) == {"attempts": 1, "still_unsent": False}
+    assert fake.clicks == [(1006, 165)]
+
+
+def test_send_settle_caps_at_the_old_fixed_wait_when_the_feed_never_settles(monkeypatch):
+    import viber_ui
+    fake = UploadBackend(moving=10 ** 6)
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False}
+    assert abs(sum(slept) - 7.0) < 0.35  # 4 + 1.5 × 2
+
+
+def test_send_settle_falls_back_to_the_fixed_wait_without_captures(monkeypatch):
+    import viber_ui
+
+    class NoShots:
+        def elements(self): return []
+    slept = _use(monkeypatch, NoShots(), fast_clock=True)
+    assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False}
+    assert slept == [7.0]
