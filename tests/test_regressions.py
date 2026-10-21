@@ -1273,3 +1273,63 @@ def test_side_panel_back_never_hits_the_chat_history_back():
     arrow = dict(history_back, rect=[804, 39, 828, 63])
     assert side_panel_back_point([history_back, panel, arrow]) == (816, 51)
     assert side_panel_back_point([history_back]) is None
+
+
+# --- 2026-10-21: "move the listing folder to SOLD" had no tool (done by a one-off script).
+
+SOLD_KIDS = [{"id": "h", "name": "House/Lot Sold"}, {"id": "c", "name": "SOLD COMMERCIAL SPACE"},
+             {"id": "o", "name": "SOLD OFFICE SPACE"}, {"id": "w", "name": "SOLD WAREHOUSE"}]
+
+
+def test_sold_target_matches_live_sold_folders():
+    from viber_drive import sold_target
+    assert sold_target("WAREHOUSE", SOLD_KIDS)["id"] == "w"
+    assert sold_target("COMMERCIAL SPACE", SOLD_KIDS)["id"] == "c"
+    assert sold_target("OFFICE SPACE", SOLD_KIDS)["id"] == "o"
+    assert sold_target("CONDO / HOUSE AND LOT", SOLD_KIDS)["id"] == "h"
+    assert sold_target("LOT", SOLD_KIDS)["id"] == "h"
+    assert sold_target("VO", SOLD_KIDS) is None          # no subfolder: goes into SOLD itself
+
+
+def test_move_listing_to_sold_moves_out_of_its_deal_folder(monkeypatch):
+    import pytest
+    import viber_drive
+    calls = []
+
+    class Req:
+        def __init__(self, kw): self.kw = kw
+        def execute(self, num_retries=0): calls.append(self.kw); return {}
+
+    class Files:
+        def update(self, **kw): return Req(kw)
+
+    class Svc:
+        def files(self): return Files()
+
+    folder = "application/vnd.google-apps.folder"
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [
+        {"folder_id": "L", "name": "Las Piñas City, 240 Almanza 1", "category": "WAREHOUSE",
+         "deal": "FOR LEASE/RENT", "parent_id": "lease", "modified": ""}])
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: {
+        "root": [{"id": "S", "name": "SOLD", "mimeType": folder}],
+        "S": [dict(k, mimeType=folder) for k in SOLD_KIDS]}[fid])
+    monkeypatch.setattr(viber_drive, "_writer", lambda: Svc())
+    out = viber_drive.move_listing_to_sold("L")
+    assert calls[0]["addParents"] == "w" and calls[0]["removeParents"] == "lease"
+    assert out["to"].endswith("SOLD / SOLD WAREHOUSE")
+    with pytest.raises(viber_drive.DriveError, match="already be in SOLD"):
+        viber_drive.move_listing_to_sold("not-a-listing")
+
+
+def test_move_listing_to_sold_refuses_a_folder_already_in_sold(monkeypatch):
+    # 2026-10-21: run on the Las Piñas folder already in SOLD / SOLD WAREHOUSE, the tool saw it as
+    # category "SOLD", deal "SOLD WAREHOUSE" and moved it UP into SOLD itself.
+    import pytest
+    import viber_drive
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [
+        {"folder_id": "L", "name": "Las Piñas City, 240 Almanza 1", "category": "SOLD",
+         "deal": "SOLD WAREHOUSE", "parent_id": "w", "modified": ""}])
+    monkeypatch.setattr(viber_drive, "_writer", lambda: pytest.fail("must not write"))
+    with pytest.raises(viber_drive.DriveError, match="already be in SOLD"):
+        viber_drive.move_listing_to_sold("L")
