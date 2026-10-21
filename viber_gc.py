@@ -55,11 +55,9 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
         problems.append(f"Client Viber number: {exc}")
     intro = ""
     if client:
-        client_display = viber_ui.number_on_viber(client) or ""
-        if not client_display:
-            # Numbers only show up in the group picker once we've chatted with them, so message
-            # the client 1:1 first (if the number has no Viber account, that send fails loudly).
-            intro = logic.intro_message(fields, cfg.get("intro_message", ""))
+        # The group is built from the client's 1:1 chat (Add participants), so message them 1:1
+        # first — if the number has no Viber account, that send fails loudly.
+        intro = logic.intro_message(fields, cfg.get("intro_message", ""))
 
     listing = None
     candidates = []
@@ -163,24 +161,33 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
         except viber_send.SendError as exc:
             raise GCError(f"GC NOT CREATED — couldn't message {plan['client_number']} first: {exc} "
                           "— Report this to the staff member and stop; do not retry.") from exc
-        if not viber_ui.number_on_viber(plan["client_number"]):
-            raise GCError(f"GC NOT CREATED — {plan['client_number']} still isn't in Viber's group "
-                          "picker after the intro message. Report this and stop; do not retry.")
-    # The picker shows unsaved numbers as "Unknown"; the mention list uses their Viber name, which
-    # their 1:1 chat's "<Name> +63… is not in your contact list" banner shows.
+    # Unsaved numbers show as "Unknown"; the mention list uses their Viber name, which their 1:1
+    # chat's "<Name> +63… is not in your contact list" banner shows.
     client_name = plan["client_viber_name"]
     if viber_ui.is_placeholder_name(client_name):
         client_name = client_name_from_chat(plan["client_number"])
-    created = viber_ui.create_group(plan["gc_name"], members if members is not None else cfg["members"],
-                                    plan["client_number"], self_name=cfg.get("self", ""))
+    # Build the group from the client's 1:1 chat (header "Add participants" → staff → Save →
+    # rename): the New group screen kept failing on its name box and picker.
+    viber_send.open_chat(plan["client_number"])
+    try:
+        created = viber_ui.create_group_from_chat(
+            plan["gc_name"], members if members is not None else cfg["members"],
+            plan["client_number"], self_name=cfg.get("self", ""))
+    except viber_ui.UIError as exc:
+        raise GCError(f"GC NOT CREATED — {exc} — Report this to the staff member and stop; "
+                      "do not retry.") from exc
     if created.get("existing_group") is not None:
         raise GCError(f"EXISTING CLIENT — GC NOT CREATED: {plan['client_number']} already shares a "
-                      f"group with the staff ('{created['existing_group']}'). Send the new listing "
-                      "there, rename that GC to the new inquiry, then quote-reply 'DONE-<NEW NAME> — "
+                      f"group with us ('{created['existing_group']}'). Send the new listing there, "
+                      "rename that GC to the new inquiry, then quote-reply 'DONE-<NEW NAME> — "
                       "existing client po, GC already created.' to the template. Do not retry.")
     if not created["created"]:
-        raise GCError("The group didn't appear after 'Start chat' — check Viber before retrying "
-                      "(it may exist already).")
+        raise GCError("The group didn't appear after Save in Add participants — check Viber before "
+                      "retrying (it may exist already, named 'Group').")
+    if not created.get("renamed", True):
+        raise GCError(f"The group was created but couldn't be renamed to '{plan['gc_name']}' — it's "
+                      "the open chat, probably named 'Group'. Rename it by hand; nothing was posted "
+                      "and DONE wasn't replied. Do not retry (that would make a second GC).")
     if created.get("privacy_blocked") is not None:
         who = created["privacy_blocked"] or plan["client_number"]
         raise GCError(f"CLIENT NOT ADDED — GC '{plan['gc_name']}' was created with the staff only: "

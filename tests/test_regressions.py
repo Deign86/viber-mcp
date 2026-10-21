@@ -1102,8 +1102,9 @@ def _run_gc_with_unknown_client(monkeypatch, fake):
     monkeypatch.setattr(viber_gc, "_config", lambda: {"members": ["Max Alpha"], "self": ""})
     monkeypatch.setattr(viber_gc, "client_name_from_chat", lambda number: "")  # no banner name
     monkeypatch.setattr(viber_gc, "_find_message", lambda text, screens=6: {"n": 7})
-    monkeypatch.setattr(viber_ui, "create_group", lambda *a, **k: {
-        "created": True, "client_display_name": "Unknown", "existing_group": None,
+    monkeypatch.setattr(viber_send, "open_chat", lambda number: {"opened": number})
+    monkeypatch.setattr(viber_ui, "create_group_from_chat", lambda *a, **k: {
+        "created": True, "renamed": True, "client_display_name": "Unknown",
         "privacy_blocked": None})
     monkeypatch.setattr(viber_ui, "reply_to_message",
                         lambda n, text, send=True: done.append((n, text)) or {"sent": True})
@@ -1134,3 +1135,141 @@ def test_two_unknown_participants_stop_before_mention_and_done(monkeypatch):
     with pytest.raises(viber_gc.GCError, match="ambiguous"):
         out = _run_gc_with_unknown_client(monkeypatch, fake)
     assert out is None and fake.sent is None and fake.value == ""
+
+
+# --- 2026-10-21: client GCs are built from the client's 1:1 chat (Add participants), because the
+# New group screen failed ("GC NOT CREATED — name missing"). Fixtures measured on the live app.
+
+def _el(type_, cls, rect, name="", text="", parent=None):
+    return {"type": type_, "class": cls, "rect": rect, "name": name, "text": text, "parent": parent}
+
+
+ADD_PICKER = [
+    _el("Edit", "TextFieldItem", [112, 43, 252, 71]),                 # left sidebar search
+    _el("Edit", "QQuickTextEdit", [460, 924, 724, 943]),               # message box
+    _el("Pane", "SideBarContent", [793, 31, 1093, 959]),
+    _el("Group", "SearchItem", [809, 87, 1077, 115]),
+    _el("Button", "ModalButton", [905, 915, 981, 950], name="Save"),
+    _el("Edit", "TextFieldItem", [845, 87, 1065, 115], text="Arjee Alpha"),
+]
+
+
+def test_add_participants_picker_is_the_side_panel_search_not_the_sidebar_one():
+    from viber_ui import add_participants_picker
+    search, save = add_participants_picker(ADD_PICKER)
+    assert search["rect"] == [845, 87, 1065, 115] and save["name"] == "Save"
+    assert add_participants_picker(ADD_PICKER[:2]) is None  # no side panel → not open
+
+
+def test_picker_rows_and_counter_come_from_the_side_panel_only():
+    from viber_ui import _invite_count, _panel_rows, picker_name_row
+    search = ADD_PICKER[-1]
+    obs = [{"text": "Arjee Alpha", "x": 80, "y": 300, "w": 90, "h": 16},     # a chat in the sidebar
+           {"text": "Arjee Alpha", "x": 849, "y": 236, "w": 90, "h": 16},
+           {"text": "+639704565482", "x": 849, "y": 257, "w": 110, "h": 16},
+           {"text": "3/250", "x": 1046, "y": 926, "w": 32, "h": 14}]
+    rows = _panel_rows(obs, search)
+    assert picker_name_row(rows, "Arjee AIpha")["x"] == 849   # OCR I/l folded
+    assert _invite_count([], rows) == 3
+
+
+def test_select_circle_uses_the_given_picker_search_box():
+    from viber_ui import select_circle_point
+    x, y = select_circle_point(ADD_PICKER, {"y": 236, "h": 16}, False, search=ADD_PICKER[-1])
+    assert 1055 <= x <= 1070 and 240 <= y <= 255   # the ○ measured at (1063, 247)
+
+
+def test_rename_box_is_the_edit_level_with_the_pencil():
+    from viber_ui import name_edit_button, rename_field
+    els = [_el("Pane", "SideBarContent", [793, 31, 1093, 959]),
+           _el("Button", "IconButton", [1061, 47, 1077, 63]),          # panel close ✕
+           _el("Button", "IconButton", [1025, 245, 1045, 265]),        # pencil
+           _el("Button", "IconButton", [1057, 245, 1077, 265]),        # star
+           _el("Edit", "TextFieldItem", [112, 43, 252, 71]),
+           _el("Edit", "TextFieldItem", [809, 246, 1013, 265], text="Group")]
+    pencil = name_edit_button(els)
+    assert pencil["rect"] == [1025, 245, 1045, 265]
+    assert rename_field(els, pencil)["text"] == "Group"
+
+
+def test_groups_in_common_page_lists_existing_client_gcs():
+    from viber_ui import groups_in_common_from_page
+    assert groups_in_common_from_page(["x", "Groups in common", "VER-OS-(30SQM, MAKATI)"]) == \
+        ["VER-OS-(30SQM, MAKATI)"]
+    assert groups_in_common_from_page(["x", "Groups in common", "No groups in common"]) == []
+
+
+def test_existing_client_stops_before_any_group_is_made(monkeypatch):
+    import pytest
+    import viber_gc
+    import viber_ui
+
+    calls = []
+    monkeypatch.setattr(viber_gc, "plan_client_gc", lambda *a, **k: {
+        "ready": True, "problems": [], "gc_name": "VER-OS-(30SQM, MAKATI)", "client_number": "+639913518179",
+        "client_viber_name": "", "intro_message_first": "", "client_message": "Name: Ver",
+        "listing": None, "templates_chat": "APG CLIENTS", "template_text": "Name: Ver"})
+    monkeypatch.setattr(viber_gc, "_config", lambda: {"members": ["Max Alpha"], "self": ""})
+    monkeypatch.setattr(viber_gc, "client_name_from_chat", lambda number: "")
+    monkeypatch.setattr(viber_gc.viber_send, "open_chat", lambda number: {})
+    monkeypatch.setattr(viber_gc.viber_send, "reply", lambda text: calls.append(text))
+    monkeypatch.setattr(viber_ui, "create_group_from_chat", lambda *a, **k: {
+        "created": False, "existing_group": "VER-OS-(30SQM, MAKATI)", "client_display_name": ""})
+    with pytest.raises(viber_gc.GCError, match="EXISTING CLIENT"):
+        viber_gc.create_client_gc(1, dry_run=False)
+    assert calls == []   # nothing posted
+
+
+def test_sponsored_ad_close_point():
+    # 2026-10-21: a "Sponsored" ad box at the bottom of the chat list made Qt's UIA tree loop
+    # (the content root listed itself as a child) and drop the chat pane, so send_files /
+    # send_listing / reply failed with "No chat is open" while a chat was clearly open.
+    # Closing the ad restores the tree. Rect measured on the live app; ✕ was at (284, 725).
+    from backends._winlogic import ad_close_point
+    ad = {"type": "Document", "class": "QObject", "rect": [8, 709, 308, 959]}
+    assert ad_close_point([ad]) == (284, 725)
+    assert ad_close_point([{"type": "Group", "class": "AdsWebView", "rect": [0, 0, 0, 0]}]) is None
+
+
+def test_one_to_one_check_rejects_the_client_gc_that_shows_their_number():
+    # 2026-10-21: open_chat('+639913518179') left the VER-OS GC open (the viber:// link didn't
+    # navigate), and that GC shows the number inside the posted template — building the group
+    # "from the client's chat" there would have added people to the wrong chat.
+    from viber_ui import is_one_to_one_with
+    gc = [{"text": "VER-OS-(30SQM, MAKATI)", "y": 97}, {"text": "8 participants", "y": 121},
+          {"text": "Viber: +639913518179", "y": 447}]
+    assert not is_one_to_one_with(gc, "+639913518179", 143)
+    dm = [{"text": "Unknown", "y": 97}, {"text": "Active", "y": 121},
+          {"text": "+639913518179 is not in your contact list - save it using Viber on", "y": 165}]
+    assert is_one_to_one_with(dm, "+639913518179", 143)
+    assert not is_one_to_one_with(dm, "+639175177830", 143)   # someone else's chat
+    header_only = [{"text": "Unknown", "y": 97}, {"text": "+639913518179", "y": 121}]
+    assert is_one_to_one_with(header_only, "+639913518179", 143)
+
+
+def test_viber_plus_promo_close_point():
+    # 2026-10-21: closing the Sponsored ad popped a "Discover a Premium Experience" dialog that
+    # blocked the Add participants picker. Measured on the live app.
+    from backends._winlogic import promo_close_point
+    els = [{"type": "Pane", "class": "x", "name": "", "rect": [0, 0, 1, 1], "parent": None},
+           {"type": "Pane", "class": "x", "name": "", "rect": [0, 0, 1, 1], "parent": None},
+           {"type": "Window", "class": "QQuickPopupItem", "name": "", "rect": [341, 210, 761, 780], "parent": None},
+           {"type": "Button", "class": "IconButton", "name": "", "rect": [729, 226, 745, 242], "parent": 2},
+           {"type": "Button", "class": "SolidButton", "name": "Take me there", "rect": [449, 528, 653, 560], "parent": 2}]
+    assert promo_close_point(els) == (737, 234)
+    assert promo_close_point(els[:4]) is None   # some other popup (no "Take me there"): leave it
+
+
+def test_side_panel_back_never_hits_the_chat_history_back():
+    # 2026-10-21: leaving "Groups in common" clicked the chat pane's ← (history back) at
+    # [308, 31, 348, 71] — it satisfied "top-left, left of panel+50" — and jumped from the
+    # client's 1:1 chat to their existing GC, where Add participants then opened.
+    from viber_ui import side_panel_back_point
+    history_back = {"type": "Button", "class": "IconButton", "name": "", "text": "",
+                    "rect": [308, 31, 348, 71], "parent": None}
+    panel = {"type": "Pane", "class": "SideBarContent", "name": "", "text": "",
+             "rect": [793, 31, 1093, 959], "parent": None}
+    assert side_panel_back_point([history_back, panel]) == (816, 51)   # fallback spot, not 328
+    arrow = dict(history_back, rect=[804, 39, 828, 63])
+    assert side_panel_back_point([history_back, panel, arrow]) == (816, 51)
+    assert side_panel_back_point([history_back]) is None

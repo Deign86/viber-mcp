@@ -535,8 +535,9 @@ def _wait_ocr(predicate, timeout: float = 6.0, left_only: bool = True):
     return [], []
 
 
-def _invite_count(obs: list[dict]) -> int | None:
-    for o in _left_column(obs):
+def _invite_count(obs: list[dict], rows: list[dict] | None = None) -> int | None:
+    """The picker's "N/250" selected counter, read from `rows` (default: the left sidebar)."""
+    for o in _left_column(obs) if rows is None else rows:
         t = o["text"].replace(" ", "")
         if "/250" in t:
             digits = t.split("/250")[0][-3:]
@@ -608,11 +609,13 @@ def _select_member(name: str = "", number: str = "") -> str:
     raise UIError(f"Selecting '{name or number}' didn't register (invited {before} → {after}).")
 
 
-def select_circle_point(elements: list[dict], line: dict, line_is_number: bool):
+def select_circle_point(elements: list[dict], line: dict, line_is_number: bool, search: dict | None = None):
     """Where a picker row's select circle (○) is. It sits at the search box's right edge (the
     picker list and the search box share the sidebar's fixed width), vertically between the
-    row's name line and its number line — so just below a name line, just above a number line."""
-    search = next((e for e in elements if e["type"] == "Edit" and e["class"].startswith("TextFieldItem")), None)
+    row's name line and its number line — so just below a name line, just above a number line.
+    `search` is that picker's search box (default: the first one, the left sidebar's)."""
+    search = search or next((e for e in elements if e["type"] == "Edit"
+                             and e["class"].startswith("TextFieldItem")), None)
     if search is None:
         return None
     center_y = line["y"] + line["h"] / 2
@@ -778,12 +781,20 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
         _close_new_group()
         return {"created": False, "existing_group": existing, "gc_name": gc_name,
                 "members_added": added, "client_display_name": client_display}
-    # A client whose privacy settings block group invites: the group IS created, just without
-    # them, and a "Couldn't be added" dialog pops up (sometimes a moment after the header).
+    blocked = _dismiss_privacy_dialog(obs) if hits else None
+    return {"created": bool(hits), "gc_name": gc_name, "members_added": added,
+            "client_display_name": client_display, "privacy_blocked": blocked}
+
+
+def _dismiss_privacy_dialog(obs: list[dict]) -> str | None:
+    """A client whose privacy settings block group invites: the group IS created, just without
+    them, and a "Couldn't be added" dialog pops up (sometimes a moment after the header). Close
+    it; returns the blocked person's name ("" if unreadable), or None if no dialog."""
+    b = _backend()
     blocked = None
     for _ in range(4):
         blocked = privacy_blocked_from_dialog([o["text"] for o in obs])
-        if blocked is not None or not hits:
+        if blocked is not None:
             break
         time.sleep(0.8)
         obs = _ocr_px()
@@ -794,7 +805,296 @@ def create_group(gc_name: str, members: list[str], client_number: str, self_name
         else:
             b.press_key("escape")
         time.sleep(0.5)
-    return {"created": bool(hits), "gc_name": gc_name, "members_added": added,
+    return blocked
+
+
+# --- Group from the client's 1:1 chat: header "Add participants" → tick staff → Save → rename.
+# More reliable than the New group screen (whose name box / picker kept failing): the client is
+# already ticked, and nothing is created until Save.
+
+def _side_panel(elements: list[dict]):
+    return next((e for e in elements if e["class"] == "SideBarContent"), None)
+
+
+def add_participants_picker(elements: list[dict]):
+    """(search box, Save button) of the open chat's "Add participants" picker in the right side
+    panel, or None when it isn't showing."""
+    panel = _side_panel(elements)
+    if panel is None:
+        return None
+    inside = [e for e in elements if e["rect"][0] >= panel["rect"][0] - 2]
+    search = next((e for e in inside if e["type"] == "Edit" and e["class"].startswith("TextFieldItem")), None)
+    save = next((e for e in inside if e["type"] == "Button" and e["name"].strip() == "Save"), None)
+    return (search, save) if search and save else None
+
+
+def _panel_rows(obs: list[dict], search: dict) -> list[dict]:
+    """OCR lines of the side-panel picker: right of the panel's left edge, below its search box."""
+    left = search["rect"][0] - 40
+    return [o for o in obs if o["x"] >= left and o["y"] > search["rect"][3]]
+
+
+def picker_name_row(rows: list[dict], name: str):
+    """The picker row whose name line is exactly `name` (OCR look-alikes folded), or None."""
+    return next((o for o in rows if _norm(o["text"]) == _norm(name)), None)
+
+
+def _compose_text(elements: list[dict]) -> str:
+    return next((e["text"] for e in elements if e["type"] == "Edit"
+                 and e["class"].startswith("QQuickTextEdit")), "")
+
+
+def _panel_search_type(name: str) -> dict:
+    """Type `name` into the picker's search box (replacing what's there). A click that misses
+    the box leaves focus in the message box, so text that lands there is backspaced away."""
+    b = _backend()
+    for _ in range(3):
+        els = b.elements()
+        picker = add_participants_picker(els)
+        if picker is None:
+            raise UIError("The Add participants picker closed unexpectedly; nothing was saved.")
+        search, compose_before = picker[0], _compose_text(els)
+        b.click_at(*_mid(search["rect"]))
+        time.sleep(0.3)
+        if search["text"]:
+            b.press_key("end")
+            b.press_key("backspace", len(search["text"]) + 2)
+        b.type_into_focus(name)
+        time.sleep(1.2)
+        els = b.elements()
+        picker = add_participants_picker(els)
+        if picker and picker[0]["text"] == name:
+            return picker[0]
+        stray = _compose_text(els)
+        if stray != compose_before and stray.endswith(name):
+            b.click_compose()
+            b.press_key("end")
+            b.press_key("backspace", len(name))
+    raise UIError(f"Couldn't type '{name}' into the Add participants search; nothing was saved.")
+
+
+def _tick_participant(name: str) -> None:
+    """Search the Add participants picker for `name` and tick its row."""
+    b = _backend()
+    search = _panel_search_type(name)
+    hit, rows = None, []
+    for _ in range(3):  # results can render a moment late
+        rows = _panel_rows(_ocr_px(), search)
+        hit = picker_name_row(rows, name)
+        if hit:
+            break
+        time.sleep(1.0)
+    if hit is None:
+        raise UIError(f"Couldn't find '{name}' in the Add participants list; nothing was saved.")
+    before = _invite_count([], rows)
+    for point in (select_circle_point([], hit, False, search=search), _ocr_center(hit)):
+        b.click_at(*point)
+        after = before
+        for _ in range(6):  # the counter can take a moment to update
+            time.sleep(0.5)
+            after = _invite_count([], _panel_rows(_ocr_px(), search))
+            if before is None or after is None or after == before + 1:
+                return
+    raise UIError(f"Ticking '{name}' didn't register (selected {before} → {after}); nothing was saved.")
+
+
+def side_panel_back_point(elements: list[dict]):
+    """Where a side-panel sub-page's ← back arrow is (top-left of the panel), or None with no
+    panel. Only buttons INSIDE the panel count: the chat pane's own ← (history back) sits just
+    left of it and navigates to the previous chat. Some pages (Groups in common) don't expose the
+    arrow to UIA, so fall back to its measured spot, 23px in and 20px down from the panel corner."""
+    panel = _side_panel(elements)
+    if panel is None:
+        return None
+    pl, pt = panel["rect"][0], panel["rect"][1]
+    back = next((e for e in elements if e["type"] == "Button" and e["class"] == "IconButton"
+                 and pl <= e["rect"][0] < pl + 50 and e["rect"][1] < pt + 40), None)
+    return _mid(back["rect"]) if back else (pl + 23, pt + 20)
+
+
+def _close_side_panel_page() -> None:
+    """Leave a side-panel page (the picker) via its top-left back arrow, without saving."""
+    b = _backend()
+    point = side_panel_back_point(b.elements())
+    if point:
+        b.click_at(*point)
+        time.sleep(0.6)
+
+
+def name_edit_button(elements: list[dict]):
+    """The pencil next to the chat's name on the info panel's main page: the left one of the two
+    icon buttons (pencil, star) on the name row. The panel's top-corner close/back buttons are
+    excluded by position. None when the main page isn't showing."""
+    panel = _side_panel(elements)
+    if panel is None:
+        return None
+    icons = [e for e in elements if e["type"] == "Button" and e["class"] == "IconButton"
+             and e["rect"][0] >= panel["rect"][0] and e["rect"][1] > panel["rect"][1] + 100]
+    for e in sorted(icons, key=lambda e: e["rect"][1]):
+        row = [o for o in icons if abs(o["rect"][1] - e["rect"][1]) < 6]
+        if len(row) == 2:
+            return min(row, key=lambda o: o["rect"][0])
+    return None
+
+
+def rename_field(elements: list[dict], pencil: dict):
+    """The group-name box the pencil opens: an edit level with the pencil, left of it."""
+    py = _mid(pencil["rect"])[1]
+    return next((e for e in elements if e["type"] == "Edit" and abs(_mid(e["rect"])[1] - py) < 12
+                 and e["rect"][2] <= pencil["rect"][0]), None)
+
+
+def _info_main_page() -> list[dict]:
+    """Show the open chat's info panel main page (the one with the name ✎ and Participants,
+    Groups in common, ...), from wherever the side panel is. Returns its elements."""
+    b = _backend()
+    for _ in range(4):
+        els = b.elements()
+        if name_edit_button(els):
+            return els
+        if _side_panel(els):
+            _close_side_panel_page()  # on a sub-page (picker, Participants, ...): go back
+            continue
+        info = next((e for e in els if e["class"] == "InfoButton"), None)
+        if info is None:
+            raise UIError("Couldn't find the chat's info button.")
+        b.click_at(*_mid(info["rect"]))
+        time.sleep(0.8)
+    raise UIError("Couldn't open the chat's info panel.")
+
+
+def _rename_open_chat(gc_name: str) -> None:
+    """Rename the open group from its info panel (pencil → type → ✓)."""
+    b = _backend()
+    pencil = name_edit_button(_info_main_page())
+    b.click_at(*_mid(pencil["rect"]))
+    time.sleep(0.5)
+    field = rename_field(b.elements(), pencil)
+    if field is None:
+        raise UIError("The group name box didn't open.")
+    b.click_at(*_mid(field["rect"]))
+    b.press_key("end")
+    b.press_key("backspace", len(field["text"]) + 2)
+    b.type_into_focus(gc_name)
+    time.sleep(0.4)
+    typed = next((e["text"] for e in b.elements() if e["type"] == "Edit" and e["rect"] == field["rect"]), "")
+    if typed != gc_name:
+        raise UIError(f"The group name didn't take (got {typed!r}); rename it to '{gc_name}' by hand.")
+    b.click_at(*_mid(pencil["rect"]))  # the pencil turned into ✓ in the same spot
+    time.sleep(0.8)
+
+
+def is_one_to_one_with(obs: list[dict], number: str, header_bottom: float) -> bool:
+    """Is the open chat `number`'s own 1:1 chat? Proof: its "<number> is not in your contact
+    list" banner, or the number in the header — and the header isn't a group's "N participants".
+    (A client GC also shows the number, inside the posted template — that must not count.)"""
+    want = number[-10:]
+
+    def has_number(t):
+        return want in "".join(ch for ch in t.translate(_DIGIT_FOLD) if ch.isdigit())
+
+    header = [o for o in obs if o["y"] < header_bottom]
+    if any(re.fullmatch(r"\d+\s+participants", o["text"].strip().lower()) for o in header):
+        return False
+    return any(has_number(o["text"]) and ("not in your contact list" in o["text"].lower()
+                                          or o["y"] < header_bottom) for o in obs)
+
+
+def groups_in_common_from_page(texts: list[str]) -> list[str]:
+    """Group names listed under the info panel's "Groups in common" header (OCR lines)."""
+    out, seen = [], False
+    for t in texts:
+        s, low = t.strip(), t.strip().lower()
+        if low == "groups in common":
+            seen = True
+        elif seen and len(s) > 2 and "no group" not in low and "in common" not in low:
+            out.append(s)
+    return out
+
+
+def _groups_in_common() -> list[str]:
+    """Groups the open 1:1 chat's contact already shares with us (info panel → Groups in common)."""
+    b = _backend()
+    els = _info_main_page()
+    row = next((e for e in els if e["type"] == "Button" and e["name"].strip() == "Groups in common"), None)
+    if row is None:
+        raise UIError("Couldn't open the chat's 'Groups in common'; nothing was created.")
+    b.click_at(*_mid(row["rect"]))
+    time.sleep(1.5)
+    panel = _side_panel(b.elements())
+    texts = [o["text"] for o in _ocr_px() if panel and o["x"] >= panel["rect"][0]]
+    _close_side_panel_page()
+    return groups_in_common_from_page(texts)
+
+
+def create_group_from_chat(gc_name: str, members: list[str], client_number: str,
+                           self_name: str = "") -> dict:
+    """Create the client's group from their OPEN 1:1 chat: header "Add participants" (the client is
+    already ticked) → tick `members` → Save → rename to `gc_name`. Message the client first so the
+    chat exists. Leaves the new group open."""
+    b = _backend()
+    for attempt in range(2):
+        els, obs = b.elements(), _ocr_px()
+        chat = next((e for e in els if e["class"] == "StackView"), None)
+        if is_one_to_one_with(obs, client_number, (chat["rect"][1] + 72) if chat else 140):
+            break
+        if attempt == 0:  # the viber:// link sometimes doesn't navigate: try once more
+            b.open_url(f"viber://chat?number={client_number}")
+            time.sleep(5.0)
+    else:
+        raise UIError(f"The open chat isn't {client_number}'s 1:1 chat (no 'not in your contact "
+                      "list' banner or number in the header); nothing was created.")
+    client_display = name_from_contact_banner([o["text"] for o in obs], client_number)
+    shared = _groups_in_common()
+    if shared:  # an existing client: never make a second GC
+        return {"created": False, "existing_group": shared[0], "gc_name": gc_name,
+                "members_added": [], "client_display_name": client_display}
+    els = b.elements()
+    chat = next((e for e in els if e["class"] == "StackView"), None)
+    if not is_one_to_one_with(_ocr_px(), client_number, (chat["rect"][1] + 72) if chat else 140):
+        raise UIError(f"Viber left {client_number}'s 1:1 chat before Add participants; nothing was "
+                      "created.")
+    button = next((e for e in b.elements() if e["class"] == "AddParticipantsButton"), None)
+    if button is None:
+        raise UIError("Couldn't find the chat's Add participants button; nothing was created.")
+    b.click_at(*_mid(button["rect"]))
+    for _ in range(10):
+        time.sleep(0.5)
+        if add_participants_picker(b.elements()):
+            break
+    else:
+        raise UIError("The Add participants picker didn't open; nothing was created.")
+
+    added = []
+    try:
+        for member in members:
+            if self_name and _norm(member) == _norm(self_name):
+                continue  # the creator is in the group automatically
+            _tick_participant(member)
+            added.append(member)
+    except UIError:
+        _close_side_panel_page()  # leave without saving: nothing is created
+        raise
+
+    save = add_participants_picker(b.elements())[1]
+    prev = b.foreground()
+    b.click_at(*_mid(save["rect"]))
+    b.hold_foreground(prev, 2.0)
+    # The new group opens as "Group" with "<N> participants" under it.
+    hits, obs = _wait_ocr(lambda t: re.fullmatch(r"\d+\s+participants", t.strip().lower()) is not None,
+                          timeout=20, left_only=False)
+    if not hits:
+        return {"created": False, "gc_name": gc_name, "members_added": added,
+                "client_display_name": client_display, "privacy_blocked": None}
+    blocked = _dismiss_privacy_dialog(obs)
+    try:
+        _rename_open_chat(gc_name)
+    except UIError:
+        renamed = []  # the group exists; the caller reports the missing rename
+    else:
+        head = _norm(gc_name)[:10]
+        renamed, _ = _wait_ocr(lambda t: _norm(t).startswith(head), timeout=8, left_only=False)
+    return {"created": True, "renamed": bool(renamed), "gc_name": gc_name, "members_added": added,
             "client_display_name": client_display, "privacy_blocked": blocked}
 
 
