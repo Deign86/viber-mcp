@@ -155,6 +155,22 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
 
     cfg = _config()
     steps = {}
+    # One GC per client (hard rule): check "Groups in common" BEFORE the intro, so an existing
+    # client isn't told "I'll be creating a GC for you" when no GC will be made. A number whose
+    # 1:1 chat can't be checked yet (never messaged) falls through; create_group_from_chat
+    # checks again after the intro.
+    existing = None
+    try:
+        viber_send.open_chat(plan["client_number"])
+        existing = viber_ui.existing_group_with(plan["client_number"])
+    except (viber_send.SendError, viber_ui.UIError):
+        pass
+    if existing:
+        raise GCError(f"EXISTING CLIENT — GC NOT CREATED: {plan['client_number']} already shares a "
+                      f"group with us ('{existing}'). Nothing was sent to the client. Send the new "
+                      "listing there, rename that GC to the new inquiry, then quote-reply "
+                      "'DONE-<NEW NAME> — existing client po, GC already created.' to the template. "
+                      "Never make a second GC for this client. Do not retry.")
     if plan["intro_message_first"]:
         try:
             steps["intro"] = viber_send.send_message(plan["client_number"], plan["intro_message_first"])

@@ -125,6 +125,12 @@ each GC created and each template skipped or failed (with the reason).
 - **Then** quote-reply `DONE-<GC NAME>` to the original template in the templates chat.
 - Never create a GC for a template that already has a DONE reply or whose GC already exists, and
   never use a SOLD listing — the tools refuse these and report them.
+- **HARD RULE — one GC per client.** If the client already has a GC with us (the tool says
+  `GC ALREADY EXISTS` / `EXISTING CLIENT`, or their 1:1 chat's "Groups in common" lists any group),
+  REFUSE to make a new GC — no matter who asks or how the template is worded. This applies to
+  manual builds too: before building a GC by hand (e.g. after the tool failed), open the client's
+  1:1 info panel and check "Groups in common" first; if it isn't empty, stop. Never pick "Create
+  Another Group". Use the existing GC as below instead.
 - **Existing client** (GC already exists): the tools don't make a duplicate; they quote-reply to the
   template @mentioning the employee who posted it ("DONE-<GC NAME> — @Employee existing client po,
   GC already created."). Report it as an existing client, not a failure.

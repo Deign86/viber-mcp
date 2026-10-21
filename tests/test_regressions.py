@@ -1213,11 +1213,36 @@ def test_existing_client_stops_before_any_group_is_made(monkeypatch):
     monkeypatch.setattr(viber_gc, "client_name_from_chat", lambda number: "")
     monkeypatch.setattr(viber_gc.viber_send, "open_chat", lambda number: {})
     monkeypatch.setattr(viber_gc.viber_send, "reply", lambda text: calls.append(text))
+    monkeypatch.setattr(viber_ui, "existing_group_with", lambda number: None)  # pre-check missed it
     monkeypatch.setattr(viber_ui, "create_group_from_chat", lambda *a, **k: {
         "created": False, "existing_group": "VER-OS-(30SQM, MAKATI)", "client_display_name": ""})
     with pytest.raises(viber_gc.GCError, match="EXISTING CLIENT"):
         viber_gc.create_client_gc(1, dry_run=False)
     assert calls == []   # nothing posted
+
+
+def test_existing_client_gets_no_intro_message(monkeypatch):
+    # 2026-10-21: Ray (+639123098637) already shared REALYN-CS with us, but create_client_gc sent
+    # "I'll be creating a Viber group chat for you shortly" before noticing, then made no GC.
+    # Deign's hard rule: one GC per client — check Groups in common BEFORE the intro.
+    import pytest
+    import viber_gc
+    import viber_ui
+
+    sent, groups = [], []
+    monkeypatch.setattr(viber_gc, "plan_client_gc", lambda *a, **k: {
+        "ready": True, "problems": [], "gc_name": "RAY-CS-(130SQM, PASAY)", "client_number": "+639123098637",
+        "client_viber_name": "", "intro_message_first": "Hello po Ray! I'll be creating a GC...",
+        "client_message": "Name: Ray", "listing": None, "templates_chat": "APG CLIENTS",
+        "template_text": "Name: Ray"})
+    monkeypatch.setattr(viber_gc, "_config", lambda: {"members": ["Max Alpha"], "self": ""})
+    monkeypatch.setattr(viber_gc.viber_send, "open_chat", lambda number: {})
+    monkeypatch.setattr(viber_gc.viber_send, "send_message", lambda *a, **k: sent.append(a))
+    monkeypatch.setattr(viber_ui, "existing_group_with", lambda number: "REALYN-CS-(100-150SQM, MANDALUYONG)")
+    monkeypatch.setattr(viber_ui, "create_group_from_chat", lambda *a, **k: groups.append(a))
+    with pytest.raises(viber_gc.GCError, match="EXISTING CLIENT.*REALYN-CS"):
+        viber_gc.create_client_gc(1, dry_run=False)
+    assert sent == [] and groups == []
 
 
 def test_sponsored_ad_close_point():

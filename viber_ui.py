@@ -1027,6 +1027,18 @@ def _groups_in_common() -> list[str]:
     return groups_in_common_from_page(texts)
 
 
+def existing_group_with(client_number: str) -> str | None:
+    """The first group `client_number` already shares with us, checked from their OPEN 1:1 chat
+    (info panel → Groups in common); None if none. Raises UIError when the open chat isn't their
+    1:1 chat (e.g. a brand-new number whose chat didn't open), so the caller can decide."""
+    b = _backend()
+    chat = next((e for e in b.elements() if e["class"] == "StackView"), None)
+    if not is_one_to_one_with(_ocr_px(), client_number, (chat["rect"][1] + 72) if chat else 140):
+        raise UIError(f"The open chat isn't {client_number}'s 1:1 chat.")
+    shared = _groups_in_common()
+    return shared[0] if shared else None
+
+
 def create_group_from_chat(gc_name: str, members: list[str], client_number: str,
                            self_name: str = "") -> dict:
     """Create the client's group from their OPEN 1:1 chat: header "Add participants" (the client is

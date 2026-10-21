@@ -154,7 +154,8 @@ Status:
   (`create_group`, `number_on_viber`) failed with "GC NOT CREATED — name missing" and is no longer
   used by the flow. Guards: `is_one_to_one_with` (banner/header number, not "N participants" —
   `open_chat`'s viber:// link sometimes doesn't navigate and the client's GC also shows the number
-  in its template); "Groups in common" non-empty → EXISTING CLIENT; picker search text that lands
+  in its template); "Groups in common" non-empty → EXISTING CLIENT (hard rule: one GC per client; `viber_gc` checks
+  it via `viber_ui.existing_group_with` BEFORE the intro, and `create_group_from_chat` again after); picker search text that lands
   in the message box is backspaced. Side-panel ← must be INSIDE the panel (`side_panel_back_point`)
   — the chat pane's own ← next to it jumps to the previous chat.
   The pickers and the mention list aren't in the UIA tree — rows are found by OCR; OCR confuses
