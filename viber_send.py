@@ -94,43 +94,125 @@ def resolve_recipient(to: str) -> tuple[str, str | None]:
 # ----------------------------------------------------------------------------- open / send
 
 
-def _wait_for_sendable_chat(number: str, name: str | None, timeout: float = 12.0) -> str:
-    """Poll the Viber window (via OCR) until a sendable chat is visible.
+# The chat pane's header: title, then the number / status line. 64 px below the pane's top keeps
+# the band clear of the first message, which can start right under the header bar (72 px).
+_HEADER_PX = 64
+_HEADER_BOTTOM_DEFAULT = 0.135
+_HEADER_X = (0.28, 0.7)
 
-    Success signals (any one, and no error screen):
-      - the contact `name` (first token) is visible in the header/list, OR
-      - the compose placeholder "type a message" is visible (empty draft), OR
-      - a settle period passed with no error screen (number-addressed, saved contact whose
-        header shows a name we don't know).
-    Raises SendError if the number is not a Viber user or nothing sendable appears in time.
+
+def _header_bottom() -> float:
+    """Normalized y under which the open chat's header lies, from the chat pane's UIA rect (the
+    window's title bar height varies); a window fraction where UIA isn't available."""
+    try:
+        pane = next((e for e in backend.elements() if e["class"] == "StackView"), None)
+        height = backend.screenshot().height
+    except (NotImplementedError, AttributeError, viber_ocr.OCRError):
+        return _HEADER_BOTTOM_DEFAULT
+    if pane is None or not height:
+        return _HEADER_BOTTOM_DEFAULT
+    return (pane["rect"][1] + _HEADER_PX) / height
+
+
+def header_lines(obs: list[dict], header_bottom: float) -> list[str]:
+    """OCR lines inside the chat pane's header band (not the sidebar, not the messages)."""
+    return [o["text"] for o in obs if _HEADER_X[0] <= o["x"] < _HEADER_X[1] and o["y"] < header_bottom]
+
+
+def header_key(lines: list[str]) -> frozenset:
+    """What identifies a header across OCR reads: its longer words, folded (the short junk OCR
+    makes of icons differs read to read)."""
+    return frozenset(w for w in _ocr_fold(re.sub(r"[^a-z0-9 ]", "", " ".join(lines).lower())).split()
+                     if len(w) >= 3)
+
+
+def chat_confirmed(obs: list[dict], number: str, name: str | None, header_bottom: float) -> bool:
+    """Strong evidence that the open chat is `number`/`name`'s: the number in the chat header
+    (a saved contact's chat shows it under the name; an unsaved number IS the title), the
+    "<Name> +63… is not in your contact list" banner, or the header title matching `name`
+    (prefix-tolerant: group titles are truncated). Nothing in the sidebar or the messages counts
+    — the contact's name in the chat list, the compose placeholder, or their number inside a
+    message used to confirm the wrong chat."""
+    want_digits = _digits(number or "")[-9:]
+    want_name = _ocr_fold(re.sub(r"[^a-z0-9]", "", (name or "").lower()))
+    for text in header_lines(obs, header_bottom):
+        if len(want_digits) >= 7 and want_digits in _digits(text):
+            return True
+        got = _ocr_fold(re.sub(r"[^a-z0-9]", "", text.lower()))
+        if len(want_name) >= 3 and len(got) >= 4 and (want_name.startswith(got) or got.startswith(want_name)):
+            return True
+    return number_confirmed(obs, number or "")
+
+
+def _wait_for_sendable_chat(number: str, name: str | None, timeout: float = 12.0,
+                            previous_header: frozenset | None = None,
+                            header_bottom: float | None = None) -> str:
+    """Poll the Viber window (via OCR) until `number`/`name`'s chat is confirmed open.
+
+    Strong confirmation (`chat_confirmed`): the number or the name in the chat pane's header, or
+    the number in the "not in your contact list" banner. Without one, the chat is accepted only
+    after a settle period with no error screen AND a header different from `previous_header`
+    (the chat open before navigating) — Viber's viber:// link sometimes doesn't navigate, and
+    accepting the previous chat sent messages to the wrong person.
+    Raises SendError if the number is not a Viber user or nothing is confirmed in time.
     Returns the OCR text of the confirmed chat.
     """
     deadline = time.time() + timeout
-    name_token = (name or "").strip().split()[0].lower() if name else ""
     started = time.time()
-    last = ""
+    header_bottom = _header_bottom() if header_bottom is None else header_bottom
+    last, changed = "", previous_header is None
     while time.time() < deadline:
         try:
-            last = viber_ocr.read_open_chat()["text"].lower()
+            obs = backend.observe()
         except viber_ocr.OCRError:
-            time.sleep(0.6)
+            time.sleep(0.4)
             continue
+        last = "\n".join(o["text"] for o in obs).lower()
         # Not "not in your contact list": that banner shows on any unsaved-number chat.
         if "isn't on viber" in last:
             raise SendError(f"{number} is not a Viber user — cannot send a message.")
         if "cannot add yourself" in last:
             raise SendError("Cannot message your own number (Viber blocks self-chat via number).")
-        if name_token and name_token in last:
+        if chat_confirmed(obs, number, name, header_bottom):
             return last
-        if "type a message" in last:
-            return last
-        if not name_token and time.time() - started >= 4.0:
-            return last  # number-addressed, no error after settle — accept
-        time.sleep(0.8)
+        changed = changed or header_key(header_lines(obs, header_bottom)) != previous_header
+        if changed and time.time() - started >= 4.0:
+            return last  # no error after the settle and not the chat we came from — accept
+        time.sleep(0.5)
+    if not changed:
+        raise SendError(
+            f"The open chat didn't change after asking Viber to open {number} (its viber:// link "
+            "sometimes doesn't navigate). If that chat is already the open one, use reply; "
+            "otherwise open it by name with search_and_open. Nothing was sent."
+        )
     raise SendError(
         f"Timed out opening {number}'s chat. Viber may be slow/minimized, the number may be "
         "unreachable, or (for a name) the contact's chat didn't come to the front."
     )
+
+
+_DIGIT_FOLD = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1", "S": "5", "B": "8"})
+
+
+def _digits(text: str) -> str:
+    """The digits of OCR'd text, with the look-alikes OCR produces folded back (O→0, l→1)."""
+    return "".join(ch for ch in text.translate(_DIGIT_FOLD) if ch.isdigit())
+
+
+def number_confirmed(obs: list[dict], number: str) -> bool:
+    """Is `number`'s 1:1 chat open? True when its last digits are in the chat's "<Name> +63…
+    is not in your contact list" banner (every unsaved number's chat has one). Only that OCR
+    line counts: the same number sits inside staff templates ("Viber: 0917…") and message text,
+    and a previous chat showing it must never confirm. The chat header shows the number too,
+    but its band overlaps the first message's, so it isn't used."""
+    want = _digits(number)[-9:]
+    if len(want) < 7:
+        return False
+    for o in obs:
+        text = _ocr_fold(o["text"].lower())
+        if _ocr_fold("contact list") in text and want in _digits(o["text"]):  # "contact Iist" too
+            return True
+    return False
 
 
 def open_chat(to: str, confirm: bool = True) -> str:
@@ -142,9 +224,16 @@ def open_chat(to: str, confirm: bool = True) -> str:
     if not viber_is_running():
         raise SendError("Viber is not running. Launch and sign in to Viber first.")
     number, name = resolve_recipient(to)
+    # Remember the header of the chat open NOW: a chat is accepted without strong proof only
+    # once the header has changed from this (viber:// sometimes doesn't navigate).
+    header_bottom = _header_bottom()
+    try:
+        previous = header_key(header_lines(backend.observe(region=_HEADER_REGION), header_bottom))
+    except viber_ocr.OCRError:
+        previous = None
     backend.open_url(f"viber://chat?number={number}")
     if confirm:
-        _wait_for_sendable_chat(number, name)
+        _wait_for_sendable_chat(number, name, previous_header=previous, header_bottom=header_bottom)
     else:
         time.sleep(5.0)  # desktop needs a few seconds to navigate
     return number
@@ -194,6 +283,8 @@ def _side_panel_open(observations: list[dict]) -> bool:
 
 def _ensure_panel_closed() -> None:
     """Close any right-side panel if open (it displaces the send button). Retries once."""
+    if not backend.panel_shifts_send:
+        return  # the send button is found by identity there: skip the OCR read
     for _ in range(2):
         try:
             obs = backend.observe()
@@ -357,6 +448,9 @@ def _poll(check, timeout: float, first: float = 0.0, interval: float = 0.1):
 
 # Left-column section headers that only exist once Viber is showing search results.
 _RESULT_HEADERS = {"conversations", "contacts", "groups", "businesses", "channels", "communities"}
+# OCR regions (hints for the backend): the results/chat list column, and the chat header band.
+_RESULTS_REGION = (0, 0, 0.36, 1)
+_HEADER_REGION = (0, 0, 1, 0.16)
 
 
 def _await_results(name: str, timeout: float = 2.4):
@@ -365,14 +459,20 @@ def _await_results(name: str, timeout: float = 2.4):
     Replaces a fixed 1.6s wait plus one read. The first read after typing still shows the OLD
     chat list, with the same name at a different y — so a match counts only once a results
     section header is visible and two reads in a row agree on the row."""
-    state = {"prev": None, "obs": [], "match": None}
+    state = {"prev": None, "obs": [], "match": None, "headed": False}
 
     def check():
-        obs = backend.observe()
+        obs = backend.observe(region=_RESULTS_REGION)
         match = _find_result_row(name, obs)
-        ready = (state["prev"] is not None and match is not None and _same_row(state["prev"], match)
-                 and _results_header_visible(obs))
-        state.update(prev=match, obs=obs, match=match)
+        header = _results_header_visible(obs) or _no_results(obs)
+        if match is None:
+            # Results are up but no row reads as the name (Viber draws the match in bold OCR
+            # can't read): two such reads in a row hand over to the open-first-result fallback
+            # instead of waiting out the timeout.
+            ready = header and state["headed"]
+        else:
+            ready = state["prev"] is not None and _same_row(state["prev"], match) and header
+        state.update(prev=match, obs=obs, match=match, headed=header)
         return ready
 
     _poll(check, timeout=timeout, first=0.3)
@@ -381,6 +481,11 @@ def _await_results(name: str, timeout: float = 2.4):
 
 def _results_header_visible(obs) -> bool:
     return any(o["x"] < 0.35 and o["text"].strip().lower() in _RESULT_HEADERS for o in obs)
+
+
+def _no_results(obs) -> bool:
+    """Viber's "No results" notice in the results column: the search is done, nothing matched."""
+    return any(o["x"] < 0.35 and "no result" in o["text"].lower() for o in obs)
 
 
 def _same_row(a, b) -> bool:
@@ -408,8 +513,7 @@ def _search_open(name: str) -> tuple[str, int]:
                        in ("conversations", "contacts", "groups")), None)
         if header is not None:
             backend.click_result(header["y"] + 0.05)
-            time.sleep(1.2)
-            if _header_matches(name):
+            if _poll(lambda: _header_matches(name), timeout=2.0, first=0.3):  # was a fixed 1.2 s
                 return name, 2
         raise SendError(
             f"No matching contact/chat found for '{name}' in Viber search. Try a fuller name "
@@ -465,21 +569,25 @@ def search_messages(query: str, pages: int = 2) -> dict:
     backend.select_all()
     backend.delete()
     backend.type_text(query)
-    time.sleep(1.2)
+
     # Result-type tabs under the search box, left to right: names, messages, businesses.
-    tabs = sorted((e for e in backend.elements() if e["class"] == "TabComponent"),
-                  key=lambda e: e["rect"][0])
+    def tabs_now():
+        return sorted((e for e in backend.elements() if e["class"] == "TabComponent"),
+                      key=lambda e: e["rect"][0])
+    tabs = _poll(lambda: tabs if len(tabs := tabs_now()) >= 2 else [], timeout=2.5, first=0.3)
     if len(tabs) < 2:
         raise SendError("Viber's search tabs didn't appear (is the search box open?).")
     mid = lambda e: ((e["rect"][0] + e["rect"][2]) / 2, (e["rect"][1] + e["rect"][3]) / 2)  # noqa: E731
     rows, seen = [], set()
     try:
         backend.click_at(*mid(tabs[1]))
-        time.sleep(1.5)
+        # The result rows take a moment to render (an empty list is also an answer).
+        _poll(lambda: message_search_rows(backend.observe(region=_RESULTS_REGION)),
+              timeout=2.0, first=0.4)
         backend.scroll("chats", 50)  # the list keeps its old scroll position — start at the top
-        time.sleep(0.8)
+        time.sleep(0.5)
         for page in range(max(1, pages)):
-            for r in message_search_rows(backend.observe()):
+            for r in message_search_rows(backend.observe(region=_RESULTS_REGION)):
                 key = (r["chat"], r["time"], r["preview"])
                 if key not in seen:
                     seen.add(key)
@@ -497,7 +605,7 @@ def search_messages(query: str, pages: int = 2) -> dict:
 def _header_matches(name: str) -> bool:
     """Is the open chat's header title `name` (allowing truncation and OCR look-alikes)?"""
     want = _ocr_fold(re.sub(r"[^a-z0-9]", "", name.lower()))
-    for o in backend.observe():
+    for o in backend.observe(region=_HEADER_REGION):
         if 0.3 <= o["x"] < 0.6 and o["y"] < 0.12:
             got = _ocr_fold(re.sub(r"[^a-z0-9]", "", o["text"].lower()))
             if len(got) >= 4 and (want.startswith(got) or got.startswith(want)):

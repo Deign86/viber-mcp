@@ -85,7 +85,7 @@ class MacBackend(Backend):
         return self._window()["kCGWindowBounds"]
 
     # --- perception ------------------------------------------------------------------
-    def observe(self) -> list[dict]:
+    def observe(self, region=None) -> list[dict]:  # region: hint only, the whole window is read
         window = self._window()
         window_id = int(window["kCGWindowNumber"])
         with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:

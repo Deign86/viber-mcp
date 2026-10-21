@@ -16,9 +16,10 @@ __all__ = ["OCRError", "observe", "read_open_chat", "read_chat_list", "scroll_an
 _SIDEBAR_MAX_X = 0.30
 
 
-def observe() -> list[dict]:
-    """Return OCR observations of the Viber window: [{"text", "x", "y"}], top-to-bottom."""
-    return get_backend().observe()
+def observe(region=None) -> list[dict]:
+    """Return OCR observations of the Viber window: [{"text", "x", "y"}], top-to-bottom.
+    `region` (normalized l, t, r, b) lets the backend OCR only that part — a hint, so filter."""
+    return get_backend().observe(region)
 
 
 def read_open_chat() -> dict:
@@ -33,7 +34,8 @@ def read_chat_list() -> dict:
 
     Filters OCR to the left column so the open conversation's text isn't mixed in.
     """
-    lines = [o["text"] for o in observe() if o["x"] < _SIDEBAR_MAX_X]
+    lines = [o["text"] for o in observe(region=(0, 0, _SIDEBAR_MAX_X + 0.04, 1))
+             if o["x"] < _SIDEBAR_MAX_X]
     return {"line_count": len(lines), "lines": lines, "text": "\n".join(lines)}
 
 

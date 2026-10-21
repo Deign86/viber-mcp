@@ -34,6 +34,11 @@ naming, `pending_templates`, `choose_listing`) and pure helpers in `viber_ui.py`
 `_preview`, `find_number_row`, ...) so it can be tested with fixture data; UI-structure tests inject a
 fake backend via `backends._backend` (no module mocking). **Every bug found on the live app gets a
 regression test** in `tests/test_regressions.py` (or the matching test file) before/with the fix.
+Flows that poll (`_poll`) are tested with stateful fakes (`ChatBackend`, `PickerBackend`,
+`PanelBackend`, `GroupFlowBackend` in `test_regressions.py`) that change state after N reads; a
+fake that must make a poll time out uses `_use(..., fast_clock=True)` so the deadline is virtual.
+`tests/test_windows_backend.py` unit-tests the Windows backend (cached UIA walk, `wait_still`,
+`observe(region)`, value caching, `open_url`) with fake COM elements; it skips off Windows.
 
 Then **verify on the real app** with `client.py` (or `client.py call <tool> '<json>'`) and screenshots —
 the returned `verified` flag is best-effort and gives false negatives. Only test writes in My Notes.
@@ -97,6 +102,36 @@ Status:
   (AttachThreadInput trick; activation arrives asynchronously, so wait for it before restoring).
 - **Search-result UIA delegates are whole sections**, not rows — click the OCR'd row position.
 - Capture with `PrintWindow(..., PW_RENDERFULLCONTENT)`; it works while Viber is covered.
+- **Speed (profiled 2026-10-21 on the live app).** OCR takes the raw BGRA pixels straight into a
+  `SoftwareBitmap` (the PNG round trip cost more than recognition; words are identical).
+  `observe(region=(l, t, r, b))` crops before OCR — the sidebar is ~5x cheaper, the header band
+  ~20x; it's a *hint* (macOS ignores it), so callers still filter by x/y. UIA is read through
+  `_levels()` (one `FindAllBuildCache` per tree level, `_Node`s with cached properties) — never
+  go back to per-property `Control` reads in loops. The message/search box located by
+  `click_compose`/`click_search` is kept (`_target_node`) so `_value()` polls cost ~1 ms; anything
+  that can navigate (`click_at`, `click_result`, `press_key`, `open_url`) drops it. Wheel notches
+  are posted `_WHEEL_GAP` apart (5 ms; 30 ms made a 60-notch scroll take 2 s). `open_url`'s
+  foreground guard runs in a thread so chat polling starts at once. Prefer `viber_send._poll`
+  over fixed sleeps; `number_confirmed` accepts an unsaved number's chat from its "not in your
+  contact list" banner instead of the 4 s settle (never from the header: its band overlaps the
+  first message's). GC flow (profiled with a test group): `_ocr_px(region_px=...)` reads only
+  the side panel / mention zone, `_SB_CACHE` keeps the sidebar edge (no UIA walk per read), the
+  picker/rename/info-panel steps poll UIA state instead of sleeping, and the post-Save
+  `hold_foreground` runs in a thread. A tick went 3.4 s → 1.7 s, the mention 6.6 s → 3.3 s.
+  **Never walk the UIA tree while Qt animates** (a panel sliding in, a page fading): each
+  round trip then waits about a frame, so a ~50 ms walk takes >1 s. After a click that opens
+  or changes a panel, call `backend.wait_still()` (two identical PrintWindow captures) and
+  then walk once; `_levels` also fetches two levels per call (children + cached grandchildren)
+  to halve the round trips. A UIA call that doesn't return in 30 s leaves its thread stuck, so
+  `_on_uia` abandons that thread, starts a fresh one and raises `OCRError` ("try again").
+  **UIA has no text for the chat list rows, the search result rows or the chat header** (they
+  are unnamed `ListViewDelegateLoader`s), so those stay OCR; `_await_results` hands over to the
+  open-first-result fallback after two reads with the results header up and no readable row.
+  Dialogs ARE in UIA: a `Window` of class `QQuickPopupItem` named by the title ("Pin note?",
+  "Couldn't be added") with `NotificationButton` children — `_popup` / `_dismiss_privacy_dialog`
+  poll for one instead of OCR-ing four times. GC coordination (`gc_exists`, `_find_message`,
+  `_collect_templates_chat`, `client_name_from_chat`) polls too (`_scroll_up_a_screen` waits for
+  the topmost message to change after a scroll).
 - The "not in your contact list" banner appears on every unsaved-number chat — not an error.
 
 **Linux:** hardest target — Wayland heavily restricts screen capture and synthetic input; X11
@@ -119,9 +154,14 @@ Status:
   (`_side_panel_open` via OCR markers) and closes them.
 - **Click the send button; do not press Return.** "Send message on Enter" may be off, in which case
   Return just inserts a newline.
-- **`viber://chat?number=` navigation is slow (~seconds) and mobile-first.** Never assume the chat
-  opened immediately — poll via OCR (`_wait_for_sendable_chat`). It also errors "isn't on Viber" for
-  non-users and "cannot add yourself" for the user's own number (My Notes is separate).
+- **`viber://chat?number=` navigation is slow (~seconds), mobile-first, and sometimes doesn't
+  navigate at all.** Never assume the chat opened — poll via OCR (`_wait_for_sendable_chat`), and
+  confirm it ONLY from the chat pane's header band (`chat_confirmed`: the number under the name,
+  the unsaved-number banner, or the title matching the name) — never from the sidebar, the compose
+  placeholder or message text, which all belong to whatever chat was open before (that sent
+  messages to the wrong person). Without strong proof a chat is accepted after a 4 s settle only
+  if its header differs from the one captured before `open_url`. It also errors "isn't on Viber"
+  for non-users and "cannot add yourself" for the user's own number (My Notes is separate).
 - **Search results are substring-matched and alphabetically sorted**, so the first row is often wrong
   (searching "Ivy" lists "Divya" first). `_find_result_row` scores exact/prefix over substring and
   clicks the matched row's actual OCR position; excludes the search-bar text (y<0.12), section
@@ -151,10 +191,12 @@ Status:
   **GCs are built from the client's 1:1 chat** (staff: "the most reliable route"): the intro
   message is always sent first, then header `AddParticipantsButton` → the side-panel picker (client
   pre-ticked) → tick the staff → `Save` → rename via the info panel's ✎. The old New group screen
-  (`create_group`, `number_on_viber`) failed with "GC NOT CREATED — name missing" and is no longer
-  used by the flow. Guards: `is_one_to_one_with` (banner/header number, not "N participants" —
+  flow (`create_group`, `number_on_viber`) failed with "GC NOT CREATED — name missing" and was
+  removed; `find_number_row` / `select_circle_point` / `privacy_blocked_from_dialog` stay (used by
+  the picker and the privacy check). Guards: `is_one_to_one_with` (banner/header number, not "N participants" —
   `open_chat`'s viber:// link sometimes doesn't navigate and the client's GC also shows the number
-  in its template); "Groups in common" non-empty → EXISTING CLIENT; picker search text that lands
+  in its template); "Groups in common" non-empty → EXISTING CLIENT (hard rule: one GC per client; `viber_gc` checks
+  it via `viber_ui.existing_group_with` BEFORE the intro, and `create_group_from_chat` again after); picker search text that lands
   in the message box is backspaced. Side-panel ← must be INSIDE the panel (`side_panel_back_point`)
   — the chat pane's own ← next to it jumps to the previous chat.
   The pickers and the mention list aren't in the UIA tree — rows are found by OCR; OCR confuses
@@ -197,11 +239,17 @@ Status:
   re-activates Viber, so focus is handed back immediately. The preview overlay: the caption `Edit`
   (class `TextArea`); the overlay container is the caption's grandparent; send is a `RoundIconButton`
   child of the overlay; add-more is the `IconButton` child of the overlay just above the caption
-  (NOT the overlay's close X `IconButton` at the top right). `dry_run` stops before send.
+  (NOT the overlay's close X `IconButton` at the top right). `dry_run` stops before send. After
+  the send, `_settle_and_resend` waits for the feed to stop changing (`_feed_still`: Viber
+  animates a progress ring on the bubbles while uploading; nothing of it is in UIA, and the
+  delivered ticks show once it's still) instead of a fixed 4 s + 1.5 s/file, which is now only
+  the cap; then it presses the not-sent banner's Resend if it shows.
 - `viber_drive.py` — Google Drive listings (read-only OAuth desktop flow). Client file
   `google_oauth_client.json` next to `server.py` (git-ignored) or env `VIBER_MCP_GOOGLE_CLIENT`;
   token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads go to
-  `%LOCALAPPDATA%\viber-mcp\drive-cache` and are kept ~3 days, then pruned by `prune_downloads`
+  `%LOCALAPPDATA%\viber-mcp\drive-cache` (fetched in parallel, `DOWNLOAD_THREADS`, each thread
+  with its own Drive service — httplib2 isn't thread-safe; written as `.part` then renamed, so a
+  file under its final name is whole and is reused without a metadata call) and are kept ~3 days, then pruned by `prune_downloads`
   (`VIBER_MCP_KEEP_DOWNLOADS_DAYS`; never delete right after sending — that raced Viber's upload and
   left photos "not sent"). `remove_downloads` /
   `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`

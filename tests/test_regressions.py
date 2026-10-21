@@ -287,17 +287,6 @@ def test_select_circle_needs_the_search_box():
     assert select_circle_point([], {"y": 257, "h": 20}, False) is None
 
 
-# ------------------------------------------- New group screen (pencil toggles the panel)
-
-
-def test_new_group_screen_state_reads_the_sidebar():
-    from viber_ui import new_group_screen_state
-
-    assert new_group_screen_state(["Rakuten Viber", "Q Search...", "Chats", "Unread"]) == "chats"
-    assert new_group_screen_state(["Q Search name or number", "New group", "New Community"]) == "menu"
-    assert new_group_screen_state(["Q Search name or number", "Group name*", "Invite contacts", "0/250"]) == "group_form"
-
-
 def test_message_search_rows_group_name_time_and_preview():
     # "LOIs sent today or yesterday": the name search found nothing; the messages tab lists
     # chat + time + the matching message. OCR lines (x, y normalized) from that tab.
@@ -333,17 +322,6 @@ def test_message_search_stamps_survive_ocr_garbling():
         assert _row_stamp(raw), raw
     for not_a_stamp in ("Me: Thank you po", "Anne", "4", "12", "1,000 sqm"):
         assert _row_stamp(not_a_stamp) is None, not_a_stamp
-
-
-def test_existing_group_dialog_is_detected():
-    # THSWV / Anfernee: "Start chat" showed "You already have a group together!" and the run
-    # failed with "group didn't appear" — the client already had BASEL-WH-(650SQM, LAS PINAS).
-    from viber_ui import existing_group_from_dialog
-
-    texts = ["APG CLIENTS", "+3", "You already have a group together!",
-             "BASEL-WH-(650SQM, LAS PI...", "Open", "Create Another Group"]
-    assert existing_group_from_dialog(texts) == "BASEL-WH-(650SQM, LAS PI..."
-    assert existing_group_from_dialog(["THSWV-WH-(967.76SQM, CAVITE)", "8 participants"]) is None
 
 
 def test_privacy_blocked_dialog_is_detected():
@@ -1001,7 +979,7 @@ class MentionBackend:
         return [{"type": "Pane", "class": "SplitView", "rect": (308, 0, 1100, 967)},
                 {"type": "Edit", "class": "QQuickTextEdit_QML_1", "rect": self.COMPOSE}]
 
-    def observe(self):
+    def observe(self, region=None):
         if not self.open:
             return [{"text": "Hello everyone", "x": 0.5, "y": 0.5, "w": 0.1, "h": 0.02}]
         return [{"text": r, "x": 0.35, "y": (850 - 40 * i) / 967, "w": 0.2, "h": 0.02}
@@ -1038,6 +1016,7 @@ class MentionBackend:
 
     def click_send(self):
         self.sent = "Hello @" + self.ROWS[self.highlight] if self.open else self.value
+        self.value = ""  # the box clears on send (send_with_mention polls for it)
 
 
 def test_mention_picks_the_exact_member_not_a_longer_name_containing_it(monkeypatch):
@@ -1080,6 +1059,9 @@ class UnknownMentionBackend(MentionBackend):
     shows as "Unknown"."""
 
     ROWS = ["Max Alpha", "Unknown"]
+
+    def wait_still(self, timeout=2.0):
+        return 0.0
 
 
 def _run_gc_with_unknown_client(monkeypatch, fake):
@@ -1213,11 +1195,36 @@ def test_existing_client_stops_before_any_group_is_made(monkeypatch):
     monkeypatch.setattr(viber_gc, "client_name_from_chat", lambda number: "")
     monkeypatch.setattr(viber_gc.viber_send, "open_chat", lambda number: {})
     monkeypatch.setattr(viber_gc.viber_send, "reply", lambda text: calls.append(text))
+    monkeypatch.setattr(viber_ui, "existing_group_with", lambda number: None)  # pre-check missed it
     monkeypatch.setattr(viber_ui, "create_group_from_chat", lambda *a, **k: {
         "created": False, "existing_group": "VER-OS-(30SQM, MAKATI)", "client_display_name": ""})
     with pytest.raises(viber_gc.GCError, match="EXISTING CLIENT"):
         viber_gc.create_client_gc(1, dry_run=False)
     assert calls == []   # nothing posted
+
+
+def test_existing_client_gets_no_intro_message(monkeypatch):
+    # 2026-10-21: Ray (+639123098637) already shared REALYN-CS with us, but create_client_gc sent
+    # "I'll be creating a Viber group chat for you shortly" before noticing, then made no GC.
+    # Deign's hard rule: one GC per client — check Groups in common BEFORE the intro.
+    import pytest
+    import viber_gc
+    import viber_ui
+
+    sent, groups = [], []
+    monkeypatch.setattr(viber_gc, "plan_client_gc", lambda *a, **k: {
+        "ready": True, "problems": [], "gc_name": "RAY-CS-(130SQM, PASAY)", "client_number": "+639123098637",
+        "client_viber_name": "", "intro_message_first": "Hello po Ray! I'll be creating a GC...",
+        "client_message": "Name: Ray", "listing": None, "templates_chat": "APG CLIENTS",
+        "template_text": "Name: Ray"})
+    monkeypatch.setattr(viber_gc, "_config", lambda: {"members": ["Max Alpha"], "self": ""})
+    monkeypatch.setattr(viber_gc.viber_send, "open_chat", lambda number: {})
+    monkeypatch.setattr(viber_gc.viber_send, "send_message", lambda *a, **k: sent.append(a))
+    monkeypatch.setattr(viber_ui, "existing_group_with", lambda number: "REALYN-CS-(100-150SQM, MANDALUYONG)")
+    monkeypatch.setattr(viber_ui, "create_group_from_chat", lambda *a, **k: groups.append(a))
+    with pytest.raises(viber_gc.GCError, match="EXISTING CLIENT.*REALYN-CS"):
+        viber_gc.create_client_gc(1, dry_run=False)
+    assert sent == [] and groups == []
 
 
 def test_sponsored_ad_close_point():
@@ -1333,3 +1340,1154 @@ def test_move_listing_to_sold_refuses_a_folder_already_in_sold(monkeypatch):
     monkeypatch.setattr(viber_drive, "_writer", lambda: pytest.fail("must not write"))
     with pytest.raises(viber_drive.DriveError, match="already be in SOLD"):
         viber_drive.move_listing_to_sold("L")
+
+
+# ------------------------------------------------------------- speed-ups (2026-10-21)
+# Profiled on the live app: a full OCR read was ~0.5 s (PNG encode+decode cost more than the
+# recognition), every value read re-walked the UIA tree, and fixed sleeps dominated the tools.
+
+
+def test_region_box_crops_and_falls_back_to_the_whole_image():
+    from backends._winlogic import region_box
+    assert region_box(None, 1000, 900) is None
+    assert region_box((0, 0, 1, 1), 1000, 900) is None            # whole image: no crop
+    assert region_box((0, 0, 0.34, 1), 1000, 900) == (0, 0, 340, 900)
+    assert region_box((0, 0, 1, 0.14), 1101, 967) == (0, 0, 1101, 136)
+    assert region_box((0.3, 0.2, 0.6, 0.26), 1000, 900) == (300, 180, 600, 234)
+    assert region_box((0, 0, 0.02, 1), 1000, 900) is None         # too thin for OCR → whole
+    assert region_box((0, 0, 1.5, 2), 1000, 900) is None          # clamped to the image → whole
+
+
+def test_offset_observations_maps_a_crop_back_to_window_coordinates():
+    from backends._winlogic import offset_observations
+    # A word at the crop's centre of a 30%-wide sidebar crop is at x=0.15 of the window.
+    obs = [{"text": "Max Alpha", "x": 0.5, "y": 0.5, "w": 0.4, "h": 0.1}]
+    out = offset_observations(obs, (0, 0, 300, 900), 1000, 900)
+    assert out[0]["x"] == 0.15 and out[0]["y"] == 0.5
+    assert abs(out[0]["w"] - 0.12) < 1e-9 and abs(out[0]["h"] - 0.1) < 1e-9
+    # Header band crop: y is scaled into the band, x untouched.
+    out = offset_observations(obs, (0, 0, 1000, 135), 1000, 900)
+    assert out[0]["x"] == 0.5 and out[0]["y"] == 0.075
+    assert out[0]["text"] == "Max Alpha"
+
+
+def test_number_confirmed_by_the_banner_but_never_by_header_or_message_text():
+    from viber_send import number_confirmed
+    number = "+639175177830"
+    # The chat title sits at y≈0.10 — the same band a message right under the header can use
+    # (live: "My Notes" at y=0.104, first bubble from y≈0.11), so the header never confirms.
+    header = {"text": "+63 917 517 7830", "x": 0.35, "y": 0.104}
+    banner = {"text": "Rafael +639175177830 is not in your contact list - save it", "x": 0.31, "y": 0.16}
+    garbled = {"text": "Rafael +63917517783O is not in your contact Iist", "x": 0.31, "y": 0.16}
+    template = {"text": "Viber: 09175177830", "x": 0.35, "y": 0.4}       # a template line in a chat
+    top_message = {"text": "Viber: 09175177830", "x": 0.35, "y": 0.104}  # right under the header
+    assert number_confirmed([banner], number)
+    assert number_confirmed([garbled], number)                   # OCR's O/0, l/I slips
+    assert not number_confirmed([header], number)
+    assert not number_confirmed([template], number)
+    assert not number_confirmed([top_message], number)
+    assert not number_confirmed([banner], "+639171234567")       # another number's chat
+    assert not number_confirmed([{"text": "+63917 is not in your contact list", "x": 0.3, "y": 0.2}], "+63917")
+    assert not number_confirmed([banner], "Max Alpha")           # search_and_open passes a name
+
+
+
+
+def test_wait_for_sendable_chat_accepts_as_soon_as_the_number_is_the_header(monkeypatch):
+    # An unsaved number's chat shows its banner at once: no 4 s settle needed. (Each GC flow
+    # opens the client's 1:1 chat three or four times.)
+    import viber_send
+    reads = iter([[{"text": "Rafael +639175177830 is not in your contact list", "x": 0.31, "y": 0.16},
+                   {"text": "Hello po", "x": 0.4, "y": 0.5}]])
+
+    class FakeBackend:
+        def observe(self, region=None):
+            return next(reads)
+    slept = []
+    monkeypatch.setattr(viber_send, "backend", FakeBackend())
+    monkeypatch.setattr(viber_send.time, "sleep", slept.append)
+    text = viber_send._wait_for_sendable_chat("+639175177830", None)
+    assert "hello po" in text and slept == []
+
+
+def test_panel_check_is_skipped_where_the_send_button_is_found_by_identity(monkeypatch):
+    import viber_send
+    for shifts, expect_reads in ((True, 1), (False, 0)):
+        reads = []
+
+        class FakeBackend:
+            panel_shifts_send = shifts
+            def observe(self, region=None):
+                reads.append(region)
+                return []
+            def click_panel_close(self): raise AssertionError("no panel to close")
+        monkeypatch.setattr(viber_send, "backend", FakeBackend())
+        viber_send._ensure_panel_closed()
+        assert len(reads) == expect_reads, shifts
+
+
+def test_search_reads_only_the_results_column_and_header_band(monkeypatch):
+    import viber_send
+    regions = []
+    results = [{"text": "Conversations", "x": 0.05, "y": 0.13}, {"text": "Max Alpha", "x": 0.1, "y": 0.179}]
+
+    class FakeBackend:
+        def observe(self, region=None):
+            regions.append(region)
+            return results
+    monkeypatch.setattr(viber_send, "backend", FakeBackend())
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: None)
+    viber_send._await_results("Max")
+    viber_send._header_matches("Max Alpha")
+    assert regions[0] == viber_send._RESULTS_REGION and regions[-1] == viber_send._HEADER_REGION
+    assert all(r is not None for r in regions)
+
+
+def test_message_menu_is_read_as_soon_as_it_renders(monkeypatch):
+    # message_action used to sleep 0.8 s twice; now it polls elements for the menu and its close.
+    import backends
+    import viber_ui
+    menu = {"type": "MenuItem", "class": "MenuItem", "name": "Reply", "text": "", "parent": None,
+            "rect": [400, 400, 500, 430]}
+    chat = [{"type": "Pane", "class": "StackView", "name": "", "text": "", "parent": None, "rect": [308, 0, 1100, 967]},
+            {"type": "Custom", "class": "FeedDelegate", "name": "", "text": "", "parent": 0, "rect": [330, 500, 900, 560]},
+            {"type": "Edit", "class": "TextEditItem", "name": "", "text": "hello", "parent": 1, "rect": [340, 510, 600, 550]},
+            {"type": "Edit", "class": "QQuickTextEdit", "name": "", "text": "", "parent": 0, "rect": [320, 900, 1000, 940]}]
+    reads = [chat, chat, chat + [menu], chat + [menu], chat]
+    clicks, slept = [], []
+
+    class FakeBackend:
+        def elements(self): return reads.pop(0) if len(reads) > 1 else reads[0]
+        def click_at(self, x, y, button="left", double=False): clicks.append((x, y, button))
+        def press_key(self, key, repeat=1): raise AssertionError("menu item should be found")
+    previous = backends._backend
+    backends._backend = FakeBackend()
+    monkeypatch.setattr(viber_ui.time, "sleep", slept.append)
+    try:
+        result = viber_ui.message_action(1, "Reply")
+    finally:
+        backends._backend = previous
+    assert result["chose"] == "Reply" and clicks[0][2] == "right" and clicks[1][:2] == (450, 415)
+    assert sum(slept) < 1.0  # was 1.6 s of fixed sleeps
+
+
+# ---------------------------------------------------- speed-ups, part 2: polls replace sleeps
+# Stateful stand-ins for Viber's chat pane, the Add participants picker and the info panel, so
+# the flows that used to sleep fixed amounts are exercised end to end with `time.sleep` recorded.
+
+
+def _ui(kind, cls, rect, parent=None, text="", name=""):
+    return {"type": kind, "name": name, "class": cls, "text": text, "parent": parent, "rect": list(rect)}
+
+
+class _Img:
+    width, height = 1100, 967
+
+
+def _obs(text, x, y, w=0.1, h=0.02):
+    return {"text": text, "x": x, "y": y, "w": w, "h": h}
+
+
+class ChatBackend:
+    """A chat with messages, a message box, the context menu and the "down" jump button."""
+    PANE = [308, 71, 792, 959]
+    COMPOSE = [320, 900, 760, 940]
+
+    def __init__(self, messages, scrolled_up=False, lag=2):
+        self.messages = list(messages)   # [(text, mine)]
+        self.compose, self.staged = "", ""
+        self.menu_open, self.target, self.editing = False, None, None
+        self.scrolled_up, self.lag, self.reads_left = scrolled_up, lag, None
+        self.clear_in = None
+        self.clicks, self.scrolls, self.keys = [], [], []
+
+    def _rects(self):
+        for i, (text, mine) in enumerate(self.messages):
+            top = 160 + i * 60  # below the pane's 72-px header bar (the feed view starts there)
+            yield i, text, mine, [548 if mine else 320, top, 760 if mine else 600, top + 40]
+
+    def elements(self):
+        if self.reads_left is not None:      # the jump button goes a few reads after its click
+            self.reads_left -= 1
+            if self.reads_left < 0:
+                self.scrolled_up, self.reads_left = False, None
+        if self.clear_in is not None:        # the box clears a few reads after send
+            self.clear_in -= 1
+            if self.clear_in < 0:
+                self._apply_send()
+        els = [_ui("Pane", "StackView", self.PANE)]
+        for _, text, mine, rect in self._rects():
+            d = len(els)
+            els.append(_ui("Group", "FeedDelegate", [308, rect[1] - 5, 792, rect[3] + 5], parent=0))
+            els.append(_ui("Text", "TextEditItem", rect, parent=d, text=text))
+        els.append(_ui("Edit", "QQuickTextEdit", self.COMPOSE, parent=0, text=self.compose))
+        if self.menu_open:
+            for j, name in enumerate(("Reply", "Edit", "Forward")):
+                els.append(_ui("MenuItem", "MenuItem", [400, 500 + j * 30, 520, 525 + j * 30], name=name))
+        if self.scrolled_up:
+            els.append(_ui("Button", "ScrollToBottomItem", [700, 800, 740, 840]))
+        return els
+
+    def _apply_send(self):
+        if self.editing is not None:
+            self.messages[self.editing] = (self.compose, True)
+        else:
+            self.messages.append((self.compose, True))
+        self.compose, self.editing, self.clear_in = "", None, None
+
+    def click_at(self, x, y, button="left", double=False):
+        self.clicks.append((x, y, button))
+        if button == "right":
+            self.target = next(i for i, _, _, r in self._rects() if r[1] <= y <= r[3])
+            self.menu_open = True
+            return
+        if self.menu_open:
+            j = int((y - 500) // 30)
+            self.menu_open = False
+            if j == 1:
+                self.editing = self.target
+                self.compose = self.messages[self.target][0]
+            return
+        if self.scrolled_up and 700 <= x <= 740 and 800 <= y <= 840:
+            self.reads_left = self.lag
+
+    def clipboard_set(self, text): self.staged = text
+    def click_compose(self): pass
+    def delete(self): self.compose = ""
+    def paste(self): self.compose = self.staged
+    def click_send(self): self.clear_in = self.lag
+    def press_key(self, key, repeat=1): self.keys.append((key, repeat))
+    def scroll(self, area, notches): self.scrolls.append((area, notches))
+
+
+def _use(monkeypatch, fake, fast_clock=False):
+    """Install `fake` as the backend and record sleeps. With fast_clock, sleeping advances a
+    virtual clock that the polls' deadlines read, so a flow that must time out does so at once."""
+    import backends
+    import viber_ui
+    monkeypatch.setattr(backends, "_backend", fake)
+    slept = []
+    if not fast_clock:
+        monkeypatch.setattr(viber_ui.time, "sleep", slept.append)
+        return slept
+    clock = [0.0]
+
+    def sleep(s):
+        slept.append(s)
+        clock[0] += s
+    monkeypatch.setattr(viber_ui.time, "sleep", sleep)
+    monkeypatch.setattr(viber_ui.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(viber_ui.time, "time", lambda: clock[0])
+    return slept
+
+
+def test_jump_to_latest_polls_until_the_down_button_goes(monkeypatch):
+    import viber_ui
+    fake = ChatBackend([("hi", False)], scrolled_up=True)
+    slept = _use(monkeypatch, fake)
+    out = viber_ui.jump_to_latest()
+    assert out == {"at_latest": True, "used_button": True}
+    assert fake.clicks[0][:2] == (720, 820) and fake.scrolls == [("chat", -60)]
+    assert sum(slept) < 1.5  # was 1.0 s per click + 0.6 s fixed (+1.8 s of wheel-notch sleeps)
+
+
+def test_jump_to_latest_reports_not_at_latest_when_the_button_stays(monkeypatch):
+    import viber_ui
+    fake = ChatBackend([("hi", False)], scrolled_up=True, lag=10 ** 6)
+    _use(monkeypatch, fake, fast_clock=True)
+    out = viber_ui.jump_to_latest()
+    assert out["at_latest"] is False and out["used_button"] is True
+    assert len([c for c in fake.clicks if c[2] == "left"]) == 4  # tried the button 4 times
+
+
+def test_quote_reply_returns_once_the_box_clears(monkeypatch):
+    import viber_ui
+    fake = ChatBackend([("question?", False), ("their newest", False)])
+    slept = _use(monkeypatch, fake)
+    out = viber_ui.reply_to_message(1, "answer", send=True)
+    assert out["sent"] and out["replying_to"] == "their newest"
+    assert fake.messages[-1] == ("answer", True) and fake.compose == ""
+    assert fake.clicks[0][2] == "right" and 500 <= fake.clicks[1][1] < 530  # right-click, then Reply
+    assert sum(slept) < 1.2  # was 0.8 + 0.8 (menu) + 1.2 (after send) fixed
+
+
+def test_edit_message_waits_for_the_edited_text_and_verifies_it(monkeypatch):
+    import viber_ui
+    fake = ChatBackend([("theirs", False), ("old text", True)])
+    _use(monkeypatch, fake)
+    out = viber_ui.edit_message(1, "new text")
+    assert out == {"edited": True, "from": "old text", "to": "new text", "verified": True}
+    assert fake.messages == [("theirs", False), ("new text", True)]
+
+
+def test_edit_message_refuses_someone_elses_message(monkeypatch):
+    import pytest
+    import viber_ui
+    fake = ChatBackend([("old text", True), ("theirs", False)])
+    _use(monkeypatch, fake)
+    with pytest.raises(viber_ui.UIError, match="yours"):
+        viber_ui.edit_message(1, "new")
+    assert fake.clicks == []
+
+
+def test_message_action_escapes_when_the_item_is_not_offered(monkeypatch):
+    import pytest
+    import viber_ui
+    fake = ChatBackend([("hi", False)])
+    _use(monkeypatch, fake)
+    with pytest.raises(viber_ui.UIError, match="Available: Reply, Edit, Forward"):
+        viber_ui.message_action(1, "Translate")
+    assert fake.keys == [("escape", 1)]
+
+
+class OcrPxBackend:
+    def __init__(self, pane=True):
+        self.pane, self.regions, self.elements_calls = pane, [], 0
+
+    def screenshot(self):
+        return _Img()
+
+    def elements(self):
+        self.elements_calls += 1
+        return [_ui("Pane", "SplitView", [308, 0, 1100, 967])] if self.pane else []
+
+    def observe(self, region=None):
+        self.regions.append(region)
+        return [_obs("Row", 0.5, 0.5, 0.1, 0.02)]
+
+
+def test_ocr_px_pixel_rects_region_hint_and_cached_sidebar_edge(monkeypatch):
+    import viber_ui
+    fake = OcrPxBackend()
+    _use(monkeypatch, fake)
+    out = viber_ui._ocr_px()
+    assert out == [{"text": "Row", "x": 550.0, "y": 483.5, "w": 110.0, "h": 19.34, "W": 1100, "H": 967, "SB": 308}]
+    viber_ui._ocr_px((300, 100, None, 500))
+    viber_ui._ocr_px((-5, 0, 1200, None))
+    assert fake.regions[0] is None
+    assert fake.regions[1] == (300 / 1100, 100 / 967, 1.0, 500 / 967)   # None = the window's edge
+    assert fake.regions[2] == (0.0, 0.0, 1200 / 1100, 1.0)              # the backend clamps
+    assert fake.elements_calls == 1  # the sidebar edge is read once per window size, not per read
+
+
+def test_ocr_px_does_not_cache_the_sidebar_edge_while_the_pane_is_missing(monkeypatch):
+    # While the Sponsored ad shows, Qt drops the SplitView: fall back to 28% but keep looking.
+    import viber_ui
+    fake = OcrPxBackend(pane=False)
+    _use(monkeypatch, fake)
+    assert viber_ui._ocr_px()[0]["SB"] == 1100 * 0.28
+    fake.pane = True
+    assert viber_ui._ocr_px()[0]["SB"] == 308 and fake.elements_calls == 2
+
+
+def test_panel_region_covers_exactly_what_panel_rows_keep():
+    from viber_ui import _panel_region, _panel_rows
+    search = _ui("Edit", "TextFieldItem", [780, 60, 1080, 90])
+    assert _panel_region(search) == (740, 90, None, None)
+    rows = [{"text": "in", "x": 745, "y": 100, "w": 10, "h": 10}, {"text": "left", "x": 100, "y": 100, "w": 10, "h": 10},
+            {"text": "above", "x": 800, "y": 80, "w": 10, "h": 10}]
+    assert [o["text"] for o in _panel_rows(rows, search)] == ["in"]
+
+
+class PickerBackend:
+    """The Add participants side panel: a search box, the rows it filters, the N/250 counter."""
+    SEARCH, SAVE, PANEL = [780, 60, 1080, 90], [1000, 20, 1080, 50], [760, 0, 1100, 967]
+    CONTACTS = ["Arjee Alpha", "Alpha Premier Group"]
+
+    def __init__(self, ticks=True):
+        self.search_text, self.counter, self.focus, self.ticks = "", 0, None, ticks
+        self.clicks, self.regions, self.typed = [], [], []
+
+    def screenshot(self): return _Img()
+
+    def elements(self):
+        return [_ui("Pane", "SplitView", [308, 0, 1100, 967]),
+                _ui("Edit", "QQuickTextEdit", [320, 900, 740, 940]),
+                _ui("Pane", "SideBarContent", self.PANEL),
+                _ui("Edit", "TextFieldItem", self.SEARCH, text=self.search_text),
+                _ui("Button", "Button", self.SAVE, name="Save")]
+
+    def rows(self):
+        if not self.search_text:
+            return []
+        return [c for c in self.CONTACTS if c.lower().startswith(self.search_text.lower())]
+
+    def observe(self, region=None):
+        self.regions.append(region)
+        out = [_obs(f"{self.counter}/250", 1000 / 1100, 120 / 967, 0.05, 0.02)]
+        for i, name in enumerate(self.rows()):
+            out.append(_obs(name, 790 / 1100, (150 + 60 * i) / 967, 0.15, 20 / 967))
+        return out
+
+    def click_at(self, x, y, button="left", double=False):
+        self.clicks.append((x, y))
+        if self.SEARCH[0] <= x <= self.SEARCH[2] and self.SEARCH[1] <= y <= self.SEARCH[3]:
+            self.focus = "search"
+        for i, _ in enumerate(self.rows()):
+            if self.ticks and 150 + 60 * i - 10 <= y <= 150 + 60 * i + 35 and x > self.PANEL[0]:
+                self.counter += 1
+
+    def type_into_focus(self, text):
+        self.typed.append(text)
+        if self.focus == "search":
+            self.search_text += text
+
+    def press_key(self, key, repeat=1):
+        if key == "backspace" and self.focus == "search":
+            self.search_text = self.search_text[:-repeat]
+
+    def click_compose(self): self.focus = "compose"
+
+
+def test_tick_participant_reads_only_the_panel_and_waits_only_for_state(monkeypatch):
+    import viber_ui
+    fake = PickerBackend()
+    slept = _use(monkeypatch, fake)
+    viber_ui._tick_participant("Arjee Alpha")
+    assert fake.counter == 1 and fake.search_text == "Arjee Alpha"
+    assert fake.clicks[-1] == (1075, 150 + 10 + 6)                 # the row's select circle
+    assert all(r == (740 / 1100, 90 / 967, 1.0, 1.0) for r in fake.regions)  # panel-only OCR
+    assert sum(slept) < 1.0  # was 0.3 + 1.2 (search) + 1.0/0.5 polls
+
+
+def test_tick_participant_fails_loudly_when_the_counter_does_not_move(monkeypatch):
+    import pytest
+    import viber_ui
+    fake = PickerBackend(ticks=False)
+    _use(monkeypatch, fake, fast_clock=True)
+    with pytest.raises(viber_ui.UIError, match="register"):
+        viber_ui._tick_participant("Arjee Alpha")
+
+
+class PanelBackend:
+    """A 1:1 chat whose info panel has a main page (pencil, Groups in common) and a sub-page."""
+    INFO, PENCIL, STAR = [1050, 20, 1080, 50], [800, 150, 820, 170], [830, 150, 850, 170]
+    ROW, BACK, PANEL = [780, 400, 1080, 430], [770, 10, 790, 30], [760, 0, 1100, 967]
+
+    def __init__(self, groups=("APG CLIENTS", "IT APG")):
+        self.page, self.groups = "chat", list(groups)
+        self.stills, self.clicks, self.regions = 0, [], []
+
+    def screenshot(self): return _Img()
+
+    def wait_still(self, timeout=2.0):
+        self.stills += 1
+        return 0.1
+
+    def elements(self):
+        els = [_ui("Pane", "SplitView", [308, 0, 1100, 967]), _ui("Button", "InfoButton", self.INFO)]
+        if self.page == "main":
+            els += [_ui("Pane", "SideBarContent", self.PANEL), _ui("Button", "IconButton", self.PENCIL),
+                    _ui("Button", "IconButton", self.STAR), _ui("Button", "Button", self.ROW, name="Groups in common")]
+        elif self.page == "groups":
+            els += [_ui("Pane", "SideBarContent", self.PANEL), _ui("Button", "IconButton", self.BACK)]
+        return els
+
+    def observe(self, region=None):
+        self.regions.append(region)
+        if self.page != "groups":
+            return []
+        lines = [_obs("Groups in common", 0.72, 0.08)]
+        lines += [_obs(g, 0.72, 0.2 + 0.05 * i) for i, g in enumerate(self.groups)]
+        if not self.groups:
+            lines.append(_obs("No groups in common", 0.72, 0.2))
+        return lines
+
+    def click_at(self, x, y, button="left", double=False):
+        self.clicks.append((x, y))
+        hit = lambda r: r[0] <= x <= r[2] and r[1] <= y <= r[3]  # noqa: E731
+        if self.page == "chat" and hit(self.INFO):
+            self.page = "main"
+        elif self.page == "main" and hit(self.ROW):
+            self.page = "groups"
+        elif self.page == "groups" and hit(self.BACK):
+            self.page = "main"
+
+
+def test_groups_in_common_settles_after_each_slide_and_reads_the_panel_only(monkeypatch):
+    import viber_ui
+    fake = PanelBackend()
+    slept = _use(monkeypatch, fake)
+    assert viber_ui._groups_in_common() == ["APG CLIENTS", "IT APG"]
+    assert fake.page == "main"                       # back on the main page, nothing left open
+    assert fake.stills == 3                          # info slide, sub-page slide, back slide
+    assert fake.regions == [(760 / 1100, 0.0, 1.0, 1.0)]
+    assert sum(slept) < 0.5                          # was 0.8 + 1.5 + 0.6 fixed
+
+
+def test_groups_in_common_is_empty_for_a_new_client(monkeypatch):
+    import viber_ui
+    fake = PanelBackend(groups=())
+    _use(monkeypatch, fake)
+    assert viber_ui._groups_in_common() == []
+
+
+class SearchMessagesBackend:
+    """The search box, its result-type tabs (which appear a moment after typing) and the rows."""
+    def __init__(self, tabs_after=2):
+        self.reads, self.tabs_after = 0, tabs_after
+        self.clicks, self.regions, self.scrolls, self.typed = [], [], [], []
+
+    def click_search(self): pass
+    def select_all(self): pass
+    def delete(self): pass
+    def type_text(self, text): self.typed.append(text)
+    def scroll(self, area, notches): self.scrolls.append((area, notches))
+    def click_at(self, x, y, button="left", double=False): self.clicks.append((x, y))
+
+    def elements(self):
+        self.reads += 1
+        if self.reads < self.tabs_after:
+            return []
+        return [_ui("Button", "TabComponent", [10 + 40 * i, 60, 40 + 40 * i, 90]) for i in range(3)]
+
+    def observe(self, region=None):
+        self.regions.append(region)
+        return [_obs("APG CLIENTS", 0.05, 0.20), _obs("4:57 PM", 0.22, 0.20),
+                _obs("Me: Kindly fill this up", 0.05, 0.23)]
+
+
+def test_search_messages_polls_for_the_tabs_and_reads_the_results_column(monkeypatch):
+    import viber_send
+    fake = SearchMessagesBackend()
+    monkeypatch.setattr(viber_send, "backend", fake)
+    monkeypatch.setattr(viber_send, "viber_is_running", lambda: True)
+    slept = []
+    monkeypatch.setattr(viber_send.time, "sleep", slept.append)
+    out = viber_send.search_messages("Kindly", pages=1)
+    assert out["count"] == 1 and out["results"][0]["chat"] == "APG CLIENTS"
+    assert fake.typed == ["Kindly"] and fake.clicks == [(65, 75), (25, 75)]  # messages tab, then back
+    assert fake.scrolls == [("chats", 50)]
+    assert all(r == viber_send._RESULTS_REGION for r in fake.regions)
+    assert sum(slept) < 2.0  # was 1.2 + 1.5 + 0.8 fixed
+
+
+def test_search_messages_fails_loudly_without_the_tabs(monkeypatch):
+    import pytest
+    import viber_send
+    fake = SearchMessagesBackend(tabs_after=10 ** 6)
+    monkeypatch.setattr(viber_send, "backend", fake)
+    monkeypatch.setattr(viber_send, "viber_is_running", lambda: True)
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: None)
+    monkeypatch.setattr(viber_send, "_poll", lambda check, timeout, first=0.0, interval=0.1: check())
+    with pytest.raises(viber_send.SendError, match="tabs"):
+        viber_send.search_messages("x", pages=1)
+
+
+def test_search_fallback_polls_the_header_after_opening_the_first_result(monkeypatch):
+    # The bold result name can't be OCR'd: the first row under the header is opened and the
+    # chat header confirms it (polled now, not a fixed 1.2 s).
+    import viber_send
+    header = {"text": "Conversations", "x": 0.05, "y": 0.13}
+
+    class FakeBackend:
+        clicked = []
+        input_confirmed = True
+        def click_search(self): pass
+        def select_all(self): pass
+        def delete(self): pass
+        def type_text(self, text): pass
+        def click_result(self, norm_y): self.clicked.append(norm_y)
+        def observe(self, region=None):
+            if region == viber_send._HEADER_REGION:
+                return [{"text": "My Notes", "x": 0.35, "y": 0.104}]
+            return [header]
+    monkeypatch.setattr(viber_send, "backend", FakeBackend())
+    monkeypatch.setattr(viber_send, "_await_results", lambda name: ([header], None))
+    slept = []
+    monkeypatch.setattr(viber_send.time, "sleep", slept.append)
+    assert viber_send._search_open("My Notes") == ("My Notes", 2)
+    assert FakeBackend.clicked == [0.13 + 0.05] and sum(slept) < 1.0
+
+
+class DialogBackend:
+    def __init__(self, dialog):
+        self.dialog, self.reads, self.clicks, self.keys = dialog, 0, [], []
+
+    def screenshot(self): return _Img()
+
+    def elements(self):
+        els = [_ui("Pane", "SplitView", [308, 0, 1100, 967])]
+        if self.dialog:
+            els.append(_ui("Button", "Button", [500, 500, 560, 530], name="OK"))
+        return els
+
+    def observe(self, region=None):
+        self.reads += 1
+        if not self.dialog:
+            return [_obs("Group", 0.35, 0.10), _obs("3 participants", 0.35, 0.125)]
+        return [_obs("Couldn't be added", 0.4, 0.4),
+                _obs("Rafael was not added to the group due to their privacy settings", 0.4, 0.45)]
+
+    def click_at(self, x, y, button="left", double=False): self.clicks.append((x, y))
+    def press_key(self, key, repeat=1): self.keys.append(key)
+
+
+def test_privacy_dialog_is_read_and_dismissed_with_ok(monkeypatch):
+    import viber_ui
+    fake = DialogBackend(dialog=True)
+    _use(monkeypatch, fake)
+    assert viber_ui._dismiss_privacy_dialog(viber_ui._ocr_px()) == "Rafael"
+    assert fake.clicks == [(530, 515)] and fake.keys == []
+
+
+class GroupFlowBackend:
+    """Everything create_group_from_chat touches, from the client's 1:1 chat to the renamed group:
+    banner, info panel (main + Groups in common), Add participants picker, Save, the new group's
+    header, the rename pencil/field. hold_foreground blocks until the test releases it, which
+    proves the flow no longer waits on it."""
+    INFO, ADD = [1050, 20, 1080, 50], [900, 20, 930, 50]
+    PANEL, PENCIL, STAR = [760, 0, 1100, 967], [800, 150, 820, 170], [830, 150, 850, 170]
+    ROW, BACK = [780, 400, 1080, 430], [770, 10, 790, 30]
+    SEARCH, SAVE, FIELD = [780, 60, 1080, 90], [1000, 20, 1080, 50], [770, 150, 795, 170]
+    NUMBER = "+639175177830"
+
+    def __init__(self):
+        import threading
+        self.page, self.group_name, self.renaming, self.rename_text = "chat", "Group", False, "Group"
+        self.focus, self.release, self.clicks, self.stills = None, threading.Event(), [], 0
+        self.foreground_calls = []
+
+    def screenshot(self): return _Img()
+    def foreground(self): return 1
+
+    def wait_still(self, timeout=2.0):
+        self.stills += 1
+        return 0.1
+
+    def hold_foreground(self, prev, seconds):
+        self.foreground_calls.append((prev, seconds))
+        self.release.wait(5)
+
+    def elements(self):
+        els = [_ui("Pane", "SplitView", [308, 0, 1100, 967]), _ui("Pane", "StackView", [308, 71, 1100, 959]),
+               _ui("Button", "InfoButton", self.INFO), _ui("Edit", "QQuickTextEdit", [320, 900, 740, 940])]
+        if self.page in ("chat", "main", "groups", "picker"):
+            els.append(_ui("Button", "AddParticipantsButton", self.ADD))
+        if self.page in ("main", "group_main"):
+            els += [_ui("Pane", "SideBarContent", self.PANEL), _ui("Button", "IconButton", self.PENCIL),
+                    _ui("Button", "IconButton", self.STAR), _ui("Button", "Button", self.ROW, name="Groups in common")]
+            if self.renaming:
+                els.append(_ui("Edit", "TextField", self.FIELD, text=self.rename_text))
+        elif self.page == "groups":
+            els += [_ui("Pane", "SideBarContent", self.PANEL), _ui("Button", "IconButton", self.BACK)]
+        elif self.page == "picker":
+            els += [_ui("Pane", "SideBarContent", self.PANEL), _ui("Edit", "TextFieldItem", self.SEARCH),
+                    _ui("Button", "Button", self.SAVE, name="Save")]
+        return els
+
+    def observe(self, region=None):
+        if self.page in ("chat", "main", "groups", "picker"):
+            lines = [_obs("Rafael", 0.35, 0.10),
+                     _obs(f"Rafael {self.NUMBER} is not in your contact list - save it", 0.31, 145 / 967, 0.5)]
+            if self.page == "groups":
+                lines += [_obs("Groups in common", 0.72, 0.08), _obs("No groups in common", 0.72, 0.2)]
+            return lines
+        return [_obs(self.group_name, 0.35, 0.10, 0.2), _obs("3 participants", 0.35, 0.125)]
+
+    def click_at(self, x, y, button="left", double=False):
+        self.clicks.append((x, y))
+        hit = lambda r: r[0] <= x <= r[2] and r[1] <= y <= r[3]  # noqa: E731
+        if self.page == "chat" and hit(self.INFO):
+            self.page = "main"
+        elif self.page == "main" and hit(self.ROW):
+            self.page = "groups"
+        elif self.page == "groups" and hit(self.BACK):
+            self.page = "main"
+        elif self.page in ("chat", "main") and hit(self.ADD):
+            self.page = "picker"
+        elif self.page == "picker" and hit(self.SAVE):
+            self.page = "group"
+        elif self.page == "group" and hit(self.INFO):
+            self.page = "group_main"
+        elif self.page == "group_main" and hit(self.PENCIL):
+            if self.renaming:                       # the pencil is the tick now
+                self.group_name, self.renaming = self.rename_text, False
+            else:
+                self.renaming = True
+        elif self.page == "group_main" and hit(self.FIELD):
+            self.focus = "field"
+
+    def press_key(self, key, repeat=1):
+        if key == "backspace" and self.focus == "field":
+            self.rename_text = self.rename_text[:-repeat]
+
+    def type_into_focus(self, text):
+        if self.focus == "field":
+            self.rename_text += text
+
+
+def test_create_group_from_chat_runs_on_polls_and_does_not_wait_for_the_foreground_guard(monkeypatch):
+    import viber_ui
+    fake = GroupFlowBackend()
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    try:
+        out = viber_ui.create_group_from_chat("RAFAEL-WH-(300SQM, PASIG)", [], fake.NUMBER, self_name="Deign Alpha")
+        guard_done = fake.release.is_set()
+    finally:
+        fake.release.set()
+    assert out == {"created": True, "renamed": True, "gc_name": "RAFAEL-WH-(300SQM, PASIG)", "members_added": [],
+                   "client_display_name": "Rafael", "privacy_blocked": None}
+    assert fake.group_name == "RAFAEL-WH-(300SQM, PASIG)"
+    assert fake.foreground_calls == [(1, 2.0)]        # the guard ran (on its thread) ...
+    assert not guard_done                             # ... and the flow finished before it ended
+    assert fake.stills >= 5                           # info, sub-page, back, picker, info, ...
+    assert sum(slept) < 3.0  # was ~2 s hold + 0.5-s picker polls + 3.2 s dialog waits + 1.7 s rename
+
+
+def test_create_group_from_chat_stops_for_an_existing_client(monkeypatch):
+    import viber_ui
+    fake = GroupFlowBackend()
+    original = fake.observe
+
+    def observe(region=None):
+        return [line if line["text"] != "No groups in common" else _obs("KM-WH-(240SQM, PASIG)", 0.72, 0.2)
+                for line in original(region)]
+    fake.observe = observe
+    _use(monkeypatch, fake)
+    out = viber_ui.create_group_from_chat("X", [], fake.NUMBER)
+    assert out["created"] is False and out["existing_group"] == "KM-WH-(240SQM, PASIG)"
+    assert fake.page == "main" and fake.foreground_calls == []  # never reached the picker/Save
+
+
+def test_mention_flow_sleeps_well_under_the_old_fixed_waits(monkeypatch):
+    import backends
+    import viber_ui
+    fake = MentionBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    slept = []
+    monkeypatch.setattr(viber_ui.time, "sleep", slept.append)
+    out = viber_ui.send_with_mention("Hello ", "Anthony")
+    assert out["sent"] and fake.sent == "Hello @Anthony "
+    assert sum(slept) < 2.0  # was 1.5 + 0.5 + 0.6 + 1.2 fixed
+
+
+def test_mention_opens_number_polls_for_the_number_after_the_click(monkeypatch):
+    import viber_ui
+
+    class FakeBackend:
+        def __init__(self): self.clicked, self.shown = [], False
+        def screenshot(self): return _Img()
+        def elements(self): return [_ui("Pane", "SplitView", [308, 0, 1100, 967])]
+
+        def observe(self, region=None):
+            lines = [_obs("Hello @shiso alpha", 0.4, 0.5, 0.2)]
+            if self.shown:
+                lines.append(_obs("+639175177830", 0.35, 0.12))
+            return lines
+
+        def click_at(self, x, y, button="left", double=False):
+            self.clicked.append((x, y))
+            self.shown = True
+    fake = FakeBackend()
+    slept = _use(monkeypatch, fake)
+    assert viber_ui.mention_opens_number("shiso alpha", "+639175177830") is True
+    (x, y), = fake.clicked
+    assert 0.4 * 1100 < x < 0.6 * 1100 and abs(y - 0.51 * 967) < 2   # inside the "@shiso alpha" token
+    assert sum(slept) < 1.0  # was a fixed 1.5 s
+    assert viber_ui.mention_opens_number("shiso alpha", "+639175177830") is None  # already visible: inconclusive
+
+
+# ------------------------------------------- the right chat: header-only confirmation (2026-10-21)
+# open_chat used to accept a chat once the contact's first name appeared ANYWHERE in the window
+# (the sidebar row counts) or the compose placeholder showed — both true of the chat it came from
+# when viber:// didn't navigate, which is how messages went to the wrong person.
+
+
+def test_chat_confirmed_only_by_the_header_or_the_banner():
+    from viber_send import chat_confirmed
+    hb = (71 + 64) / 967
+    saved = [_obs("shiso alpha", 0.349, 0.094), _obs("+639620429272", 0.35, 0.119)]
+    assert chat_confirmed(saved, "+639620429272", None, hb)                 # the number under the name
+    assert chat_confirmed(saved, "+639620429272", "Narci", hb)              # even when the alias differs
+    assert chat_confirmed(saved, "", "shiso alpha", hb)                     # by name
+    assert chat_confirmed([_obs("TESTCLIENT-WH-(300S...", 0.35, 0.094)], "", "TESTCLIENT-WH-(300SQM, PASIG)", hb)
+    assert chat_confirmed([_obs("Max Alpha", 0.35, 0.094)], "", "Max", hb)  # a search query is a prefix
+    banner = [_obs("Rafael +639175177830 is not in your contact list - save it", 0.31, 0.16)]
+    assert chat_confirmed(banner, "+639175177830", None, hb)
+    # Never from the sidebar, the compose placeholder, or a message that holds the number/name.
+    assert not chat_confirmed([_obs("shiso alpha", 0.05, 0.3)], "", "shiso alpha", hb)
+    assert not chat_confirmed([_obs("Type a message...", 0.4, 0.96)], "+639620429272", None, hb)
+    assert not chat_confirmed([_obs("Viber: 09620429272", 0.35, 0.3)], "+639620429272", None, hb)
+    assert not chat_confirmed([_obs("Viber: 09620429272", 0.35, hb + 0.001)], "+639620429272", None, hb)
+    assert not chat_confirmed([_obs("Maxine Cruz", 0.35, 0.094)], "", "Max Alpha", hb)
+    assert not chat_confirmed([_obs("Rakuten Viber", 0.035, 0.011)], "", "Rak", hb)   # the title bar
+
+
+def test_header_key_ignores_ocr_junk_but_tells_chats_apart():
+    from viber_send import header_key
+    a = header_key(["Viber Out", "shiso alpha", "Q +8 00", "+639620429272"])
+    assert a == header_key(["Viber Out", "shiso alpha", "00 0", "+63962O429272"])   # junk and O/0 slips
+    assert header_key(["Viber Out", "Max Alpha"]) != a
+    assert header_key(["Viber Out", "Max Alpha"]) != header_key(["Viber Out", "Jean Alpha"])
+
+
+class OpenChatBackend:
+    """What the window shows on each read after a viber:// open: `pages` in order, the last one
+    repeating (one page = the chat didn't navigate)."""
+    def __init__(self, pages):
+        self.pages, self.reads, self.urls = pages, 0, []
+
+    def app_running(self): return True
+    def elements(self): return [_ui("Pane", "StackView", [308, 71, 1100, 959])]
+    def screenshot(self): return _Img()
+    def open_url(self, url): self.urls.append(url)
+
+    def observe(self, region=None):
+        page = self.pages[min(self.reads, len(self.pages) - 1)]
+        self.reads += 1
+        return page
+
+
+PREVIOUS_CHAT = [_obs("Max Alpha", 0.35, 0.094), _obs("Type a message...", 0.4, 0.96), _obs("shiso alpha", 0.05, 0.5)]
+
+
+def _open_chat_with(monkeypatch, pages, number):
+    import viber_send
+    fake = OpenChatBackend(pages)
+    monkeypatch.setattr(viber_send, "backend", fake)
+    monkeypatch.setattr(viber_send, "resolve_recipient", lambda to: (number, None))
+    clock = [0.0]
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(viber_send.time, "time", lambda: clock[0])
+    monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock[0])
+    return fake, clock
+
+
+def test_open_chat_refuses_the_chat_it_came_from(monkeypatch):
+    # viber:// didn't navigate: the previous chat stays, its box empty, the wanted contact's
+    # name in the sidebar. Both used to pass as "sendable".
+    import pytest
+    import viber_send
+    fake, clock = _open_chat_with(monkeypatch, [PREVIOUS_CHAT], "+639620429272")
+    with pytest.raises(viber_send.SendError, match="didn't change"):
+        viber_send.open_chat("+639620429272")
+    assert fake.urls == ["viber://chat?number=+639620429272"] and clock[0] >= 12
+
+
+def test_open_chat_accepts_a_saved_contact_from_the_number_under_the_name(monkeypatch):
+    import viber_send
+    opened = [_obs("shiso alpha", 0.349, 0.094), _obs("+639620429272", 0.35, 0.119)]
+    fake, clock = _open_chat_with(monkeypatch, [PREVIOUS_CHAT, PREVIOUS_CHAT, opened], "+639620429272")
+    assert viber_send.open_chat("+639620429272") == "+639620429272"
+    assert clock[0] < 2.0  # no settle period
+
+
+def test_open_chat_settles_only_once_the_header_changed(monkeypatch):
+    # Neither the number nor a known name in the header (a saved contact whose chat hides the
+    # number): accepted after the settle, and only because the header isn't the previous one.
+    import viber_send
+    other = [_obs("Anne", 0.35, 0.094), _obs("Type a message...", 0.4, 0.96)]
+    fake, clock = _open_chat_with(monkeypatch, [PREVIOUS_CHAT, other], "+639170000000")
+    assert viber_send.open_chat("+639170000000") == "+639170000000"
+    assert 4.0 <= clock[0] < 6.0
+
+
+def test_open_chat_still_reports_non_viber_numbers(monkeypatch):
+    import pytest
+    import viber_send
+    _open_chat_with(monkeypatch, [PREVIOUS_CHAT, [_obs("This number isn't on Viber", 0.4, 0.5)]], "+10000000000")
+    with pytest.raises(viber_send.SendError, match="not a Viber user"):
+        viber_send.open_chat("+10000000000")
+
+
+# ------------------------------------------- send_files: wait for the upload, not a fixed time
+# The fixed 4 s + 1.5 s per file (up to 30 s) after an album was idle time: five cached photos
+# show their delivered ticks 1.6 s after the preview closes. Viber animates a progress ring on
+# the bubbles while uploading (nothing of it is in UIA), so the feed going still is the signal.
+
+
+class UploadBackend:
+    """Captures of the feed keep changing for `moving` reads (the progress ring), then hold
+    still; with `banner`, the not-sent banner shows once it's still until Resend is pressed."""
+    def __init__(self, moving=5, banner=False):
+        self.moving, self.banner, self.reads, self.clicks = moving, banner, 0, []
+
+    class _Shot:
+        def __init__(self, data): self.data = data
+        def crop(self, box): return self
+        def tobytes(self): return self.data
+
+    def screenshot(self):
+        self.reads += 1
+        return self._Shot(min(self.reads, self.moving).to_bytes(4, "big"))
+
+    def elements(self):
+        els = [_ui("Pane", "StackView", [308, 71, 1100, 959]), _ui("Edit", "QQuickTextEdit", [320, 900, 760, 940])]
+        if self.banner and self.reads > self.moving and not self.clicks:
+            els.append(_ui("Button", "BannerButton", [968, 155, 1044, 175], name="Resend all"))
+        return els
+
+    def click_at(self, x, y, button="left", double=False): self.clicks.append((x, y))
+
+
+def test_send_settle_returns_once_the_feed_stops_moving(monkeypatch):
+    import viber_ui
+    fake = UploadBackend(moving=6)
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(20) == {"attempts": 0, "still_unsent": False}  # fixed wait was 30 s
+    assert 1.5 <= sum(slept) <= 4.0  # ~6 moving reads, then 4 identical ones at 0.3 s
+
+
+def test_send_settle_presses_resend_when_the_banner_follows_the_upload(monkeypatch):
+    import viber_ui
+    fake = UploadBackend(moving=3, banner=True)
+    _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(3) == {"attempts": 1, "still_unsent": False}
+    assert fake.clicks == [(1006, 165)]
+
+
+def test_send_settle_caps_at_the_old_fixed_wait_when_the_feed_never_settles(monkeypatch):
+    import viber_ui
+    fake = UploadBackend(moving=10 ** 6)
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False}
+    assert abs(sum(slept) - 7.0) < 0.35  # 4 + 1.5 × 2
+
+
+def test_send_settle_falls_back_to_the_fixed_wait_without_captures(monkeypatch):
+    import viber_ui
+
+    class NoShots:
+        def elements(self): return []
+    slept = _use(monkeypatch, NoShots(), fast_clock=True)
+    assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False}
+    assert slept == [7.0]
+
+
+# ------------------------------------------------------- remaining speed-ups (2026-10-21, part 3)
+
+
+def test_download_runs_in_parallel_and_skips_metadata_for_cached_files(monkeypatch, tmp_path):
+    import threading
+    import time as _time
+    import googleapiclient.http
+    import viber_drive
+    monkeypatch.setattr(viber_drive, "CACHE_DIR", tmp_path)
+    (tmp_path / "cached1_photo.jpg").write_bytes(b"old")
+    (tmp_path / "half_photo.jpg.part").write_bytes(b"partial")   # an interrupted download
+    calls, active, peak, lock = [], [0], [0], threading.Lock()
+
+    class Exec:
+        def __init__(self, value): self.value = value
+        def execute(self, num_retries=0): return self.value
+
+    class Files:
+        def get(self, fileId, fields, supportsAllDrives):
+            calls.append(fileId)
+            return Exec({"id": fileId, "name": f"{fileId} photo.jpg", "size": "3", "mimeType": "image/jpeg"})
+
+        def get_media(self, fileId, supportsAllDrives): return fileId
+
+    class Service:
+        def files(self): return Files()
+
+    class FakeDownload:
+        def __init__(self, buf, req): self.buf = buf
+
+        def next_chunk(self, num_retries=0):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            _time.sleep(0.05)
+            with lock:
+                active[0] -= 1
+            self.buf.write(b"img")
+            return None, True
+    monkeypatch.setattr(viber_drive, "_drive", lambda: Service())
+    monkeypatch.setattr(googleapiclient.http, "MediaIoBaseDownload", FakeDownload)
+    paths = viber_drive.download(["cached1", "half", "a", "b", "c"])
+    assert paths[0] == str(tmp_path / "cached1_photo.jpg") and "cached1" not in calls  # reused, no round trip
+    assert [Path(p).read_bytes() for p in paths[1:]] == [b"img"] * 4            # "half" was fetched again
+    assert list(tmp_path.glob("*.part")) == [tmp_path / "half_photo.jpg.part"]  # only the stale one remains
+    assert peak[0] >= 2                                                          # fetches overlapped
+    assert viber_drive.download([]) == []
+
+
+def test_await_results_hands_over_to_the_fallback_when_no_row_reads_as_the_name(monkeypatch):
+    # Viber draws the matched name in bold that OCR can't read: once the results are up and two
+    # reads agree there's no readable match, open-first-result takes over (was the full 2.4 s).
+    import viber_send
+    results = [{"text": "Conversations", "x": 0.05, "y": 0.13}, {"text": "APG CLIENTS", "x": 0.1, "y": 0.179}]
+    reads = iter([[{"text": "Max Alpha", "x": 0.1, "y": 0.942}], results, results, results, results])
+
+    class FakeBackend:
+        def observe(self, region=None): return next(reads)
+    monkeypatch.setattr(viber_send, "backend", FakeBackend())
+    clock = [0.0]
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock[0])
+    obs, match = viber_send._await_results("TEST-NARCI")
+    assert match is None and obs == results and clock[0] < 1.0
+
+
+class GcSearchBackend:
+    def __init__(self):
+        self.results, self.stills, self.keys = [], 0, []
+
+    def click_search(self): pass
+    def delete(self): pass
+    def type_text(self, text): pass
+    def press_key(self, key, repeat=1): self.keys.append(key)
+    def click_result(self, norm_y): self.results.append(norm_y)
+    def wait_still(self, timeout=2.0): self.stills += 1; return 0.1
+    def elements(self): return []
+
+
+def test_gc_exists_reads_the_results_once_up_and_leaves_the_search(monkeypatch):
+    import backends
+    import viber_gc
+    import viber_send
+    import viber_gc_logic as logic
+    fake = GcSearchBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    rows = [{"text": "Groups", "x": 0.05, "y": 0.13}, {"text": "KM-WH-(240SQM, PASIG)", "x": 0.1, "y": 0.18}]
+    monkeypatch.setattr(viber_send, "_await_results", lambda name: (rows, None))
+    monkeypatch.setattr(logic, "search_says_gc_exists", lambda texts, name: "yes" if name in texts else "no")
+    assert viber_gc.gc_exists("KM-WH-(240SQM, PASIG)") == (True, False)
+    assert viber_gc.gc_exists("NOPE-WH-(1SQM, X)") == (False, False)
+    assert fake.results == [] and fake.keys == ["escape", "escape"] and fake.stills == 2
+
+
+def test_gc_exists_opens_the_first_result_when_the_name_is_unreadable(monkeypatch):
+    import backends
+    import viber_gc
+    import viber_send
+    import viber_gc_logic as logic
+    fake = GcSearchBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    rows = [{"text": "Groups", "x": 0.05, "y": 0.13}, {"text": "bold-unreadable", "x": 0.1, "y": 0.18}]
+    monkeypatch.setattr(viber_send, "_await_results", lambda name: (rows, None))
+    monkeypatch.setattr(logic, "search_says_gc_exists", lambda texts, name: "unknown")
+    monkeypatch.setattr(viber_send, "_header_matches", lambda name: True)
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: None)
+    assert viber_gc.gc_exists("KM-WH-(240SQM, PASIG)") == (True, True)
+    assert fake.results == [0.13 + 0.05]  # the first row under the header
+
+
+class HistoryBackend:
+    """A chat whose older messages render a moment after each scroll up."""
+    def __init__(self, pages):
+        self.pages, self.page, self.pending, self.scrolls = pages, 0, 0, []
+
+    def elements(self):
+        if self.pending:
+            self.pending -= 1
+            if self.pending == 0:
+                self.page = min(self.page + 1, len(self.pages) - 1)
+        els = [_ui("Pane", "StackView", [308, 71, 1100, 959])]
+        for i, text in enumerate(self.pages[self.page]):
+            d = len(els)
+            els.append(_ui("Group", "FeedDelegate", [308, 160 + i * 60 - 5, 792, 200 + i * 60 + 5], parent=0))
+            els.append(_ui("Text", "TextEditItem", [320, 160 + i * 60, 600, 200 + i * 60], parent=d, text=text))
+        els.append(_ui("Edit", "QQuickTextEdit", [320, 900, 760, 940], parent=0))
+        return els
+
+    def scroll(self, area, notches):
+        self.scrolls.append(notches)
+        if notches > 0:
+            self.pending = 2  # older messages show after two reads
+
+
+def test_find_message_scrolls_up_and_waits_only_until_older_messages_render(monkeypatch):
+    import viber_gc
+    fake = HistoryBackend([["newest"], ["older", "newest"], ["template text", "older"]])
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    hit = viber_gc._find_message("template text")
+    assert hit and hit["text"] == "template text"
+    assert [n for n in fake.scrolls if n > 0] == [10, 10] and sum(slept) < 2.5  # was 1 s per screen
+
+
+def test_collect_templates_chat_returns_oldest_first(monkeypatch):
+    import viber_gc
+    fake = HistoryBackend([["c", "d"], ["a", "b", "c"]])
+    _use(monkeypatch, fake, fast_clock=True)
+    assert viber_gc._collect_templates_chat(2) == ["a", "b", "c", "d"]
+
+
+def test_client_name_is_polled_from_the_banner(monkeypatch):
+    import viber_gc
+    import viber_send
+
+    class FakeBackend:
+        def __init__(self): self.reads = 0
+        def screenshot(self): return _Img()
+        def elements(self): return [_ui("Pane", "SplitView", [308, 0, 1100, 967])]
+
+        def observe(self, region=None):
+            self.reads += 1
+            if self.reads < 3:
+                return []
+            return [_obs("Rafael Luijie +639175177830 is not in your contact list - save it", 0.31, 0.16, 0.5)]
+    fake = FakeBackend()
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    monkeypatch.setattr(viber_send, "open_chat", lambda number: number)
+    assert viber_gc.client_name_from_chat("+639175177830") == "Rafael Luijie"
+    assert fake.reads == 3 and sum(slept) < 1.0
+
+
+class PopupDialogBackend(DialogBackend):
+    """The privacy dialog as UIA shows it: a QQuickPopupItem window with an OK button; its
+    sentence is only readable by OCR inside the popup's rect."""
+    def elements(self):
+        els = [_ui("Pane", "SplitView", [308, 0, 1100, 967])]
+        if self.dialog:
+            els += [_ui("Window", "QQuickPopupItem", [299, 395, 804, 595], name="Couldn't be added"),
+                    _ui("Button", "NotificationButton", [500, 520, 560, 555], name="OK")]
+        return els
+
+    def observe(self, region=None):
+        self.reads += 1
+        if self.dialog and region is not None:
+            return [_obs("Rafael was not added to the group due to their privacy settings", 0.4, 0.45)]
+        return [_obs("Group", 0.35, 0.10), _obs("3 participants", 0.35, 0.125)]
+
+
+def test_privacy_dialog_is_found_as_a_popup_window_and_read_inside_it(monkeypatch):
+    import viber_ui
+    fake = PopupDialogBackend(dialog=True)
+    _use(monkeypatch, fake)
+    assert viber_ui._dismiss_privacy_dialog(viber_ui._ocr_px()) == "Rafael"
+    assert fake.clicks == [(530, 537.5)] and fake.reads == 2  # the initial read + the popup's rect
+
+
+def test_privacy_dialog_check_without_a_dialog_is_a_few_cheap_walks(monkeypatch):
+    import viber_ui
+    fake = PopupDialogBackend(dialog=False)
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._dismiss_privacy_dialog(viber_ui._ocr_px()) is None
+    assert fake.reads == 1 and sum(slept) <= 1.8   # no OCR beyond the caller's read; was four reads over ~3 s
+
+
+def test_other_dialogs_are_left_alone_by_the_privacy_check(monkeypatch):
+    import viber_ui
+
+    class PinDialogBackend(PopupDialogBackend):
+        def elements(self):
+            return [_ui("Pane", "SplitView", [308, 0, 1100, 967]),
+                    _ui("Window", "QQuickPopupItem", [299, 395, 804, 595], name="Pin note?"),
+                    _ui("Button", "NotificationButton", [470, 520, 537, 555], name="Pin")]
+
+        def observe(self, region=None):
+            self.reads += 1
+            return [_obs("Pin this note?", 0.4, 0.45)] if region else []
+    fake = PinDialogBackend(dialog=True)
+    _use(monkeypatch, fake)
+    assert viber_ui._dismiss_privacy_dialog(viber_ui._ocr_px()) is None and fake.clicks == []
+
+
+def test_await_results_finishes_at_once_on_no_results(monkeypatch):
+    # A name nobody has: Viber shows "No results" and no section header; the wait used to run
+    # out its 2.4 s timeout before the caller could say so.
+    import viber_send
+    none = [{"text": "No results", "x": 0.1, "y": 0.2}]
+    reads = iter([[{"text": "Max Alpha", "x": 0.1, "y": 0.942}], none, none, none])
+
+    class FakeBackend:
+        def observe(self, region=None): return next(reads)
+    monkeypatch.setattr(viber_send, "backend", FakeBackend())
+    clock = [0.0]
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock[0])
+    obs, match = viber_send._await_results("ZZZ-NOPE")
+    assert match is None and obs == none and clock[0] < 1.0

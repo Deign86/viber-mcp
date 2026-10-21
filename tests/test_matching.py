@@ -59,7 +59,7 @@ def test_await_results_skips_the_stale_chat_list(monkeypatch):
     reads = iter([stale, stale, results, results, results])
 
     class FakeBackend:
-        def observe(self):
+        def observe(self, region=None):
             return next(reads)
 
     monkeypatch.setattr(viber_send, "backend", FakeBackend())
@@ -73,7 +73,7 @@ def test_paste_pauses_only_for_fire_and_forget_backends(monkeypatch):
     for confirmed, expect_pauses in ((True, False), (False, True)):
         class FakeBackend:
             input_confirmed = confirmed
-            def observe(self): return []
+            def observe(self, region=None): return []
             def __getattr__(self, name): return lambda *a: None
         slept = []
         monkeypatch.setattr(viber_send, "backend", FakeBackend())

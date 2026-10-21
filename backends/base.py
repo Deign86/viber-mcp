@@ -16,6 +16,7 @@ Automation and ignore coordinates entirely.
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 
 
@@ -30,6 +31,9 @@ class Backend(ABC):
     # True if type_text/delete/paste return only once the field holds the expected text and
     # click_compose/click_search wait for focus themselves — callers can then skip fixed pauses.
     input_confirmed: bool = False
+    # True if an open right-side panel displaces the send button (coordinate-based clicks), so
+    # the domain must OCR for the panel and close it before sending.
+    panel_shifts_send: bool = True
 
     # --- app / process ---------------------------------------------------------------
     @abstractmethod
@@ -46,13 +50,21 @@ class Backend(ABC):
 
     # --- perception ------------------------------------------------------------------
     @abstractmethod
-    def observe(self) -> list[dict]:
+    def observe(self, region=None) -> list[dict]:
         """Capture the Viber window and OCR it.
 
         Returns observations sorted top-to-bottom: [{"text": str, "x": float, "y": float}],
         where x is the left edge and y the top position, both normalized 0..1 over the window.
-        Raises OCRError if no usable Viber window is visible.
+        `region` = (l, t, r, b), normalized, is a performance HINT: a backend may OCR only that
+        part of the window (coordinates stay window-relative) or ignore it, so callers must still
+        filter by position. Raises OCRError if no usable Viber window is visible.
         """
+
+    def wait_still(self, timeout: float = 2.0) -> float:
+        """Wait until the window has stopped changing (an animation ended), or `timeout`; returns
+        the seconds waited. Backends that can't diff captures cheaply just pause briefly."""
+        time.sleep(min(timeout, 0.4))
+        return min(timeout, 0.4)
 
     # --- clipboard -------------------------------------------------------------------
     @abstractmethod

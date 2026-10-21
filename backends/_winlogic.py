@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+
+
 def normalize_viber_url(url: str) -> str:
     """Windows Viber wants the '+' in `number=+63...` percent-encoded."""
     return url.replace("number=+", "number=%2B")
@@ -46,6 +49,31 @@ def to_observations(segments, img_w: float, img_h: float) -> list[dict]:
     ]
     obs.sort(key=lambda o: (o["y"], o["x"]))
     return obs
+
+
+def region_box(region, img_w: int, img_h: int, min_side: int = 48):
+    """Pixel crop box (l, t, r, b) for a normalized `region` of a `img_w` x `img_h` capture, or
+    None for the whole image (no region, a region covering it, or one too small to OCR)."""
+    if region is None:
+        return None
+    l, t, r, b = region
+    box = (max(0, math.floor(l * img_w)), max(0, math.floor(t * img_h)),
+           min(img_w, math.ceil(r * img_w)), min(img_h, math.ceil(b * img_h)))
+    if box == (0, 0, img_w, img_h):
+        return None
+    if box[2] - box[0] < min_side or box[3] - box[1] < min_side:
+        return None
+    return box
+
+
+def offset_observations(obs: list[dict], box, img_w: int, img_h: int) -> list[dict]:
+    """Map observations normalized over the crop `box` back to the whole `img_w` x `img_h`
+    capture, so callers see the same coordinates whether or not a region was used."""
+    l, t, r, b = box
+    sx, sy = (r - l) / img_w, (b - t) / img_h
+    ox, oy = l / img_w, t / img_h
+    return [{**o, "x": ox + o["x"] * sx, "y": oy + o["y"] * sy,
+             "w": o.get("w", 0) * sx, "h": o.get("h", 0) * sy} for o in obs]
 
 
 def ad_close_point(elements: list[dict]) -> tuple[float, float] | None:

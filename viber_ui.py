@@ -6,12 +6,15 @@ All coordinates exposed to callers are pixels in the image `screenshot()` return
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
+import threading
 import time
 from pathlib import Path
 
 from backends import get_backend
+from viber_send import _poll
 
 # Screenshots wider/taller than this are downscaled (vision models downscale anyway);
 # coordinates are converted back with `_scale`.
@@ -186,16 +189,18 @@ def jump_to_latest() -> dict:
     up (Viber loads history in chunks), so click the "↓" button while it's showing."""
     b = _backend()
     clicked = False
+
+    def at_bottom():
+        return scroll_to_bottom_button(b.elements()) is None
     for _ in range(4):
         button = scroll_to_bottom_button(b.elements())
         if button is None:
             break
         b.click_at(*_mid(button["rect"]))
         clicked = True
-        time.sleep(1.0)
+        _poll(at_bottom, timeout=1.5, first=0.2)  # the "↓" goes once the newest message shows
     b.scroll("chat", -60)  # settle at the very bottom
-    time.sleep(0.6)
-    return {"at_latest": scroll_to_bottom_button(b.elements()) is None, "used_button": clicked}
+    return {"at_latest": bool(_poll(at_bottom, timeout=1.0, first=0.2)), "used_button": clicked}
 
 
 def list_messages() -> dict:
@@ -349,13 +354,40 @@ def _resend_button(elements: list[dict]):
                  and e["name"].lower().startswith("resend")), None)
 
 
+def _feed_still(b, timeout: float, interval: float = 0.3, frames: int = 4) -> bool:
+    """Wait until the message feed has stopped changing (`frames` consecutive identical captures
+    `interval` apart) or `timeout`. While an album uploads, Viber animates a progress ring on
+    the bubbles (nothing of it is in the UIA tree); a still feed means the album is sent, or
+    failed with the not-sent banner up. Returns whether it went still. Backends without
+    captures just wait `timeout`."""
+    try:
+        els = b.elements()
+        chat = next(e for e in els if e["class"] == "StackView")
+        box = tuple(int(v) for v in _feed_view(els, chat))
+        b.screenshot().crop(box)
+    except (NotImplementedError, AttributeError, StopIteration):
+        time.sleep(timeout)
+        return False
+    deadline, last, same = time.time() + timeout, None, 0
+    while time.time() < deadline:
+        time.sleep(interval)
+        digest = hashlib.blake2b(b.screenshot().crop(box).tobytes(), digest_size=8).digest()
+        same = same + 1 if digest == last else 0
+        last = digest
+        if same >= frames - 1:
+            return True
+    return False
+
+
 def _settle_and_resend(n_files: int, max_attempts: int = 2) -> dict:
-    """Give the upload time to finish, then press Resend while the not-sent banner shows."""
+    """Wait for the upload to finish (the feed goes still), then press Resend while the not-sent
+    banner shows. The old fixed wait (4 s + 1.5 s per file, at most 30 s) is now only the cap:
+    a few photos are sent, ticks and all, in about two seconds."""
     b = _backend()
-    settle = min(4 + 1.5 * n_files, 30)
+    cap = min(4 + 1.5 * n_files, 30)
     attempts = 0
     while True:
-        time.sleep(settle)
+        _feed_still(b, timeout=cap)
         button = _resend_button(b.elements())
         if button is None:
             return {"attempts": attempts, "still_unsent": False}
@@ -415,16 +447,22 @@ def message_action(n: int, action: str) -> dict:
         raise UIError("Use unsend_message to delete — it checks ownership and confirms the choice.")
     b = _backend()
     b.click_at(*_press_point(_message(n)), button="right")
-    time.sleep(0.8)
-    items = [e for e in b.elements() if e["type"] == "MenuItem" and e["name"] != "System"]
+
+    def menu_items(els):
+        return [e for e in els if e["type"] == "MenuItem" and e["name"] != "System"]
+    # The menu renders a moment after the right-click; read it as soon as it's there.
+    els = _poll(lambda: els if menu_items(els := b.elements()) else None, timeout=1.5, first=0.15)
+    els = els or b.elements()
+    items = menu_items(els)
     names = [e["name"] for e in items]
     choice = next((e for e in items if e["name"].lower() == action.strip().lower()), None)
     if choice is None:
         b.press_key("escape")
         raise UIError(f"'{action}' isn't offered for that message. Available: {', '.join(names)}")
-    before = {e["name"] for e in b.elements() if e["type"] == "Button" and e["name"]}
+    before = {e["name"] for e in els if e["type"] == "Button" and e["name"]}
     b.click_at(*_mid(choice["rect"]))
-    time.sleep(0.8)
+    _poll(lambda: not menu_items(b.elements()), timeout=1.5, first=0.15)  # menu closed
+    time.sleep(0.2)  # a confirmation dialog can follow it
     result = {"message": n, "chose": choice["name"], "menu": names}
     # Some actions (e.g. Pin) open a confirmation dialog; surface its buttons.
     dialog = sorted({e["name"] for e in b.elements() if e["type"] == "Button" and e["name"]} - before)
@@ -445,7 +483,8 @@ def _compose_and_maybe_send(text: str, send: bool) -> dict:
     if not send:
         return {"sent": False, "drafted": text}
     b.click_send()
-    time.sleep(1.2)
+    # The box clears once Viber accepts the send (was a fixed 1.2 s).
+    _poll(lambda: _compose_text(b.elements()) == "", timeout=2.5, first=0.15)
     return {"sent": True, "text": text}
 
 
@@ -469,7 +508,8 @@ def edit_message(n: int, text: str) -> dict:
         raise UIError("That message isn't yours — only your own messages can be edited.")
     message_action(n, "Edit")
     _compose_and_maybe_send(text, send=True)
-    after = next((m for m in _messages(_backend().elements()) if m["mine"] and m["text"] == text), None)
+    after = _poll(lambda: next((m for m in _messages(_backend().elements())
+                                if m["mine"] and m["text"] == text), None), timeout=2.0)
     return {"edited": True, "from": target["text"], "to": text, "verified": after is not None}
 
 
@@ -492,14 +532,37 @@ def _sidebar_right(elements: list[dict], width: float) -> float:
     return pane["rect"][0] if pane else width * 0.28
 
 
-def _ocr_px() -> list[dict]:
+_SB_CACHE: dict = {}  # (backend, window size) -> sidebar right edge: fixed while the window is
+
+
+def _sidebar_right_cached(b, img) -> float:
+    """`_sidebar_right` without a UIA walk per read (that walk was most of an `_ocr_px` call).
+    Only a found pane is cached: it can be missing from the tree while the Sponsored ad shows."""
+    key = (id(b), img.width, img.height)
+    if key not in _SB_CACHE:
+        pane = next((e for e in b.elements() if e["class"] == "SplitView"), None)
+        if pane is None:
+            return img.width * 0.28
+        _SB_CACHE.clear()
+        _SB_CACHE[key] = pane["rect"][0]
+    return _SB_CACHE[key]
+
+
+def _ocr_px(region_px=None) -> list[dict]:
     """OCR observations with pixel rects (screenshot coordinates). Each carries SB, the sidebar's
-    right edge, so sidebar text can be told apart from the chat pane's."""
+    right edge, so sidebar text can be told apart from the chat pane's. `region_px` = (l, t, r, b)
+    in screenshot pixels (r/b None = the edge) limits the OCR to that part — a hint, so filter."""
     b = _backend()
     img = b.screenshot()
-    sidebar_right = _sidebar_right(b.elements(), img.width)
+    sidebar_right = _sidebar_right_cached(b, img)
+    region = None
+    if region_px is not None:
+        l, t, r, bt = region_px
+        region = (max(0, l) / img.width, max(0, t) / img.height,
+                  (img.width if r is None else r) / img.width,
+                  (img.height if bt is None else bt) / img.height)
     out = []
-    for o in b.observe():
+    for o in b.observe(region):
         out.append({"text": o["text"].strip(), "x": o["x"] * img.width, "y": o["y"] * img.height,
                     "w": o["w"] * img.width, "h": o["h"] * img.height, "W": img.width,
                     "H": img.height, "SB": sidebar_right})
@@ -524,14 +587,14 @@ def _left_column(obs: list[dict]) -> list[dict]:
             if o["x"] + o["w"] <= o.get("SB", o["W"] * 0.28) + 4]
 
 
-def _wait_ocr(predicate, timeout: float = 6.0, left_only: bool = True):
+def _wait_ocr(predicate, timeout: float = 6.0, left_only: bool = True, region_px=None):
     deadline = time.time() + timeout
     while time.time() < deadline:
-        obs = _ocr_px()
+        obs = _ocr_px(region_px)
         hits = [o for o in (_left_column(obs) if left_only else obs) if predicate(o["text"])]
         if hits:
             return hits, obs
-        time.sleep(0.5)
+        time.sleep(0.3)
     return [], []
 
 
@@ -544,15 +607,6 @@ def _invite_count(obs: list[dict], rows: list[dict] | None = None) -> int | None
             num = "".join(ch for ch in digits if ch.isdigit())
             return int(num) if num else None
     return None
-
-
-def _picker_search(query: str) -> None:
-    """Type `query` into the new-group screen's "Search name or number" box."""
-    b = _backend()
-    b.click_search()
-    b.delete()
-    b.type_into_focus(query)
-    time.sleep(1.6)
 
 
 _DIGIT_FOLD = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1", "S": "5", "B": "8"})
@@ -572,43 +626,6 @@ def find_number_row(rows: list[dict], number: str):
     return hit, (max(above, key=lambda o: o["y"])["text"] if above else number)
 
 
-def _select_member(name: str = "", number: str = "") -> str:
-    """Search the new-group picker and tick one contact. Returns the row's display name."""
-    _picker_search(number.replace("+63", "0") if number else name)
-
-    def find(rows):
-        if number:
-            return find_number_row(rows, number)[0]
-        return next((o for o in rows if _norm(o["text"]) == _norm(name)), None)
-
-    hit, obs, rows = None, [], []
-    for _ in range(3):  # results can render a moment late
-        obs = _ocr_px()
-        rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.12] if obs else []
-        hit = find(rows)
-        if hit:
-            break
-        time.sleep(1.0)
-    if hit is None:
-        raise UIError(f"Couldn't find '{name or number}' in Viber's contacts for the group.")
-    display = find_number_row(rows, number)[1] if number else name
-    before = _invite_count(obs)
-    b = _backend()
-    # Click the row text first; if the count doesn't rise, click the row's select circle.
-    targets = [_ocr_center(hit), select_circle_point(b.elements(), hit, bool(number))]
-    after = before
-    for point in targets:
-        if point is None:
-            continue
-        b.click_at(*point)
-        for _ in range(6):  # the count can take a moment to update
-            time.sleep(0.5)
-            after = _invite_count(_ocr_px())
-            if before is None or after is None or after == before + 1:
-                return display
-    raise UIError(f"Selecting '{name or number}' didn't register (invited {before} → {after}).")
-
-
 def select_circle_point(elements: list[dict], line: dict, line_is_number: bool, search: dict | None = None):
     """Where a picker row's select circle (○) is. It sits at the search box's right edge (the
     picker list and the search box share the sidebar's fixed width), vertically between the
@@ -620,33 +637,6 @@ def select_circle_point(elements: list[dict], line: dict, line_is_number: bool, 
         return None
     center_y = line["y"] + line["h"] / 2
     return search["rect"][2] - 5, center_y + (-15 if line_is_number else 6)
-
-
-def new_group_screen_state(left_texts: list[str]) -> str:
-    """What the sidebar shows: "group_form" (New group screen with "Group name*"), "menu" (the
-    new-chat panel with its "New group" option), or "chats" (anything else)."""
-    low = [t.strip().lower() for t in left_texts]
-    if any(t.startswith("group name") for t in low):
-        return "group_form"
-    if "new group" in low:
-        return "menu"
-    return "chats"
-
-
-_ALREADY_GROUP = "already have a group together"
-
-
-def existing_group_from_dialog(texts: list[str]) -> str | None:
-    """Viber's "You already have a group together!" dialog (Start chat with members who already
-    share a group): the existing group's name (OCR, often truncated "..."), or None if no dialog."""
-    low = [t.strip().lower() for t in texts]
-    if not any(_ALREADY_GROUP in t for t in low):
-        return None
-    start = next(i for i, t in enumerate(low) if _ALREADY_GROUP in t)
-    for t, l in zip(texts[start + 1:], low[start + 1:]):
-        if l and l not in ("open", "create another group", "x", "×"):
-            return t.strip()
-    return ""
 
 
 _PRIVACY_BLOCKED = re.compile(r"(.+?)\s+was not added to the group due to (?:their|his|her) privacy settings",
@@ -664,147 +654,34 @@ def privacy_blocked_from_dialog(texts: list[str]) -> str | None:
     return "" if "privacy settings" in joined.lower() and "not added" in joined.lower() else None
 
 
-def _open_new_group() -> None:
-    """Open Viber's New group screen (pencil → New group). Looks at the screen before each click,
-    because the pencil TOGGLES the new-chat panel: clicking it while the panel is already open
-    (e.g. left over from an earlier attempt) closes it."""
-    b = _backend()
-    texts: list[str] = []
-    for _ in range(4):
-        obs = _left_column(_ocr_px())
-        texts = [o["text"] for o in obs]
-        state = new_group_screen_state(texts)
-        if state == "group_form":
-            return
-        if state == "menu":
-            option = next(o for o in obs if o["text"].strip().lower() == "new group")
-            b.click_at(*_ocr_center(option))
-            time.sleep(1.2)
-            continue
-        els = b.elements()
-        search = next((e for e in els if e["class"] == "SearchItem"), None)
-        if search is None:
-            b.press_key("escape")  # some panel/dialog is covering the chat list
-            time.sleep(0.6)
-            continue
-        sy = _mid(search["rect"])[1]
-        pencil = min((e for e in els if e["type"] == "Button" and e["rect"][0] >= search["rect"][2] - 2
-                      and abs(_mid(e["rect"])[1] - sy) < 15), key=lambda e: e["rect"][0], default=None)
-        if pencil is None:
-            raise UIError("Couldn't find Viber's new-chat (pencil) button.")
-        b.click_at(*_mid(pencil["rect"]))
-        _wait_ocr(lambda t: t.lower() == "new group", timeout=3.0)
-    raise UIError("Couldn't open Viber's New group screen. The sidebar showed: "
-                  + " | ".join(texts[:8]))
-
-
-def _close_new_group() -> None:
-    """Leave the New group screen without creating anything."""
-    b = _backend()
-    _picker_search("")
-    for _ in range(2):
-        back = next((e for e in b.elements() if e["type"] == "Button"
-                     and e["class"] == "IconButton" and e["rect"][0] < 60 and e["rect"][1] < 80), None)
-        if back:
-            b.click_at(*_mid(back["rect"]))
-            time.sleep(0.8)
-
-
-def number_on_viber(number: str) -> str | None:
-    """Does this phone number have a Viber account? Checked in the New group picker (the main
-    search offers "Start a conversation" for any number, so it can't tell). Returns the
-    account's display name, or None. Creates nothing."""
-    _open_new_group()
-    try:
-        _picker_search(number.replace("+63", "0"))
-        for _ in range(3):
-            obs = _ocr_px()
-            rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.2] if obs else []
-            if any("no results" in o["text"].lower() for o in rows):
-                return None
-            hit, display = find_number_row(rows, number)
-            if hit:
-                return display
-            time.sleep(1.0)
-        return None
-    finally:
-        _close_new_group()
-
-
-def create_group(gc_name: str, members: list[str], client_number: str, self_name: str = "") -> dict:
-    """Create a Viber group named `gc_name`: the client's number first, then `members` (contact
-    names, in order). Check the number with number_on_viber first. Leaves the new group open."""
-    b = _backend()
-    _open_new_group()
-
-    name_box = next((e for e in b.elements() if e["type"] == "Edit" and e["class"] == "TextField"), None)
-    if name_box is None:
-        raise UIError("The new-group 'Group name' box didn't appear.")
-    b.click_at(*_mid(name_box["rect"]))
-    b.type_into_focus(gc_name)
-    time.sleep(0.4)
-    typed = next((e["text"] for e in b.elements() if e["type"] == "Edit" and e["class"] == "TextField"), "")
-    if typed != gc_name:
-        raise UIError(f"Group name didn't take (got {typed!r}). Nothing was created; close the panel.")
-
-    added = []
-    try:
-        # Client first: if their number can't be added, stop before touching the staff.
-        client_display = _select_member(number=client_number)
-        added.append(f"{client_display} ({client_number})")
-        for member in members:
-            if self_name and _norm(member) == _norm(self_name):
-                continue  # the creator is in the group automatically
-            _select_member(name=member)
-            added.append(member)
-    except UIError:
-        _close_new_group()  # leave the half-filled screen without creating anything
-        raise
-
-    _picker_search("")
-    start = next((e for e in b.elements() if e["type"] == "Button" and e["name"] == "Start chat"), None)
-    if start is None:
-        raise UIError("Couldn't find 'Start chat'. Nothing was created; close the panel.")
-    prev = b.foreground()
-    b.click_at(*_mid(start["rect"]))
-    b.hold_foreground(prev, 3.0)  # Viber activates itself when the group is created
-    # Header and chat-list titles are truncated ("TESTCLIENT-WH-(300S..."), so compare a prefix.
-    head = _norm(gc_name)[:10]
-    hits, obs = _wait_ocr(lambda t: (bool(head) and _norm(t).startswith(head))
-                          or _ALREADY_GROUP in t.lower(), timeout=25, left_only=False)
-    existing = existing_group_from_dialog([o["text"] for o in obs])
-    if existing is not None:
-        # The client already shares a group with the staff: nothing was created. Close the
-        # dialog and the New group screen (never "Create Another Group" — that duplicates).
-        b.press_key("escape")
-        time.sleep(0.6)
-        _close_new_group()
-        return {"created": False, "existing_group": existing, "gc_name": gc_name,
-                "members_added": added, "client_display_name": client_display}
-    blocked = _dismiss_privacy_dialog(obs) if hits else None
-    return {"created": bool(hits), "gc_name": gc_name, "members_added": added,
-            "client_display_name": client_display, "privacy_blocked": blocked}
+def _popup(elements: list[dict]):
+    """Viber's modal dialog (a QQuickPopupItem window named by its title, e.g. "Pin note?",
+    with NotificationButton children), or None."""
+    return next((e for e in elements if e["type"] == "Window" and e["class"] == "QQuickPopupItem"), None)
 
 
 def _dismiss_privacy_dialog(obs: list[dict]) -> str | None:
     """A client whose privacy settings block group invites: the group IS created, just without
     them, and a "Couldn't be added" dialog pops up (sometimes a moment after the header). Close
-    it; returns the blocked person's name ("" if unreadable), or None if no dialog."""
+    it; returns the blocked person's name ("" if unreadable), or None if no dialog. Dialogs are
+    QQuickPopupItem windows in the UIA tree, so waiting for one is a few cheap walks and the
+    sentence is OCR'd only when a dialog is up (this was four full OCR reads, ~3 s)."""
     b = _backend()
-    blocked = None
-    for _ in range(4):
-        blocked = privacy_blocked_from_dialog([o["text"] for o in obs])
-        if blocked is not None:
-            break
-        time.sleep(0.8)
-        obs = _ocr_px()
-    if blocked is not None:
-        ok = next((e for e in b.elements() if e["type"] == "Button" and e["name"].strip().lower() == "ok"), None)
-        if ok:
-            b.click_at(*_mid(ok["rect"]))
-        else:
-            b.press_key("escape")
-        time.sleep(0.5)
+    blocked = privacy_blocked_from_dialog([o["text"] for o in obs])
+    if blocked is None:
+        popup = _poll(lambda: _popup(b.elements()), timeout=1.5, first=0.1, interval=0.25)
+        if popup is None:
+            return None
+        texts = [popup["name"]] + [o["text"] for o in _ocr_px(tuple(popup["rect"]))]
+        blocked = privacy_blocked_from_dialog(texts)
+        if blocked is None:
+            return None  # some other dialog: not ours to close
+    ok = next((e for e in b.elements() if e["type"] == "Button" and e["name"].strip().lower() == "ok"), None)
+    if ok:
+        b.click_at(*_mid(ok["rect"]))
+    else:
+        b.press_key("escape")
+    time.sleep(0.5)
     return blocked
 
 
@@ -834,6 +711,12 @@ def _panel_rows(obs: list[dict], search: dict) -> list[dict]:
     return [o for o in obs if o["x"] >= left and o["y"] > search["rect"][3]]
 
 
+def _panel_region(search: dict):
+    """The pixel region `_panel_rows` keeps, for `_ocr_px(region_px=...)` (the panel is ~1/3 of
+    the window, so its reads are ~3x cheaper than a full one)."""
+    return (search["rect"][0] - 40, search["rect"][3], None, None)
+
+
 def picker_name_row(rows: list[dict], name: str):
     """The picker row whose name line is exactly `name` (OCR look-alikes folded), or None."""
     return next((o for o in rows if _norm(o["text"]) == _norm(name)), None)
@@ -855,13 +738,18 @@ def _panel_search_type(name: str) -> dict:
             raise UIError("The Add participants picker closed unexpectedly; nothing was saved.")
         search, compose_before = picker[0], _compose_text(els)
         b.click_at(*_mid(search["rect"]))
-        time.sleep(0.3)
+        time.sleep(0.2)
         if search["text"]:
             b.press_key("end")
             b.press_key("backspace", len(search["text"]) + 2)
         b.type_into_focus(name)
-        time.sleep(1.2)
-        els = b.elements()
+
+        # The box's UIA value says where the text landed (was a fixed 1.2 s).
+        def landed():
+            e = b.elements()
+            p = add_participants_picker(e)
+            return e if p and p[0]["text"] == name else None
+        els = _poll(landed, timeout=1.5, first=0.1) or b.elements()
         picker = add_participants_picker(els)
         if picker and picker[0]["text"] == name:
             return picker[0]
@@ -877,22 +765,25 @@ def _tick_participant(name: str) -> None:
     """Search the Add participants picker for `name` and tick its row."""
     b = _backend()
     search = _panel_search_type(name)
+    region = _panel_region(search)
     hit, rows = None, []
-    for _ in range(3):  # results can render a moment late
-        rows = _panel_rows(_ocr_px(), search)
+    deadline = time.time() + 3.0
+    while True:  # results can render a moment late
+        rows = _panel_rows(_ocr_px(region), search)
         hit = picker_name_row(rows, name)
-        if hit:
+        if hit or time.time() >= deadline:
             break
-        time.sleep(1.0)
+        time.sleep(0.25)
     if hit is None:
         raise UIError(f"Couldn't find '{name}' in the Add participants list; nothing was saved.")
     before = _invite_count([], rows)
     for point in (select_circle_point([], hit, False, search=search), _ocr_center(hit)):
         b.click_at(*point)
         after = before
-        for _ in range(6):  # the counter can take a moment to update
-            time.sleep(0.5)
-            after = _invite_count([], _panel_rows(_ocr_px(), search))
+        deadline = time.time() + 3.0
+        while time.time() < deadline:  # the counter can take a moment to update
+            time.sleep(0.2)
+            after = _invite_count([], _panel_rows(_ocr_px(region), search))
             if before is None or after is None or after == before + 1:
                 return
     raise UIError(f"Ticking '{name}' didn't register (selected {before} → {after}); nothing was saved.")
@@ -918,7 +809,10 @@ def _close_side_panel_page() -> None:
     point = side_panel_back_point(b.elements())
     if point:
         b.click_at(*point)
-        time.sleep(0.6)
+        b.wait_still()  # the page slides; a UIA walk during that costs ~1 s
+        # Back lands on the panel's main page (pencil showing) or closes the panel.
+        _poll(lambda: name_edit_button(els := b.elements()) is not None or _side_panel(els) is None,
+              timeout=1.2)
 
 
 def name_edit_button(elements: list[dict]):
@@ -959,7 +853,8 @@ def _info_main_page() -> list[dict]:
         if info is None:
             raise UIError("Couldn't find the chat's info button.")
         b.click_at(*_mid(info["rect"]))
-        time.sleep(0.8)
+        b.wait_still()  # the panel slides in
+        _poll(lambda: name_edit_button(b.elements()) is not None, timeout=2.0)
     raise UIError("Couldn't open the chat's info panel.")
 
 
@@ -968,20 +863,21 @@ def _rename_open_chat(gc_name: str) -> None:
     b = _backend()
     pencil = name_edit_button(_info_main_page())
     b.click_at(*_mid(pencil["rect"]))
-    time.sleep(0.5)
-    field = rename_field(b.elements(), pencil)
+    field = _poll(lambda: rename_field(b.elements(), pencil), timeout=1.5, first=0.1)
     if field is None:
         raise UIError("The group name box didn't open.")
     b.click_at(*_mid(field["rect"]))
     b.press_key("end")
     b.press_key("backspace", len(field["text"]) + 2)
     b.type_into_focus(gc_name)
-    time.sleep(0.4)
-    typed = next((e["text"] for e in b.elements() if e["type"] == "Edit" and e["rect"] == field["rect"]), "")
+
+    def typed_now():
+        return next((e["text"] for e in b.elements() if e["type"] == "Edit" and e["rect"] == field["rect"]), "")
+    typed = typed_now() if _poll(lambda: typed_now() == gc_name, timeout=1.5, first=0.1) else typed_now()
     if typed != gc_name:
         raise UIError(f"The group name didn't take (got {typed!r}); rename it to '{gc_name}' by hand.")
     b.click_at(*_mid(pencil["rect"]))  # the pencil turned into ✓ in the same spot
-    time.sleep(0.8)
+    time.sleep(0.3)  # the caller then waits for the new name on screen
 
 
 def is_one_to_one_with(obs: list[dict], number: str, header_bottom: float) -> bool:
@@ -1020,11 +916,27 @@ def _groups_in_common() -> list[str]:
     if row is None:
         raise UIError("Couldn't open the chat's 'Groups in common'; nothing was created.")
     b.click_at(*_mid(row["rect"]))
-    time.sleep(1.5)
-    panel = _side_panel(b.elements())
-    texts = [o["text"] for o in _ocr_px() if panel and o["x"] >= panel["rect"][0]]
+    # The sub-page slides over the main page (its pencil goes) and its list fades in: wait for
+    # the screen to settle, then confirm with one walk.
+    b.wait_still()
+    els = _poll(lambda: els if name_edit_button(els := b.elements()) is None else None, timeout=1.5)
+    panel = _side_panel(els or b.elements())
+    region = (panel["rect"][0], 0, None, None) if panel else None
+    texts = [o["text"] for o in _ocr_px(region) if panel and o["x"] >= panel["rect"][0]]
     _close_side_panel_page()
     return groups_in_common_from_page(texts)
+
+
+def existing_group_with(client_number: str) -> str | None:
+    """The first group `client_number` already shares with us, checked from their OPEN 1:1 chat
+    (info panel → Groups in common); None if none. Raises UIError when the open chat isn't their
+    1:1 chat (e.g. a brand-new number whose chat didn't open), so the caller can decide."""
+    b = _backend()
+    chat = next((e for e in b.elements() if e["class"] == "StackView"), None)
+    if not is_one_to_one_with(_ocr_px(), client_number, (chat["rect"][1] + 72) if chat else 140):
+        raise UIError(f"The open chat isn't {client_number}'s 1:1 chat.")
+    shared = _groups_in_common()
+    return shared[0] if shared else None
 
 
 def create_group_from_chat(gc_name: str, members: list[str], client_number: str,
@@ -1058,11 +970,8 @@ def create_group_from_chat(gc_name: str, members: list[str], client_number: str,
     if button is None:
         raise UIError("Couldn't find the chat's Add participants button; nothing was created.")
     b.click_at(*_mid(button["rect"]))
-    for _ in range(10):
-        time.sleep(0.5)
-        if add_participants_picker(b.elements()):
-            break
-    else:
+    b.wait_still()  # the picker slides in with the contact list; walking during that costs ~1 s
+    if not _poll(lambda: add_participants_picker(b.elements()), timeout=5.0, interval=0.2):
         raise UIError("The Add participants picker didn't open; nothing was created.")
 
     added = []
@@ -1079,7 +988,9 @@ def create_group_from_chat(gc_name: str, members: list[str], client_number: str,
     save = add_participants_picker(b.elements())[1]
     prev = b.foreground()
     b.click_at(*_mid(save["rect"]))
-    b.hold_foreground(prev, 2.0)
+    # Viber activates itself when the group is created; guard the user's window from a thread
+    # so the wait for the group starts at once (the guard used to block for its 2 s).
+    threading.Thread(target=b.hold_foreground, args=(prev, 2.0), daemon=True).start()
     # The new group opens as "Group" with "<N> participants" under it.
     hits, obs = _wait_ocr(lambda t: re.fullmatch(r"\d+\s+participants", t.strip().lower()) is not None,
                           timeout=20, left_only=False)
@@ -1139,7 +1050,8 @@ def _mention_zone(b) -> list[dict]:
     """OCR lines of the chat pane just above the message box, where the mention list pops up."""
     compose = next(e for e in b.elements() if e["type"] == "Edit" and e["class"].startswith("QQuickTextEdit"))
     top = compose["rect"][1]
-    return [o for o in _ocr_px() if top - 400 < o["y"] < top - 5 and o["x"] > o.get("SB", o["W"] * 0.28)]
+    return [o for o in _ocr_px((0, top - 400, None, top - 5))
+            if top - 400 < o["y"] < top - 5 and o["x"] > o.get("SB", o["W"] * 0.28)]
 
 
 def send_with_mention(before: str, display_name: str, after: str = "",
@@ -1161,8 +1073,14 @@ def send_with_mention(before: str, display_name: str, after: str = "",
     query = f"@{first[:3] if is_placeholder_name(display_name) else first[:4]}"
     baseline = {o["text"] for o in _mention_zone(b)}  # chat text that was there before the list
     b.type_into_focus(before + query)
-    time.sleep(1.5)
-    rows = [o for o in _mention_zone(b) if o["text"] not in baseline]
+
+    def new_rows():
+        return [o for o in _mention_zone(b) if o["text"] not in baseline]
+    # The list pops up a moment after the "@"; once it shows, read it again so it's complete.
+    rows = _poll(new_rows, timeout=2.0, first=0.3)
+    if rows:
+        time.sleep(0.25)
+        rows = new_rows() or rows
     hits = sum(_norm(o["text"]) == want for o in rows)
     if not hits:
         b.delete()
@@ -1177,10 +1095,14 @@ def send_with_mention(before: str, display_name: str, after: str = "",
         if downs:  # undo the wrong pick, keeping `before` (and any quote) in place
             b.press_key("backspace", max(1, len(b._value().translate(_ISOLATES)) - len(before)))
             b.type_into_focus(query)
-            time.sleep(1.2)
+            _poll(new_rows, timeout=2.0, first=0.3)
+            time.sleep(0.25)
             b.press_key("down", downs)
+        pre = b._value()
         b.press_key("tab")
-        time.sleep(0.5)
+        # Wait for Tab to insert *a* mention (the box changes), then check it's the right one —
+        # waiting for the right one would cost the full timeout on every wrong pick.
+        _poll(lambda: b._value() != pre, timeout=1.0, first=0.1, interval=0.05)
         if mention_inserted(b._value(), before, display_name):
             break
     else:
@@ -1189,7 +1111,7 @@ def send_with_mention(before: str, display_name: str, after: str = "",
     # A space right after the mention closes the list; sending while it's open can swap the pick.
     glue = bool(after) and not after[:1].isspace()  # punctuation right after the name: "@Unknown!"
     b.type_into_focus(" " if glue else after if after[:1].isspace() else " " + after)
-    time.sleep(0.6)
+    time.sleep(0.3)
     if any(want in _norm(o["text"]) for o in _mention_zone(b) if o["text"] not in baseline):
         b.press_key("escape")
         time.sleep(0.4)
@@ -1210,7 +1132,7 @@ def send_with_mention(before: str, display_name: str, after: str = "",
         b.delete()
         raise UIError(f"The mention changed before sending ({value!r}); nothing sent.")
     b.click_send()
-    time.sleep(1.2)
+    _poll(lambda: b._value() == "", timeout=2.5, first=0.15)  # the box clears on send
     return {"sent": True, "mentioned": display_name, "text": value}
 
 
@@ -1236,8 +1158,7 @@ def mention_opens_number(display_name: str, number: str) -> bool | None:
     frac = (at + (len(display_name) + 1) / 2) / max(1, len(t))
     b = _backend()
     b.click_at(line["x"] + line["w"] * min(frac, 0.95), line["y"] + line["h"] / 2)
-    time.sleep(1.5)
-    after = shows_number(_ocr_px())
+    after = bool(_poll(lambda: shows_number(_ocr_px()), timeout=2.0, first=0.3, interval=0.2))
     return None if before else after  # already on screen before the click: inconclusive
 
 
