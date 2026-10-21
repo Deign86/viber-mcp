@@ -126,8 +126,8 @@ each GC created and each template skipped or failed (with the reason).
 - **Existing client** (GC already exists): the tools don't make a duplicate; they quote-reply to the
   template @mentioning the employee who posted it ("DONE-<GC NAME> — @Employee existing client po,
   GC already created."). Report it as an existing client, not a failure.
-- **Client already in a GC under another name** (`EXISTING CLIENT — GC NOT CREATED`: Viber said
-  "You already have a group together!"): send the new listing in that GC, rename it to the new
+- **Client already in a GC under another name** (`EXISTING CLIENT — GC NOT CREATED`: the client's
+  1:1 chat lists a group under "Groups in common"): send the new listing in that GC, rename it to the new
   inquiry (keep the client's name, new sqm/location), then quote-reply
   "DONE-<NEW NAME> — existing client po, GC already created." to the template. Never unsend the
   template and never pick "Create Another Group".

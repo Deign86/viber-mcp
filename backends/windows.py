@@ -312,10 +312,29 @@ class WindowsBackend(Backend):
         def run():
             el = _find_desc(auto.ControlFromHandle(self._hwnd()), predicate)
             if el is None:
-                raise OCRError(f"Viber's {what} was not found (is a chat open?).")
+                return None
             r = el.BoundingRectangle
             return r.left, r.top, r.right, r.bottom
-        return _on_uia(run)
+        rect = _on_uia(run)
+        if rect is None and self._dismiss_ad():
+            rect = _on_uia(run)
+        if rect is None:
+            raise OCRError(f"Viber's {what} was not found (is a chat open?).")
+        return rect
+
+    def _dismiss_ad(self) -> bool:
+        """Close the "Sponsored" ad if it's showing and hiding the chat pane from UIA (see
+        ad_close_point). True if it was closed."""
+        els = self._elements()
+        if any(e["class"] == "SplitView" for e in els):
+            return False
+        point = wl.ad_close_point(els)
+        if point is None:
+            return False
+        self.click_at(*point)
+        time.sleep(1.0)
+        self._dismiss_promo(self._elements())  # closing the ad pops the Viber Plus upsell
+        return True
 
     def _value(self) -> str:
         def run():
@@ -520,7 +539,25 @@ class WindowsBackend(Backend):
 
     def elements(self) -> list[dict]:
         """Visible UI elements: type, name, short class, text (edits), parent index, and
-        rect in screenshot pixels, in tree order (parents before children)."""
+        rect in screenshot pixels, in tree order (parents before children). Closes the
+        "Sponsored" ad first when it's hiding the chat pane."""
+        els = self._elements()
+        if not any(e["class"] == "SplitView" for e in els) and self._dismiss_ad():
+            els = self._elements()
+        if self._dismiss_promo(els):
+            els = self._elements()
+        return els
+
+    def _dismiss_promo(self, els: list[dict]) -> bool:
+        """Close the Viber Plus pop-up if it's covering the window (see promo_close_point)."""
+        point = wl.promo_close_point(els)
+        if point is None:
+            return False
+        self.click_at(*point)
+        time.sleep(0.8)
+        return True
+
+    def _elements(self) -> list[dict]:
         hwnd = self._hwnd()
 
         def run():

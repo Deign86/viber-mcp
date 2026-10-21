@@ -46,3 +46,30 @@ def to_observations(segments, img_w: float, img_h: float) -> list[dict]:
     ]
     obs.sort(key=lambda o: (o["y"], o["x"]))
     return obs
+
+
+def ad_close_point(elements: list[dict]) -> tuple[float, float] | None:
+    """The ✕ of Viber's "Sponsored" ad box (bottom of the chat list), or None if no ad shows.
+    While it shows, Qt's UIA tree loops back on itself and drops the chat pane, so the message
+    box, send button and messages can't be found ("No chat is open"). The ✕ sits 24px in from the
+    ad's right edge, 16px below its top; the flag (report ad) is further left — never click that."""
+    ad = next((e for e in elements if e["type"] == "Document" and e["class"] == "QObject"
+               and 280 <= e["rect"][2] - e["rect"][0] <= 320
+               and 230 <= e["rect"][3] - e["rect"][1] <= 270), None)
+    return (ad["rect"][2] - 24, ad["rect"][1] + 16) if ad else None
+
+
+def promo_close_point(elements: list[dict]) -> tuple[float, float] | None:
+    """The ✕ of Viber's "Discover a Premium Experience" (Viber Plus) pop-up, or None. Closing the
+    Sponsored ad opens it, and it covers the chat so every later click misses. Recognised by its
+    "Take me there" button; the ✕ is the pop-up's icon button (never "Take me there")."""
+    for i, e in enumerate(elements):
+        if e["type"] != "Window" or e["class"] != "QQuickPopupItem":
+            continue
+        kids = [k for k in elements if k["parent"] == i]
+        if any(k["type"] == "Button" and k["name"].strip().lower() == "take me there" for k in kids):
+            close = next((k for k in kids if k["type"] == "Button" and k["class"] == "IconButton"), None)
+            if close:
+                r = close["rect"]
+                return (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
+    return None

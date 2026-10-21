@@ -147,9 +147,22 @@ Status:
 - MCP prompts (`inbox_triage`, `draft_reply`, `unsend`, `property_details`, `client_gc`) are the
   slash-command workflows.
 - Client GCs: `viber_gc_logic.py` (pure: template parsing, client-field whitelist, naming rules,
-  tested) + `viber_gc.py` (plan/run) + `viber_ui.create_group` / `mention`. The new-group picker
-  and the mention list aren't in the UIA tree — rows are found by OCR; OCR confuses I/l/1 and O/0,
-  so names are compared after folding those (`_norm`, `viber_send._ocr_fold`).
+  tested) + `viber_gc.py` (plan/run) + `viber_ui.create_group_from_chat` / `mention`.
+  **GCs are built from the client's 1:1 chat** (staff: "the most reliable route"): the intro
+  message is always sent first, then header `AddParticipantsButton` → the side-panel picker (client
+  pre-ticked) → tick the staff → `Save` → rename via the info panel's ✎. The old New group screen
+  (`create_group`, `number_on_viber`) failed with "GC NOT CREATED — name missing" and is no longer
+  used by the flow. Guards: `is_one_to_one_with` (banner/header number, not "N participants" —
+  `open_chat`'s viber:// link sometimes doesn't navigate and the client's GC also shows the number
+  in its template); "Groups in common" non-empty → EXISTING CLIENT; picker search text that lands
+  in the message box is backspaced. Side-panel ← must be INSIDE the panel (`side_panel_back_point`)
+  — the chat pane's own ← next to it jumps to the previous chat.
+  The pickers and the mention list aren't in the UIA tree — rows are found by OCR; OCR confuses
+  I/l/1 and O/0, so names are compared after folding those (`_norm`, `viber_send._ocr_fold`).
+  **Sponsored ad:** while Viber's ad box shows (bottom of the chat list), Qt's UIA tree can loop and
+  drop the chat pane → "No chat is open" / "message box was not found" from send_files, reply,
+  send_listing. `WindowsBackend.elements()`/`_rect` close the ad (`_winlogic.ad_close_point`), and
+  the Viber Plus upsell that pops up after it (`promo_close_point`).
   The picker labels unsaved numbers "Unknown"; their Viber name comes from the 1:1 chat's
   "<Name> +63… is not in your contact list" banner (`viber_gc.client_name_from_chat`). When no
   name can be read (brand-new numbers are "Unknown" in the mention list too), the client is
@@ -163,8 +176,8 @@ Status:
   mention with it, it starts over keeping the space. Clicking a sent mention
   opens that person's 1:1 chat (number under the name, or in the banner) — `mention_opens_number`.
   A client whose privacy settings block group invites gets a "Couldn't be added … due to their
-  privacy settings" dialog after "Start chat"; the GC exists with the staff only.
-  `privacy_blocked_from_dialog` detects it, `create_group` closes it, and `create_client_gc`
+  privacy settings" dialog after Save; the GC exists with the staff only.
+  `privacy_blocked_from_dialog` detects it, `_dismiss_privacy_dialog` closes it, and `create_client_gc`
   stops with CLIENT NOT ADDED before posting anything (ask the client to allow group invites).
   Only the client's name and Viber number are required: `infer_fields` reads free-form notes
   (first digit-free line = name, a line naming a type, a line with "sqm"), and
