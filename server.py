@@ -457,6 +457,14 @@ def update_listing_doc(folder_id: str, text: str) -> dict:
 
 
 @mcp.tool()
+def move_listing_to_sold(folder_id: str) -> dict:
+    """Move a listing that's no longer available (the owner said it's leased, sold or taken)
+    to APR LISTING / SOLD / SOLD <CATEGORY> in Drive, so it stops showing up in find_listings.
+    folder_id comes from find_listings. The folder keeps its link."""
+    return viber_drive.move_listing_to_sold(folder_id)
+
+
+@mcp.tool()
 def drive_search(query: str, type_contains: str = "") -> dict:
     """Search Google Drive by file name (any folder). type_contains filters the MIME type,
     e.g. "image/", "pdf", "folder"."""

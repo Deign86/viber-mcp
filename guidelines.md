@@ -64,7 +64,9 @@ for anything that goes to a client. Never mix photos from a different listing.
   text reformatted to the listing template and the photo paths (Viber saves posted photos in
   `Documents\ViberDownloads`; match the post's time and look at them), then quote-reply its
   `added_to_drive_reply` to the staff post. `drive_upload_files` adds photos to an existing folder;
-  `update_listing_doc` rewrites a listing doc in place (same link).
+  `update_listing_doc` rewrites a listing doc in place (same link). When an owner says a
+  property is leased/sold/taken, `move_listing_to_sold(folder_id)` moves its folder to
+  SOLD / SOLD <CATEGORY> (House/Lot Sold for condos/houses/lots).
 - **Lots** go one level deeper: `category="CONDO / HOUSE AND LOT"`, `deal="LEASE"` or `"SALE"`,
   `subfolder="LOT"` (condos/houses: `"CONDO / HOUSE"`).
 - **Only listings marked complete** (address, final price, owner name and number on file). Skip

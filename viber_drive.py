@@ -571,6 +571,48 @@ def update_listing_doc(folder_id: str, text: str) -> dict:
     return {"updated": True, "doc_id": docs[0]["id"], "doc": docs[0]["name"]}
 
 
+SOLD_FOLDER_NAME = "SOLD"
+
+
+def sold_target(category: str, sold_folders: list[dict]) -> dict | None:
+    """The folder inside SOLD a listing of `category` goes to: "SOLD <CATEGORY>" (e.g. SOLD
+    WAREHOUSE), or "House/Lot Sold" for condos/houses/lots. None = put it in SOLD itself (many
+    older sold listings sit there directly)."""
+    c = category.strip().casefold()
+    by_name = {f["name"].strip().casefold(): f for f in sold_folders}
+    if f"sold {c}" in by_name:
+        return by_name[f"sold {c}"]
+    if "house" in c or "lot" in c or "condo" in c:
+        return next((f for n, f in by_name.items() if "house" in n and "sold" in n), None)
+    return None
+
+
+def move_listing_to_sold(folder_id: str) -> dict:
+    """Move a listing folder that's no longer available (leased, sold, taken) from its FOR
+    LEASE/SALE folder into APR LISTING / SOLD / SOLD <CATEGORY>. Same folder and link; only
+    its location changes. Uses the company account (_writer)."""
+    global _tree_cache
+    # _property_folders also walks SOLD (as category "SOLD", deal "SOLD WAREHOUSE", ...), so a
+    # folder already there must be refused, not "moved" up into SOLD itself.
+    listing = next((p for p in _property_folders() if p["folder_id"] == folder_id
+                    and p["category"].strip().upper() != SOLD_FOLDER_NAME), None)
+    if listing is None:
+        raise DriveError("That folder isn't an active listing (not under a category's FOR "
+                         "LEASE/SALE folder) — it may already be in SOLD.")
+    sold = next((f for f in _children(_listings_root())
+                 if f["mimeType"] == FOLDER and f["name"].strip().upper() == SOLD_FOLDER_NAME), None)
+    if sold is None:
+        raise DriveError(f"Can't find the '{SOLD_FOLDER_NAME}' folder in {LISTINGS_ROOT_NAME}.")
+    target = sold_target(listing["category"], [f for f in _children(sold["id"]) if f["mimeType"] == FOLDER]) or sold
+    _writer().files().update(fileId=folder_id, addParents=target["id"], removeParents=listing["parent_id"],
+                             fields="id,parents", supportsAllDrives=True).execute(num_retries=RETRIES)
+    _tree_cache = None
+    path = SOLD_FOLDER_NAME + ("" if target is sold else f" / {target['name']}")
+    return {"moved": True, "listing": listing["name"], "from": f"{listing['category']} / {listing['deal']}",
+            "to": f"{LISTINGS_ROOT_NAME} / {path}",
+            "folder_url": f"https://drive.google.com/drive/folders/{folder_id}"}
+
+
 def add_listing_to_drive(text: str, category: str, deal: str, folder_name: str,
                          photo_paths: list[str], subfolder: str = "",
                          dry_run: bool = False) -> dict:

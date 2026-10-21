@@ -217,7 +217,9 @@ Status:
   `send_files`, then the folder's videos as a second batch (`include_videos` defaults to True —
   some folders only have a video); never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
   `send_listing`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`,
-  `add_listing_to_drive`, `drive_upload_files`, `update_listing_doc`.
+  `add_listing_to_drive`, `drive_upload_files`, `update_listing_doc`, `move_listing_to_sold`
+  (`sold_target` picks SOLD / SOLD <CATEGORY>; refuses folders already under SOLD — `_property_folders`
+  walks SOLD too, as category "SOLD").
 - **Two Google identities.** Reads use the read-only service account
   (`viber-drive-reader@apg-viber-assistant.iam.gserviceaccount.com`, gcloud project
   `apg-viber-assistant`). Service accounts have 0 bytes of storage (uploads failed with
