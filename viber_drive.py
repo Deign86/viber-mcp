@@ -19,6 +19,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -53,7 +54,7 @@ _SEPARATOR = re.compile(r"^\s*[-_—–=─━]{3,}\s*$")  # a lone "—" (signa
 # corpora=allDrives so Shared Drive items are searched too, not just "My Drive".
 _ALL = {"supportsAllDrives": True, "includeItemsFromAllDrives": True, "corpora": "allDrives"}
 
-_service = None
+_local = threading.local()  # one Drive service per thread: httplib2 isn't thread-safe
 _tree_cache: tuple[float, list[dict]] | None = None
 
 
@@ -103,11 +104,12 @@ def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
 
 
 def _drive():
-    global _service
-    if _service is None:
+    """The read-only Drive service for the calling thread (downloads run in parallel threads)."""
+    service = getattr(_local, "service", None)
+    if service is None:
         from googleapiclient.discovery import build
-        _service = build("drive", "v3", credentials=_creds(), cache_discovery=False)
-    return _service
+        service = _local.service = build("drive", "v3", credentials=_creds(), cache_discovery=False)
+    return service
 
 
 _writer_service = None
@@ -171,29 +173,49 @@ def search(query: str, mime_contains: str = "") -> list[dict]:
             for f in _list(q)[:50]]
 
 
-def download(file_ids: list[str]) -> list[str]:
-    """Download Drive files to the local cache; returns their paths (cached files are reused)."""
+DOWNLOAD_THREADS = 6
+
+
+def _cached_download(fid: str) -> Path | None:
+    """The finished cache file for `fid` (named "<id>_<name>"), if any. Downloads land in a
+    ".part" file first and are renamed when complete, so a file under its final name is whole."""
+    return next((p for p in CACHE_DIR.glob(f"{fid}_*") if p.suffix != ".part"), None)
+
+
+def _fetch(fid: str) -> str:
     from googleapiclient.http import MediaIoBaseDownload
 
+    cached = _cached_download(fid)
+    if cached is not None:
+        return str(cached)  # no metadata round trip for a photo we already have
+    meta = _drive().files().get(fileId=fid, fields="id,name,size,mimeType",
+                                supportsAllDrives=True).execute(num_retries=RETRIES)
+    if meta["mimeType"].startswith("application/vnd.google-apps"):
+        raise DriveError(f"'{meta['name']}' is a Google Docs file, not a downloadable file.")
+    safe = re.sub(r'[<>:"/\\|?*]', "_", meta["name"])
+    path = CACHE_DIR / f"{fid}_{safe}"
+    buf = io.BytesIO()
+    req = _drive().files().get_media(fileId=fid, supportsAllDrives=True)
+    dl = MediaIoBaseDownload(buf, req)
+    done = False
+    while not done:
+        _, done = dl.next_chunk(num_retries=RETRIES)
+    part = path.with_name(path.name + ".part")
+    part.write_bytes(buf.getvalue())
+    part.replace(path)
+    return str(path)
+
+
+def download(file_ids: list[str]) -> list[str]:
+    """Download Drive files to the local cache in parallel; returns their paths in order (cached
+    files are reused). A listing's 20 photos used to be 40 sequential round trips."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not file_ids:
+        return []
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    paths = []
-    for fid in file_ids:
-        meta = _drive().files().get(fileId=fid, fields="id,name,size,mimeType",
-                                    supportsAllDrives=True).execute(num_retries=RETRIES)
-        if meta["mimeType"].startswith("application/vnd.google-apps"):
-            raise DriveError(f"'{meta['name']}' is a Google Docs file, not a downloadable file.")
-        safe = re.sub(r'[<>:"/\\|?*]', "_", meta["name"])
-        path = CACHE_DIR / f"{fid}_{safe}"
-        if not (path.exists() and str(path.stat().st_size) == meta.get("size")):
-            buf = io.BytesIO()
-            req = _drive().files().get_media(fileId=fid, supportsAllDrives=True)
-            dl = MediaIoBaseDownload(buf, req)
-            done = False
-            while not done:
-                _, done = dl.next_chunk(num_retries=RETRIES)
-            path.write_bytes(buf.getvalue())
-        paths.append(str(path))
-    return paths
+    with ThreadPoolExecutor(max_workers=min(DOWNLOAD_THREADS, len(file_ids))) as pool:
+        return list(pool.map(_fetch, file_ids))
 
 
 # ------------------------------------------------------------------------ listings

@@ -20,6 +20,7 @@ it empty, `paste`/`type_text` type the text.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import ctypes
 import hashlib
 import os
@@ -95,12 +96,25 @@ def _ocr_image(img: Image.Image):
 
 
 # ---- UI Automation — COM objects stay on one initialized thread -----------------------
-_uia_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="viber-uia",
-                               initializer=auto.InitializeUIAutomationInCurrentThread)
+def _new_uia_pool() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="viber-uia",
+                              initializer=auto.InitializeUIAutomationInCurrentThread)
+
+
+_uia_pool = _new_uia_pool()
 
 
 def _on_uia(fn, *args):
-    return _uia_pool.submit(fn, *args).result(timeout=30)
+    global _uia_pool
+    try:
+        return _uia_pool.submit(fn, *args).result(timeout=30)
+    except concurrent.futures.TimeoutError:
+        # The UIA thread is stuck inside a COM call (Viber isn't answering). Every later call
+        # would queue behind it for good, so abandon that thread and start a fresh one.
+        stuck, _uia_pool = _uia_pool, _new_uia_pool()
+        stuck.shutdown(wait=False, cancel_futures=True)
+        raise OCRError("Viber's UI Automation didn't answer within 30 s (is Viber frozen?). "
+                       "Try again.") from None
 
 
 def _is_main_window(hwnd: int) -> bool:

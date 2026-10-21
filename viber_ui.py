@@ -609,15 +609,6 @@ def _invite_count(obs: list[dict], rows: list[dict] | None = None) -> int | None
     return None
 
 
-def _picker_search(query: str) -> None:
-    """Type `query` into the new-group screen's "Search name or number" box."""
-    b = _backend()
-    b.click_search()
-    b.delete()
-    b.type_into_focus(query)
-    time.sleep(1.6)
-
-
 _DIGIT_FOLD = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "|": "1", "S": "5", "B": "8"})
 
 
@@ -635,43 +626,6 @@ def find_number_row(rows: list[dict], number: str):
     return hit, (max(above, key=lambda o: o["y"])["text"] if above else number)
 
 
-def _select_member(name: str = "", number: str = "") -> str:
-    """Search the new-group picker and tick one contact. Returns the row's display name."""
-    _picker_search(number.replace("+63", "0") if number else name)
-
-    def find(rows):
-        if number:
-            return find_number_row(rows, number)[0]
-        return next((o for o in rows if _norm(o["text"]) == _norm(name)), None)
-
-    hit, obs, rows = None, [], []
-    for _ in range(3):  # results can render a moment late
-        obs = _ocr_px()
-        rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.12] if obs else []
-        hit = find(rows)
-        if hit:
-            break
-        time.sleep(1.0)
-    if hit is None:
-        raise UIError(f"Couldn't find '{name or number}' in Viber's contacts for the group.")
-    display = find_number_row(rows, number)[1] if number else name
-    before = _invite_count(obs)
-    b = _backend()
-    # Click the row text first; if the count doesn't rise, click the row's select circle.
-    targets = [_ocr_center(hit), select_circle_point(b.elements(), hit, bool(number))]
-    after = before
-    for point in targets:
-        if point is None:
-            continue
-        b.click_at(*point)
-        for _ in range(6):  # the count can take a moment to update
-            time.sleep(0.5)
-            after = _invite_count(_ocr_px())
-            if before is None or after is None or after == before + 1:
-                return display
-    raise UIError(f"Selecting '{name or number}' didn't register (invited {before} → {after}).")
-
-
 def select_circle_point(elements: list[dict], line: dict, line_is_number: bool, search: dict | None = None):
     """Where a picker row's select circle (○) is. It sits at the search box's right edge (the
     picker list and the search box share the sidebar's fixed width), vertically between the
@@ -683,33 +637,6 @@ def select_circle_point(elements: list[dict], line: dict, line_is_number: bool, 
         return None
     center_y = line["y"] + line["h"] / 2
     return search["rect"][2] - 5, center_y + (-15 if line_is_number else 6)
-
-
-def new_group_screen_state(left_texts: list[str]) -> str:
-    """What the sidebar shows: "group_form" (New group screen with "Group name*"), "menu" (the
-    new-chat panel with its "New group" option), or "chats" (anything else)."""
-    low = [t.strip().lower() for t in left_texts]
-    if any(t.startswith("group name") for t in low):
-        return "group_form"
-    if "new group" in low:
-        return "menu"
-    return "chats"
-
-
-_ALREADY_GROUP = "already have a group together"
-
-
-def existing_group_from_dialog(texts: list[str]) -> str | None:
-    """Viber's "You already have a group together!" dialog (Start chat with members who already
-    share a group): the existing group's name (OCR, often truncated "..."), or None if no dialog."""
-    low = [t.strip().lower() for t in texts]
-    if not any(_ALREADY_GROUP in t for t in low):
-        return None
-    start = next(i for i, t in enumerate(low) if _ALREADY_GROUP in t)
-    for t, l in zip(texts[start + 1:], low[start + 1:]):
-        if l and l not in ("open", "create another group", "x", "×"):
-            return t.strip()
-    return ""
 
 
 _PRIVACY_BLOCKED = re.compile(r"(.+?)\s+was not added to the group due to (?:their|his|her) privacy settings",
@@ -727,147 +654,34 @@ def privacy_blocked_from_dialog(texts: list[str]) -> str | None:
     return "" if "privacy settings" in joined.lower() and "not added" in joined.lower() else None
 
 
-def _open_new_group() -> None:
-    """Open Viber's New group screen (pencil → New group). Looks at the screen before each click,
-    because the pencil TOGGLES the new-chat panel: clicking it while the panel is already open
-    (e.g. left over from an earlier attempt) closes it."""
-    b = _backend()
-    texts: list[str] = []
-    for _ in range(4):
-        obs = _left_column(_ocr_px())
-        texts = [o["text"] for o in obs]
-        state = new_group_screen_state(texts)
-        if state == "group_form":
-            return
-        if state == "menu":
-            option = next(o for o in obs if o["text"].strip().lower() == "new group")
-            b.click_at(*_ocr_center(option))
-            time.sleep(1.2)
-            continue
-        els = b.elements()
-        search = next((e for e in els if e["class"] == "SearchItem"), None)
-        if search is None:
-            b.press_key("escape")  # some panel/dialog is covering the chat list
-            time.sleep(0.6)
-            continue
-        sy = _mid(search["rect"])[1]
-        pencil = min((e for e in els if e["type"] == "Button" and e["rect"][0] >= search["rect"][2] - 2
-                      and abs(_mid(e["rect"])[1] - sy) < 15), key=lambda e: e["rect"][0], default=None)
-        if pencil is None:
-            raise UIError("Couldn't find Viber's new-chat (pencil) button.")
-        b.click_at(*_mid(pencil["rect"]))
-        _wait_ocr(lambda t: t.lower() == "new group", timeout=3.0)
-    raise UIError("Couldn't open Viber's New group screen. The sidebar showed: "
-                  + " | ".join(texts[:8]))
-
-
-def _close_new_group() -> None:
-    """Leave the New group screen without creating anything."""
-    b = _backend()
-    _picker_search("")
-    for _ in range(2):
-        back = next((e for e in b.elements() if e["type"] == "Button"
-                     and e["class"] == "IconButton" and e["rect"][0] < 60 and e["rect"][1] < 80), None)
-        if back:
-            b.click_at(*_mid(back["rect"]))
-            time.sleep(0.8)
-
-
-def number_on_viber(number: str) -> str | None:
-    """Does this phone number have a Viber account? Checked in the New group picker (the main
-    search offers "Start a conversation" for any number, so it can't tell). Returns the
-    account's display name, or None. Creates nothing."""
-    _open_new_group()
-    try:
-        _picker_search(number.replace("+63", "0"))
-        for _ in range(3):
-            obs = _ocr_px()
-            rows = [o for o in _left_column(obs) if o["y"] > obs[0]["H"] * 0.2] if obs else []
-            if any("no results" in o["text"].lower() for o in rows):
-                return None
-            hit, display = find_number_row(rows, number)
-            if hit:
-                return display
-            time.sleep(1.0)
-        return None
-    finally:
-        _close_new_group()
-
-
-def create_group(gc_name: str, members: list[str], client_number: str, self_name: str = "") -> dict:
-    """Create a Viber group named `gc_name`: the client's number first, then `members` (contact
-    names, in order). Check the number with number_on_viber first. Leaves the new group open."""
-    b = _backend()
-    _open_new_group()
-
-    name_box = next((e for e in b.elements() if e["type"] == "Edit" and e["class"] == "TextField"), None)
-    if name_box is None:
-        raise UIError("The new-group 'Group name' box didn't appear.")
-    b.click_at(*_mid(name_box["rect"]))
-    b.type_into_focus(gc_name)
-    time.sleep(0.4)
-    typed = next((e["text"] for e in b.elements() if e["type"] == "Edit" and e["class"] == "TextField"), "")
-    if typed != gc_name:
-        raise UIError(f"Group name didn't take (got {typed!r}). Nothing was created; close the panel.")
-
-    added = []
-    try:
-        # Client first: if their number can't be added, stop before touching the staff.
-        client_display = _select_member(number=client_number)
-        added.append(f"{client_display} ({client_number})")
-        for member in members:
-            if self_name and _norm(member) == _norm(self_name):
-                continue  # the creator is in the group automatically
-            _select_member(name=member)
-            added.append(member)
-    except UIError:
-        _close_new_group()  # leave the half-filled screen without creating anything
-        raise
-
-    _picker_search("")
-    start = next((e for e in b.elements() if e["type"] == "Button" and e["name"] == "Start chat"), None)
-    if start is None:
-        raise UIError("Couldn't find 'Start chat'. Nothing was created; close the panel.")
-    prev = b.foreground()
-    b.click_at(*_mid(start["rect"]))
-    b.hold_foreground(prev, 3.0)  # Viber activates itself when the group is created
-    # Header and chat-list titles are truncated ("TESTCLIENT-WH-(300S..."), so compare a prefix.
-    head = _norm(gc_name)[:10]
-    hits, obs = _wait_ocr(lambda t: (bool(head) and _norm(t).startswith(head))
-                          or _ALREADY_GROUP in t.lower(), timeout=25, left_only=False)
-    existing = existing_group_from_dialog([o["text"] for o in obs])
-    if existing is not None:
-        # The client already shares a group with the staff: nothing was created. Close the
-        # dialog and the New group screen (never "Create Another Group" — that duplicates).
-        b.press_key("escape")
-        time.sleep(0.6)
-        _close_new_group()
-        return {"created": False, "existing_group": existing, "gc_name": gc_name,
-                "members_added": added, "client_display_name": client_display}
-    blocked = _dismiss_privacy_dialog(obs) if hits else None
-    return {"created": bool(hits), "gc_name": gc_name, "members_added": added,
-            "client_display_name": client_display, "privacy_blocked": blocked}
+def _popup(elements: list[dict]):
+    """Viber's modal dialog (a QQuickPopupItem window named by its title, e.g. "Pin note?",
+    with NotificationButton children), or None."""
+    return next((e for e in elements if e["type"] == "Window" and e["class"] == "QQuickPopupItem"), None)
 
 
 def _dismiss_privacy_dialog(obs: list[dict]) -> str | None:
     """A client whose privacy settings block group invites: the group IS created, just without
     them, and a "Couldn't be added" dialog pops up (sometimes a moment after the header). Close
-    it; returns the blocked person's name ("" if unreadable), or None if no dialog."""
+    it; returns the blocked person's name ("" if unreadable), or None if no dialog. Dialogs are
+    QQuickPopupItem windows in the UIA tree, so waiting for one is a few cheap walks and the
+    sentence is OCR'd only when a dialog is up (this was four full OCR reads, ~3 s)."""
     b = _backend()
-    blocked = None
-    for _ in range(4):
-        blocked = privacy_blocked_from_dialog([o["text"] for o in obs])
-        if blocked is not None:
-            break
-        time.sleep(0.4)  # 4 reads over ~2.5 s (the usual case has no dialog: was ~4 s)
-        obs = _ocr_px()
-    if blocked is not None:
-        ok = next((e for e in b.elements() if e["type"] == "Button" and e["name"].strip().lower() == "ok"), None)
-        if ok:
-            b.click_at(*_mid(ok["rect"]))
-        else:
-            b.press_key("escape")
-        time.sleep(0.5)
+    blocked = privacy_blocked_from_dialog([o["text"] for o in obs])
+    if blocked is None:
+        popup = _poll(lambda: _popup(b.elements()), timeout=1.5, first=0.1, interval=0.25)
+        if popup is None:
+            return None
+        texts = [popup["name"]] + [o["text"] for o in _ocr_px(tuple(popup["rect"]))]
+        blocked = privacy_blocked_from_dialog(texts)
+        if blocked is None:
+            return None  # some other dialog: not ours to close
+    ok = next((e for e in b.elements() if e["type"] == "Button" and e["name"].strip().lower() == "ok"), None)
+    if ok:
+        b.click_at(*_mid(ok["rect"]))
+    else:
+        b.press_key("escape")
+    time.sleep(0.5)
     return blocked
 
 

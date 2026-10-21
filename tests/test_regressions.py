@@ -287,17 +287,6 @@ def test_select_circle_needs_the_search_box():
     assert select_circle_point([], {"y": 257, "h": 20}, False) is None
 
 
-# ------------------------------------------- New group screen (pencil toggles the panel)
-
-
-def test_new_group_screen_state_reads_the_sidebar():
-    from viber_ui import new_group_screen_state
-
-    assert new_group_screen_state(["Rakuten Viber", "Q Search...", "Chats", "Unread"]) == "chats"
-    assert new_group_screen_state(["Q Search name or number", "New group", "New Community"]) == "menu"
-    assert new_group_screen_state(["Q Search name or number", "Group name*", "Invite contacts", "0/250"]) == "group_form"
-
-
 def test_message_search_rows_group_name_time_and_preview():
     # "LOIs sent today or yesterday": the name search found nothing; the messages tab lists
     # chat + time + the matching message. OCR lines (x, y normalized) from that tab.
@@ -333,17 +322,6 @@ def test_message_search_stamps_survive_ocr_garbling():
         assert _row_stamp(raw), raw
     for not_a_stamp in ("Me: Thank you po", "Anne", "4", "12", "1,000 sqm"):
         assert _row_stamp(not_a_stamp) is None, not_a_stamp
-
-
-def test_existing_group_dialog_is_detected():
-    # THSWV / Anfernee: "Start chat" showed "You already have a group together!" and the run
-    # failed with "group didn't appear" — the client already had BASEL-WH-(650SQM, LAS PINAS).
-    from viber_ui import existing_group_from_dialog
-
-    texts = ["APG CLIENTS", "+3", "You already have a group together!",
-             "BASEL-WH-(650SQM, LAS PI...", "Open", "Create Another Group"]
-    assert existing_group_from_dialog(texts) == "BASEL-WH-(650SQM, LAS PI..."
-    assert existing_group_from_dialog(["THSWV-WH-(967.76SQM, CAVITE)", "8 participants"]) is None
 
 
 def test_privacy_blocked_dialog_is_detected():
@@ -1081,6 +1059,9 @@ class UnknownMentionBackend(MentionBackend):
     shows as "Unknown"."""
 
     ROWS = ["Max Alpha", "Unknown"]
+
+    def wait_still(self, timeout=2.0):
+        return 0.0
 
 
 def _run_gc_with_unknown_client(monkeypatch, fake):
@@ -1942,14 +1923,6 @@ class DialogBackend:
     def press_key(self, key, repeat=1): self.keys.append(key)
 
 
-def test_privacy_dialog_check_costs_four_short_reads_when_there_is_none(monkeypatch):
-    import viber_ui
-    fake = DialogBackend(dialog=False)
-    slept = _use(monkeypatch, fake)
-    assert viber_ui._dismiss_privacy_dialog(viber_ui._ocr_px()) is None
-    assert fake.reads == 5 and slept == [0.4] * 4   # was 0.8 x 4
-
-
 def test_privacy_dialog_is_read_and_dismissed_with_ok(monkeypatch):
     import viber_ui
     fake = DialogBackend(dialog=True)
@@ -2047,7 +2020,7 @@ class GroupFlowBackend:
 def test_create_group_from_chat_runs_on_polls_and_does_not_wait_for_the_foreground_guard(monkeypatch):
     import viber_ui
     fake = GroupFlowBackend()
-    slept = _use(monkeypatch, fake)
+    slept = _use(monkeypatch, fake, fast_clock=True)
     try:
         out = viber_ui.create_group_from_chat("RAFAEL-WH-(300SQM, PASIG)", [], fake.NUMBER, self_name="Deign Alpha")
         guard_done = fake.release.is_set()
@@ -2059,7 +2032,7 @@ def test_create_group_from_chat_runs_on_polls_and_does_not_wait_for_the_foregrou
     assert fake.foreground_calls == [(1, 2.0)]        # the guard ran (on its thread) ...
     assert not guard_done                             # ... and the flow finished before it ended
     assert fake.stills >= 5                           # info, sub-page, back, picker, info, ...
-    assert sum(slept) < 3.5  # was ~2 s hold + 0.5-s picker polls + 3.2 s dialog waits + 1.7 s rename
+    assert sum(slept) < 3.0  # was ~2 s hold + 0.5-s picker polls + 3.2 s dialog waits + 1.7 s rename
 
 
 def test_create_group_from_chat_stops_for_an_existing_client(monkeypatch):
@@ -2280,3 +2253,241 @@ def test_send_settle_falls_back_to_the_fixed_wait_without_captures(monkeypatch):
     slept = _use(monkeypatch, NoShots(), fast_clock=True)
     assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False}
     assert slept == [7.0]
+
+
+# ------------------------------------------------------- remaining speed-ups (2026-10-21, part 3)
+
+
+def test_download_runs_in_parallel_and_skips_metadata_for_cached_files(monkeypatch, tmp_path):
+    import threading
+    import time as _time
+    import googleapiclient.http
+    import viber_drive
+    monkeypatch.setattr(viber_drive, "CACHE_DIR", tmp_path)
+    (tmp_path / "cached1_photo.jpg").write_bytes(b"old")
+    (tmp_path / "half_photo.jpg.part").write_bytes(b"partial")   # an interrupted download
+    calls, active, peak, lock = [], [0], [0], threading.Lock()
+
+    class Exec:
+        def __init__(self, value): self.value = value
+        def execute(self, num_retries=0): return self.value
+
+    class Files:
+        def get(self, fileId, fields, supportsAllDrives):
+            calls.append(fileId)
+            return Exec({"id": fileId, "name": f"{fileId} photo.jpg", "size": "3", "mimeType": "image/jpeg"})
+
+        def get_media(self, fileId, supportsAllDrives): return fileId
+
+    class Service:
+        def files(self): return Files()
+
+    class FakeDownload:
+        def __init__(self, buf, req): self.buf = buf
+
+        def next_chunk(self, num_retries=0):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            _time.sleep(0.05)
+            with lock:
+                active[0] -= 1
+            self.buf.write(b"img")
+            return None, True
+    monkeypatch.setattr(viber_drive, "_drive", lambda: Service())
+    monkeypatch.setattr(googleapiclient.http, "MediaIoBaseDownload", FakeDownload)
+    paths = viber_drive.download(["cached1", "half", "a", "b", "c"])
+    assert paths[0] == str(tmp_path / "cached1_photo.jpg") and "cached1" not in calls  # reused, no round trip
+    assert [Path(p).read_bytes() for p in paths[1:]] == [b"img"] * 4            # "half" was fetched again
+    assert list(tmp_path.glob("*.part")) == [tmp_path / "half_photo.jpg.part"]  # only the stale one remains
+    assert peak[0] >= 2                                                          # fetches overlapped
+    assert viber_drive.download([]) == []
+
+
+def test_await_results_hands_over_to_the_fallback_when_no_row_reads_as_the_name(monkeypatch):
+    # Viber draws the matched name in bold that OCR can't read: once the results are up and two
+    # reads agree there's no readable match, open-first-result takes over (was the full 2.4 s).
+    import viber_send
+    results = [{"text": "Conversations", "x": 0.05, "y": 0.13}, {"text": "APG CLIENTS", "x": 0.1, "y": 0.179}]
+    reads = iter([[{"text": "Max Alpha", "x": 0.1, "y": 0.942}], results, results, results, results])
+
+    class FakeBackend:
+        def observe(self, region=None): return next(reads)
+    monkeypatch.setattr(viber_send, "backend", FakeBackend())
+    clock = [0.0]
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock[0])
+    obs, match = viber_send._await_results("TEST-NARCI")
+    assert match is None and obs == results and clock[0] < 1.0
+
+
+class GcSearchBackend:
+    def __init__(self):
+        self.results, self.stills, self.keys = [], 0, []
+
+    def click_search(self): pass
+    def delete(self): pass
+    def type_text(self, text): pass
+    def press_key(self, key, repeat=1): self.keys.append(key)
+    def click_result(self, norm_y): self.results.append(norm_y)
+    def wait_still(self, timeout=2.0): self.stills += 1; return 0.1
+    def elements(self): return []
+
+
+def test_gc_exists_reads_the_results_once_up_and_leaves_the_search(monkeypatch):
+    import backends
+    import viber_gc
+    import viber_send
+    import viber_gc_logic as logic
+    fake = GcSearchBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    rows = [{"text": "Groups", "x": 0.05, "y": 0.13}, {"text": "KM-WH-(240SQM, PASIG)", "x": 0.1, "y": 0.18}]
+    monkeypatch.setattr(viber_send, "_await_results", lambda name: (rows, None))
+    monkeypatch.setattr(logic, "search_says_gc_exists", lambda texts, name: "yes" if name in texts else "no")
+    assert viber_gc.gc_exists("KM-WH-(240SQM, PASIG)") == (True, False)
+    assert viber_gc.gc_exists("NOPE-WH-(1SQM, X)") == (False, False)
+    assert fake.results == [] and fake.keys == ["escape", "escape"] and fake.stills == 2
+
+
+def test_gc_exists_opens_the_first_result_when_the_name_is_unreadable(monkeypatch):
+    import backends
+    import viber_gc
+    import viber_send
+    import viber_gc_logic as logic
+    fake = GcSearchBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    rows = [{"text": "Groups", "x": 0.05, "y": 0.13}, {"text": "bold-unreadable", "x": 0.1, "y": 0.18}]
+    monkeypatch.setattr(viber_send, "_await_results", lambda name: (rows, None))
+    monkeypatch.setattr(logic, "search_says_gc_exists", lambda texts, name: "unknown")
+    monkeypatch.setattr(viber_send, "_header_matches", lambda name: True)
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: None)
+    assert viber_gc.gc_exists("KM-WH-(240SQM, PASIG)") == (True, True)
+    assert fake.results == [0.13 + 0.05]  # the first row under the header
+
+
+class HistoryBackend:
+    """A chat whose older messages render a moment after each scroll up."""
+    def __init__(self, pages):
+        self.pages, self.page, self.pending, self.scrolls = pages, 0, 0, []
+
+    def elements(self):
+        if self.pending:
+            self.pending -= 1
+            if self.pending == 0:
+                self.page = min(self.page + 1, len(self.pages) - 1)
+        els = [_ui("Pane", "StackView", [308, 71, 1100, 959])]
+        for i, text in enumerate(self.pages[self.page]):
+            d = len(els)
+            els.append(_ui("Group", "FeedDelegate", [308, 160 + i * 60 - 5, 792, 200 + i * 60 + 5], parent=0))
+            els.append(_ui("Text", "TextEditItem", [320, 160 + i * 60, 600, 200 + i * 60], parent=d, text=text))
+        els.append(_ui("Edit", "QQuickTextEdit", [320, 900, 760, 940], parent=0))
+        return els
+
+    def scroll(self, area, notches):
+        self.scrolls.append(notches)
+        if notches > 0:
+            self.pending = 2  # older messages show after two reads
+
+
+def test_find_message_scrolls_up_and_waits_only_until_older_messages_render(monkeypatch):
+    import viber_gc
+    fake = HistoryBackend([["newest"], ["older", "newest"], ["template text", "older"]])
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    hit = viber_gc._find_message("template text")
+    assert hit and hit["text"] == "template text"
+    assert [n for n in fake.scrolls if n > 0] == [10, 10] and sum(slept) < 2.5  # was 1 s per screen
+
+
+def test_collect_templates_chat_returns_oldest_first(monkeypatch):
+    import viber_gc
+    fake = HistoryBackend([["c", "d"], ["a", "b", "c"]])
+    _use(monkeypatch, fake, fast_clock=True)
+    assert viber_gc._collect_templates_chat(2) == ["a", "b", "c", "d"]
+
+
+def test_client_name_is_polled_from_the_banner(monkeypatch):
+    import viber_gc
+    import viber_send
+
+    class FakeBackend:
+        def __init__(self): self.reads = 0
+        def screenshot(self): return _Img()
+        def elements(self): return [_ui("Pane", "SplitView", [308, 0, 1100, 967])]
+
+        def observe(self, region=None):
+            self.reads += 1
+            if self.reads < 3:
+                return []
+            return [_obs("Rafael Luijie +639175177830 is not in your contact list - save it", 0.31, 0.16, 0.5)]
+    fake = FakeBackend()
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    monkeypatch.setattr(viber_send, "open_chat", lambda number: number)
+    assert viber_gc.client_name_from_chat("+639175177830") == "Rafael Luijie"
+    assert fake.reads == 3 and sum(slept) < 1.0
+
+
+class PopupDialogBackend(DialogBackend):
+    """The privacy dialog as UIA shows it: a QQuickPopupItem window with an OK button; its
+    sentence is only readable by OCR inside the popup's rect."""
+    def elements(self):
+        els = [_ui("Pane", "SplitView", [308, 0, 1100, 967])]
+        if self.dialog:
+            els += [_ui("Window", "QQuickPopupItem", [299, 395, 804, 595], name="Couldn't be added"),
+                    _ui("Button", "NotificationButton", [500, 520, 560, 555], name="OK")]
+        return els
+
+    def observe(self, region=None):
+        self.reads += 1
+        if self.dialog and region is not None:
+            return [_obs("Rafael was not added to the group due to their privacy settings", 0.4, 0.45)]
+        return [_obs("Group", 0.35, 0.10), _obs("3 participants", 0.35, 0.125)]
+
+
+def test_privacy_dialog_is_found_as_a_popup_window_and_read_inside_it(monkeypatch):
+    import viber_ui
+    fake = PopupDialogBackend(dialog=True)
+    _use(monkeypatch, fake)
+    assert viber_ui._dismiss_privacy_dialog(viber_ui._ocr_px()) == "Rafael"
+    assert fake.clicks == [(530, 537.5)] and fake.reads == 2  # the initial read + the popup's rect
+
+
+def test_privacy_dialog_check_without_a_dialog_is_a_few_cheap_walks(monkeypatch):
+    import viber_ui
+    fake = PopupDialogBackend(dialog=False)
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._dismiss_privacy_dialog(viber_ui._ocr_px()) is None
+    assert fake.reads == 1 and sum(slept) <= 1.8   # no OCR beyond the caller's read; was four reads over ~3 s
+
+
+def test_other_dialogs_are_left_alone_by_the_privacy_check(monkeypatch):
+    import viber_ui
+
+    class PinDialogBackend(PopupDialogBackend):
+        def elements(self):
+            return [_ui("Pane", "SplitView", [308, 0, 1100, 967]),
+                    _ui("Window", "QQuickPopupItem", [299, 395, 804, 595], name="Pin note?"),
+                    _ui("Button", "NotificationButton", [470, 520, 537, 555], name="Pin")]
+
+        def observe(self, region=None):
+            self.reads += 1
+            return [_obs("Pin this note?", 0.4, 0.45)] if region else []
+    fake = PinDialogBackend(dialog=True)
+    _use(monkeypatch, fake)
+    assert viber_ui._dismiss_privacy_dialog(viber_ui._ocr_px()) is None and fake.clicks == []
+
+
+def test_await_results_finishes_at_once_on_no_results(monkeypatch):
+    # A name nobody has: Viber shows "No results" and no section header; the wait used to run
+    # out its 2.4 s timeout before the caller could say so.
+    import viber_send
+    none = [{"text": "No results", "x": 0.1, "y": 0.2}]
+    reads = iter([[{"text": "Max Alpha", "x": 0.1, "y": 0.942}], none, none, none])
+
+    class FakeBackend:
+        def observe(self, region=None): return next(reads)
+    monkeypatch.setattr(viber_send, "backend", FakeBackend())
+    clock = [0.0]
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock[0])
+    obs, match = viber_send._await_results("ZZZ-NOPE")
+    assert match is None and obs == none and clock[0] < 1.0

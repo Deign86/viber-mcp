@@ -350,3 +350,25 @@ def test_scroll_posts_a_wheel_notch_per_step_with_a_tiny_gap(monkeypatch):
 
 def test_panel_check_is_not_needed_on_windows():
     assert bw.WindowsBackend.panel_shifts_send is False and bw.WindowsBackend.input_confirmed is True
+
+
+def test_uia_timeout_abandons_the_stuck_thread_and_starts_a_fresh_one(monkeypatch):
+    import concurrent.futures
+
+    class StuckFuture:
+        def result(self, timeout=None):
+            raise concurrent.futures.TimeoutError()
+
+    class StuckPool:
+        def __init__(self): self.shutdowns = []
+        def submit(self, fn, *args): return StuckFuture()
+        def shutdown(self, wait=True, cancel_futures=False): self.shutdowns.append((wait, cancel_futures))
+    stuck = StuckPool()
+    monkeypatch.setattr(bw, "_uia_pool", stuck)
+    with pytest.raises(OCRError, match="didn't answer"):
+        bw._on_uia(lambda: None)
+    assert stuck.shutdowns == [(False, True)] and bw._uia_pool is not stuck  # abandoned, replaced
+    try:
+        assert bw._on_uia(lambda x: x * 2, 21) == 42                           # the fresh thread works
+    finally:
+        bw._uia_pool.shutdown(wait=False)

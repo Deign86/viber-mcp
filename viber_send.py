@@ -459,14 +459,20 @@ def _await_results(name: str, timeout: float = 2.4):
     Replaces a fixed 1.6s wait plus one read. The first read after typing still shows the OLD
     chat list, with the same name at a different y — so a match counts only once a results
     section header is visible and two reads in a row agree on the row."""
-    state = {"prev": None, "obs": [], "match": None}
+    state = {"prev": None, "obs": [], "match": None, "headed": False}
 
     def check():
         obs = backend.observe(region=_RESULTS_REGION)
         match = _find_result_row(name, obs)
-        ready = (state["prev"] is not None and match is not None and _same_row(state["prev"], match)
-                 and _results_header_visible(obs))
-        state.update(prev=match, obs=obs, match=match)
+        header = _results_header_visible(obs) or _no_results(obs)
+        if match is None:
+            # Results are up but no row reads as the name (Viber draws the match in bold OCR
+            # can't read): two such reads in a row hand over to the open-first-result fallback
+            # instead of waiting out the timeout.
+            ready = header and state["headed"]
+        else:
+            ready = state["prev"] is not None and _same_row(state["prev"], match) and header
+        state.update(prev=match, obs=obs, match=match, headed=header)
         return ready
 
     _poll(check, timeout=timeout, first=0.3)
@@ -475,6 +481,11 @@ def _await_results(name: str, timeout: float = 2.4):
 
 def _results_header_visible(obs) -> bool:
     return any(o["x"] < 0.35 and o["text"].strip().lower() in _RESULT_HEADERS for o in obs)
+
+
+def _no_results(obs) -> bool:
+    """Viber's "No results" notice in the results column: the search is done, nothing matched."""
+    return any(o["x"] < 0.35 and "no result" in o["text"].lower() for o in obs)
 
 
 def _same_row(a, b) -> bool:

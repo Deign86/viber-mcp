@@ -235,7 +235,7 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
     # Back to the templates chat: quote-reply DONE to the original template.
     chat = done_chat or plan["templates_chat"]
     viber_send.search_and_open(chat)
-    time.sleep(1.0)
+    viber_ui._backend().wait_still()
     target = _find_message(plan["template_text"])
     if target is None:
         steps["done_reply"] = {"sent": False, "note": f"Template not found in '{chat}' — reply "
@@ -255,12 +255,9 @@ def client_name_from_chat(number: str) -> str:
     """Open the number's 1:1 chat and read the Viber name from its "not in your contact list"
     banner. "" when it can't be read."""
     viber_send.open_chat(number)
-    for _ in range(3):
-        name = viber_ui.name_from_contact_banner([o["text"] for o in viber_ui._ocr_px()], number)
-        if name:
-            return name
-        time.sleep(1.0)
-    return ""
+    return viber_send._poll(
+        lambda: viber_ui.name_from_contact_banner([o["text"] for o in viber_ui._ocr_px()], number),
+        timeout=3.0, interval=0.3) or ""
 
 
 def notify_existing(template_text: str, gc_name: str) -> dict:
@@ -295,27 +292,27 @@ def gc_exists(name: str) -> tuple[bool, bool]:
     b.click_search()
     b.delete()
     b.type_text(name[:30])
-    time.sleep(2.0)
-    obs = viber_ui._left_column(viber_ui._ocr_px())
-    texts = [o["text"] for o in obs if o["y"] > obs[0]["H"] * 0.1] if obs else []
+    # The results column, read once the result-section header is up (was a fixed 2 s).
+    obs, _ = viber_send._await_results(name[:30])
+    texts = [o["text"] for o in obs if o["y"] > 0.1 and o["x"] < 0.3]
     verdict = logic.search_says_gc_exists(texts, name)
+
+    def leave_search():
+        b.click_search()
+        b.delete()
+        b.press_key("escape")
+        b.wait_still()
     if verdict == "unknown":
         header = next((o for o in obs if o["text"].strip().lower() in
                        ("conversations", "groups", "chats")), None)
         if header is not None:
-            b.click_at(viber_ui._ocr_center(header)[0], header["y"] + header["h"] * 3.2)
-            time.sleep(1.5)
-            exists = viber_send._header_matches(name)
-            b.click_search()
-            b.delete()
-            b.press_key("escape")
-            time.sleep(0.6)
+            b.click_result(header["y"] + 0.05)  # the first row under the header
+            exists = bool(viber_send._poll(lambda: viber_send._header_matches(name), timeout=2.0,
+                                           first=0.3))
+            leave_search()
             return exists, True
         verdict = "no"
-    b.click_search()
-    b.delete()
-    b.press_key("escape")
-    time.sleep(0.6)
+    leave_search()
     return verdict == "yes", False
 
 
@@ -329,9 +326,17 @@ def _find_message(text: str, screens: int = 6):
         hit = next((m for m in reversed(msgs) if logic_norm(m["text"]) == want), None)
         if hit:
             return hit
-        b.scroll("chat", 10)
-        time.sleep(1.0)
+        _scroll_up_a_screen(b, msgs)
     return None
+
+
+def _scroll_up_a_screen(b, before: list[dict]) -> None:
+    """Scroll the open chat up and wait until older messages have rendered (the topmost visible
+    message changes), at most ~1 s: Viber loads history in chunks (was a fixed 1 s)."""
+    top = before[0]["text"] if before else None
+    b.scroll("chat", 10)
+    viber_send._poll(lambda: (m := viber_ui._messages(b.elements())) and m[0]["text"] != top,
+                     timeout=1.2, first=0.15)
 
 
 def _collect_templates_chat(screens: int) -> list[str]:
@@ -341,11 +346,11 @@ def _collect_templates_chat(screens: int) -> list[str]:
     # Start from the newest message, whatever the chat was scrolled to before.
     viber_ui.jump_to_latest()
     for _ in range(screens):
-        for m in reversed(viber_ui._messages(b.elements())):  # newest → oldest on screen
+        msgs = viber_ui._messages(b.elements())
+        for m in reversed(msgs):  # newest → oldest on screen
             if m["text"] and m["text"] not in seen:
                 seen.append(m["text"])
-        b.scroll("chat", 10)
-        time.sleep(1.0)
+        _scroll_up_a_screen(b, msgs)
     viber_ui.jump_to_latest()
     return list(reversed(seen))
 
@@ -357,7 +362,7 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = F
     cfg = _config()
     chat = cfg.get("templates_chat") or "APG CLIENTS"
     viber_send.search_and_open(chat)
-    time.sleep(1.0)
+    viber_ui._backend().wait_still()
     texts = _collect_templates_chat(screens)
     results, skipped, failed, existing = [], [], [], []
     for i in logic.pending_templates(texts):
@@ -371,7 +376,7 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = F
             continue
         # Re-open the templates chat and locate this template by its exact text.
         viber_send.search_and_open(chat)
-        time.sleep(1.0)
+        viber_ui._backend().wait_still()
         target = _find_message(text, screens + 2)
         if target is None:
             skipped.append({"gc_name": name["gc_name"], "reason": "template scrolled out of reach"})

@@ -122,7 +122,16 @@ Status:
   round trip then waits about a frame, so a ~50 ms walk takes >1 s. After a click that opens
   or changes a panel, call `backend.wait_still()` (two identical PrintWindow captures) and
   then walk once; `_levels` also fetches two levels per call (children + cached grandchildren)
-  to halve the round trips.
+  to halve the round trips. A UIA call that doesn't return in 30 s leaves its thread stuck, so
+  `_on_uia` abandons that thread, starts a fresh one and raises `OCRError` ("try again").
+  **UIA has no text for the chat list rows, the search result rows or the chat header** (they
+  are unnamed `ListViewDelegateLoader`s), so those stay OCR; `_await_results` hands over to the
+  open-first-result fallback after two reads with the results header up and no readable row.
+  Dialogs ARE in UIA: a `Window` of class `QQuickPopupItem` named by the title ("Pin note?",
+  "Couldn't be added") with `NotificationButton` children — `_popup` / `_dismiss_privacy_dialog`
+  poll for one instead of OCR-ing four times. GC coordination (`gc_exists`, `_find_message`,
+  `_collect_templates_chat`, `client_name_from_chat`) polls too (`_scroll_up_a_screen` waits for
+  the topmost message to change after a scroll).
 - The "not in your contact list" banner appears on every unsaved-number chat — not an error.
 
 **Linux:** hardest target — Wayland heavily restricts screen capture and synthetic input; X11
@@ -182,8 +191,9 @@ Status:
   **GCs are built from the client's 1:1 chat** (staff: "the most reliable route"): the intro
   message is always sent first, then header `AddParticipantsButton` → the side-panel picker (client
   pre-ticked) → tick the staff → `Save` → rename via the info panel's ✎. The old New group screen
-  (`create_group`, `number_on_viber`) failed with "GC NOT CREATED — name missing" and is no longer
-  used by the flow. Guards: `is_one_to_one_with` (banner/header number, not "N participants" —
+  flow (`create_group`, `number_on_viber`) failed with "GC NOT CREATED — name missing" and was
+  removed; `find_number_row` / `select_circle_point` / `privacy_blocked_from_dialog` stay (used by
+  the picker and the privacy check). Guards: `is_one_to_one_with` (banner/header number, not "N participants" —
   `open_chat`'s viber:// link sometimes doesn't navigate and the client's GC also shows the number
   in its template); "Groups in common" non-empty → EXISTING CLIENT (hard rule: one GC per client; `viber_gc` checks
   it via `viber_ui.existing_group_with` BEFORE the intro, and `create_group_from_chat` again after); picker search text that lands
@@ -237,7 +247,9 @@ Status:
 - `viber_drive.py` — Google Drive listings (read-only OAuth desktop flow). Client file
   `google_oauth_client.json` next to `server.py` (git-ignored) or env `VIBER_MCP_GOOGLE_CLIENT`;
   token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads go to
-  `%LOCALAPPDATA%\viber-mcp\drive-cache` and are kept ~3 days, then pruned by `prune_downloads`
+  `%LOCALAPPDATA%\viber-mcp\drive-cache` (fetched in parallel, `DOWNLOAD_THREADS`, each thread
+  with its own Drive service — httplib2 isn't thread-safe; written as `.part` then renamed, so a
+  file under its final name is whole and is reused without a metadata call) and are kept ~3 days, then pruned by `prune_downloads`
   (`VIBER_MCP_KEEP_DOWNLOADS_DAYS`; never delete right after sending — that raced Viber's upload and
   left photos "not sent"). `remove_downloads` /
   `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`
