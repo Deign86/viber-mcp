@@ -2050,6 +2050,79 @@ def test_create_group_from_chat_stops_for_an_existing_client(monkeypatch):
     assert fake.page == "main" and fake.foreground_calls == []  # never reached the picker/Save
 
 
+# ------------------------------------------- GC rename lost after Save (2026-10-22)
+# Four GCs in a row were left named "Group": the pencil was clicked while the info panel was
+# still sliding in, the click was lost, and the rename gave up after one try.
+
+
+class LostClickGroupBackend(GroupFlowBackend):
+    """The first `lose` clicks on the pencil (or ✓) land while the panel moves and do nothing."""
+    def __init__(self, lose=1):
+        super().__init__()
+        self.lose = lose
+
+    def click_at(self, x, y, button="left", double=False):
+        p = self.PENCIL
+        if self.page == "group_main" and self.lose and p[0] <= x <= p[2] and p[1] <= y <= p[3]:
+            self.lose -= 1
+            self.clicks.append((x, y))
+            return
+        super().click_at(x, y, button, double)
+
+
+def test_rename_retries_a_pencil_click_lost_while_the_panel_slides(monkeypatch):
+    import viber_ui
+    fake = LostClickGroupBackend(lose=1)
+    _use(monkeypatch, fake, fast_clock=True)
+    try:
+        out = viber_ui.create_group_from_chat("JHAZEL-CS-(30-35SQM, MAKATI)", [], fake.NUMBER)
+    finally:
+        fake.release.set()
+    assert out["created"] and out["renamed"]
+    assert fake.group_name == "JHAZEL-CS-(30-35SQM, MAKATI)"
+
+
+def test_rename_retries_a_lost_tick_click(monkeypatch):
+    import viber_ui
+    fake = GroupFlowBackend()
+    fake.page = "group"
+    _use(monkeypatch, fake, fast_clock=True)
+    original = fake.click_at
+    lost = {"tick": 1}
+
+    def click_at(x, y, button="left", double=False):
+        p = fake.PENCIL
+        if fake.renaming and lost["tick"] and p[0] <= x <= p[2] and p[1] <= y <= p[3]:
+            lost["tick"] -= 1
+            return
+        original(x, y, button, double)
+    fake.click_at = click_at
+    viber_ui._rename_open_chat("JHAZEL-CS-(30-35SQM, MAKATI)")
+    assert fake.group_name == "JHAZEL-CS-(30-35SQM, MAKATI)" and not fake.renaming
+
+
+def test_rename_reports_when_the_name_box_never_opens(monkeypatch):
+    import pytest
+    import viber_ui
+    fake = LostClickGroupBackend(lose=99)
+    fake.page = "group"
+    _use(monkeypatch, fake, fast_clock=True)
+    with pytest.raises(viber_ui.UIError, match="name box didn't open"):
+        viber_ui._rename_open_chat("X")
+    assert fake.group_name == "Group"
+
+
+def test_rename_refuses_when_another_group_took_over_the_chat(monkeypatch):
+    import pytest
+    import viber_ui
+    fake = GroupFlowBackend()
+    fake.page, fake.group_name, fake.rename_text = "group", "APR LISTING ONLY", "APR LISTING ONLY"
+    _use(monkeypatch, fake, fast_clock=True)
+    with pytest.raises(viber_ui.UIError, match="nothing was renamed"):
+        viber_ui._rename_open_chat("JHAZEL-CS-(30-35SQM, MAKATI)", expect="Group")
+    assert fake.group_name == "APR LISTING ONLY"
+
+
 def test_mention_flow_sleeps_well_under_the_old_fixed_waits(monkeypatch):
     import backends
     import viber_ui
