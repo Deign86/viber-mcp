@@ -858,14 +858,31 @@ def _info_main_page() -> list[dict]:
     raise UIError("Couldn't open the chat's info panel.")
 
 
-def _rename_open_chat(gc_name: str) -> None:
-    """Rename the open group from its info panel (pencil → type → ✓)."""
+def _rename_open_chat(gc_name: str, expect: str = "") -> None:
+    """Rename the open group from its info panel (pencil → type → ✓).
+
+    Right after Save the info panel is still sliding in, and a pencil click then was lost: the
+    group stayed "Group" with the panel open (4 times on 2026-10-22). So wait for the panel to
+    settle, re-locate the pencil, and retry the click until the name box opens."""
     b = _backend()
-    pencil = name_edit_button(_info_main_page())
-    b.click_at(*_mid(pencil["rect"]))
-    field = _poll(lambda: rename_field(b.elements(), pencil), timeout=1.5, first=0.1)
+    field = pencil = None
+    for _ in range(3):
+        _info_main_page()
+        b.wait_still()
+        pencil = name_edit_button(b.elements())
+        if pencil is None:
+            continue
+        b.click_at(*_mid(pencil["rect"]))
+        field = _poll(lambda: rename_field(b.elements(), pencil), timeout=1.5, first=0.1)
+        if field is not None:
+            break
     if field is None:
         raise UIError("The group name box didn't open.")
+    # A new post elsewhere can switch the open chat (APR LISTING ONLY took over mid-rename on
+    # 2026-10-22): only rename the chat we expect, never an existing group.
+    if expect and field["text"].strip() != expect:
+        b.press_key("escape")
+        raise UIError(f"The open chat is '{field['text']}', not the new '{expect}'; nothing was renamed.")
     b.click_at(*_mid(field["rect"]))
     b.press_key("end")
     b.press_key("backspace", len(field["text"]) + 2)
@@ -876,8 +893,12 @@ def _rename_open_chat(gc_name: str) -> None:
     typed = typed_now() if _poll(lambda: typed_now() == gc_name, timeout=1.5, first=0.1) else typed_now()
     if typed != gc_name:
         raise UIError(f"The group name didn't take (got {typed!r}); rename it to '{gc_name}' by hand.")
-    b.click_at(*_mid(pencil["rect"]))  # the pencil turned into ✓ in the same spot
-    time.sleep(0.3)  # the caller then waits for the new name on screen
+    # The pencil turned into ✓ in the same spot; the box closes once the name is saved.
+    for _ in range(2):
+        b.click_at(*_mid(pencil["rect"]))
+        if _poll(lambda: rename_field(b.elements(), pencil) is None, timeout=1.5, first=0.1):
+            return
+    raise UIError(f"The new group name wasn't saved; rename it to '{gc_name}' by hand.")
 
 
 def is_one_to_one_with(obs: list[dict], number: str, header_bottom: float) -> bool:
@@ -999,7 +1020,7 @@ def create_group_from_chat(gc_name: str, members: list[str], client_number: str,
                 "client_display_name": client_display, "privacy_blocked": None}
     blocked = _dismiss_privacy_dialog(obs)
     try:
-        _rename_open_chat(gc_name)
+        _rename_open_chat(gc_name, expect="Group")
     except UIError:
         renamed = []  # the group exists; the caller reports the missing rename
     else:
