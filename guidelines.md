@@ -74,11 +74,56 @@ for anything that goes to a client. Never mix photos from a different listing.
 - **Check it isn't already posted:** `find_listings` for the same place/sqm and search the GC
   (header 🔍) for its street/area. A listing already posted (even under an older folder name) is
   skipped and reported, not posted again. The tool itself refuses an existing folder name.
-- **Text format:** copy the staff format of recent posts — title, areas, rent, highlights,
-  amenities, the inquiry block, the dashed line, then commission, terms, notes, viewing, location,
-  map, foot traffic, nearby places, contact details, the Carousell/FB listing link, `Group N`,
-  `Intern: <name>`, `Date Listed: <date>`. Drop drafting notes ("COMPLETE: …") and private inbox
-  links.
+- **Text format:** every listing doc / post (new, reformatted or updated) uses this simple
+  template — basic facts only, no marketing fluff, "per listing"/"to confirm" notes, Carousell/FB
+  links, `Group N` or `Date Listed`. Leave out any line or section with no info. Deal is
+  `FOR LEASE`/`FOR RENT`/`FOR SALE`; for sales, "Rental Rates" becomes "Price" and terms are the
+  payment terms, commission is 3–5%.
+  ```
+  OFFICE SPACE FOR LEASE – ORTIGAS CENTER, PASIG CITY
+
+  Property Details:
+  • Floor: 8th Floor
+  • Floor Area: 550.14 sqm
+  • Parking: 1 Slot
+
+  Rental Rates:
+  • Unit: ₱650/sqm
+  • Parking: ₱7,000/slot
+  • Negotiable
+
+  Association Dues:
+  • Unit: ₱99/sqm
+  • Parking: ₱99/sqm
+  • Unit association dues are for the account of the lessee.
+  • Common area association dues are for the account of the lessor.
+
+  Terms and Conditions:
+  • 3 Months Security Deposit (Refundable)
+  • 3 Months Advance Rental (Applicable to the Last 3 Months of the Lease)
+  • Minimum Lease Period: 1 Year
+
+  For Inquiries and Site Viewing:
+  🏢 Alpha Premier Realty
+  📧 realty@alphapremiergroup.com
+  📞 0927 555 5803 | 0915 888 9482 | 0921 217 4555
+
+  ━━━━━━━━━━━━━━━━━━━━
+
+  1 MONTH STANDARD COMMISSION
+  Broker's Commission:
+  • 2–3 Years Lease: Equivalent to 1 Month's Rent
+  • 4–5 Years Lease: Equivalent to 2 Months' Rent
+
+  Location: <building / street>
+  Pin Location: <Google Maps link>
+
+  Owner's Information: <owner name> / <owner number>
+
+  <staff name/initials who handles the owner, e.g. TEL>
+  ```
+  The `━━━` line is the separator (the tools split on it like a dashed line). Everything below it
+  is internal. Drop drafting notes ("COMPLETE: …") and private inbox links.
 - **Folder name:** `City, sqm Area` like the rest of the Drive — several units → all sizes
   (`Pasay City, 8, 12, 22 Malibay`); a warehouse → its floor area.
 - **Photos must be that listing's photos.** Match them by what they show (signage, floor plan,
