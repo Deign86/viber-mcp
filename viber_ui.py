@@ -213,6 +213,57 @@ def list_messages() -> dict:
     }
 
 
+def _row(m: dict) -> dict:
+    return {"from": "me" if m["mine"] else "them", "kind": m["kind"], "text": m["text"]}
+
+
+def _merge_older(acc: list[dict], screen: list[dict]) -> tuple[list[dict], bool]:
+    """Prepend what `screen` (oldest first, scrolled further up) shows above `acc`. They are
+    joined at their longest overlap — screen's bottom = acc's top — so repeated texts ("ok",
+    photos) aren't dropped the way a seen-set would drop them. Returns (merged, overlapped)."""
+    for k in range(min(len(acc), len(screen)), 0, -1):
+        if screen[len(screen) - k:] == acc[:k]:
+            return screen[:len(screen) - k] + acc, True
+    return screen + acc, False
+
+
+def backread(screens: int = 40, until: str = "") -> dict:
+    """The open chat's history, oldest first: jump to the newest message, then scroll up a
+    screen at a time, stitching the screens together, until the chat's first message (the top
+    stops moving), `until` text shows up, or `screens` runs out. Ends back at the newest."""
+    b = _backend()
+    want = until.strip().lower()
+    jump_to_latest()
+    acc = [_row(m) for m in _messages(b.elements())]
+    gaps, stalls, reached_top = 0, 0, False
+    for _ in range(max(1, int(screens))):
+        if want and any(want in m["text"].lower() for m in acc):
+            break
+        before = [_row(m) for m in _messages(b.elements())]
+        b.scroll("chat", 10)
+        # Viber renders older history in chunks a moment after the wheel.
+        _poll(lambda: [_row(m) for m in _messages(b.elements())] != before, timeout=2.0, first=0.15)
+        merged, overlapped = _merge_older(acc, [_row(m) for m in _messages(b.elements())])
+        if len(merged) == len(acc):
+            stalls += 1
+            if stalls >= 2:  # twice nothing older: this is the start of the chat
+                reached_top = True
+                break
+            continue
+        stalls = 0
+        gaps += not overlapped
+        acc = merged
+    jump_to_latest()
+    return {
+        "count": len(acc),
+        "reached_top": reached_top,
+        "gaps": gaps,
+        "note": "Oldest first. reached_top=false: older messages exist (raise screens). gaps>0: a "
+                "scroll skipped past some messages without overlap.",
+        "messages": [{"i": i, **m} for i, m in enumerate(acc, start=1)],
+    }
+
+
 def open_image(n: int = 1) -> bytes:
     """Open the n-th newest visible image full-size; returns a screenshot of the viewer."""
     images = [m for m in reversed(_messages(_backend().elements())) if m["kind"] == "image"]

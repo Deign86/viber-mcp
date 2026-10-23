@@ -23,6 +23,10 @@ go-ahead, don't show plans for approval, don't leave drafts. Only stop and ask w
   conversations anywhere else unless asked. Chats contain clients' personal data — keep it internal.
 - **Don't guess.** If OCR text is garbled or a message is cut off, `scroll_chat` / `jump_to_latest`
   / `screenshot` to check rather than inventing what it says.
+- **Backread for context.** Run `backread_chat` (the whole chat, oldest first) before sending a
+  listing, before following up / "upping" an older or quiet chat, and whenever you're missing
+  context (requirements, what was already offered or promised, who the owner is). Not needed
+  when you're just continuing a conversation that's already on screen.
 
 ## When to stop and ask (fails loudly)
 Ask the staff member only when:
@@ -46,7 +50,8 @@ separator line (`--------------------…`):
   for the exact address or the owner's number, say an agent will coordinate the viewing; don't reveal it.
 
 **Confirm availability with the owner before offering.** Drive listings go stale (sold or leased
-without the folder moving to SOLD). Before sending any listing to a client:
+without the folder moving to SOLD). Before sending any listing to a client, `backread_chat` their
+GC to see every listing already offered (never re-offer one) and their full requirements, then:
 1. Give the client only a short teaser, one or two lines (type, sqm, area/city, rate), and say we'll
    confirm availability with the owner first, e.g. "May warehouse po kami sa Silang, 1,890 sqm,
    ₱200/sqm. Confirm lang po namin sa owner kung available pa, update po namin kayo agad."

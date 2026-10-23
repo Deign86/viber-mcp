@@ -219,6 +219,21 @@ def list_messages() -> dict:
 
 
 @mcp.tool()
+def backread_chat(screens: int = 40, until: str = "") -> dict:
+    """Read the open chat's whole history, oldest first, exactly from Viber's UI (not OCR).
+
+    Jumps to the newest message, scrolls up a screen at a time and stitches the screens
+    together until the first message of the chat, then returns to the newest. Use it before
+    offering a listing (was it already offered?) or replying to a long thread.
+
+    Args:
+        screens: max screens to scroll up (each ~10 wheel notches).
+        until: optional text; stop once a message containing it has been read.
+    """
+    return viber_ui.backread(screens, until)
+
+
+@mcp.tool()
 def open_image(n: int = 1) -> list:
     """Open the n-th newest visible image in the open chat full-size and return what it shows.
 

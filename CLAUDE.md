@@ -55,7 +55,10 @@ port-ready for Windows/Linux — see "Porting" below):
   `reply`, `open_chat`, `open_and_read`, `read_open_chat`, `list_chats`, `put_draft`,
   `search_and_open`, `search_messages` (message-text search: the 2nd `TabComponent` under the
   search box; `message_search_rows` parses the OCR'd rows), `save_to_my_notes`, `open_my_notes`, `list_contacts`, `scroll_chat`,
-  `scroll_chat_list` (backend `scroll(area, notches)`; Windows posts `WM_MOUSEWHEEL`, macOS not yet).
+  `scroll_chat_list` (backend `scroll(area, notches)`; Windows posts `WM_MOUSEWHEEL`, macOS not yet),
+  `backread_chat` (`viber_ui.backread`: scrolls up 10 notches a screen from the newest, joins the
+  UIA screens at their longest overlap (`_merge_older`, keeps repeated "ok"/photo rows), stops
+  when the top stops moving twice; returns the whole chat oldest first, then jumps back down).
 - `viber_send.py` — **platform-neutral** write/navigation logic: recipient resolution
   (`contacts.json` alias → E.164), the send pipeline, search-result scoring, panel detection, send
   verification. Holds a module-level `backend = get_backend()` and calls only its semantic methods.

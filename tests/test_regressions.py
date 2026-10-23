@@ -2478,6 +2478,34 @@ def test_collect_templates_chat_returns_oldest_first(monkeypatch):
     assert viber_gc._collect_templates_chat(2) == ["a", "b", "c", "d"]
 
 
+def test_merge_older_joins_at_the_overlap_and_keeps_repeated_texts():
+    import viber_ui
+    r = lambda *ts: [{"from": "them", "kind": "text", "text": t} for t in ts]
+    assert viber_ui._merge_older(r("x", "x", "y"), r("w", "x", "x")) == (r("w", "x", "x", "y"), True)
+    assert viber_ui._merge_older(r("c", "d"), r("c", "d")) == (r("c", "d"), True)  # didn't move
+    assert viber_ui._merge_older(r("c", "d"), r("a", "b")) == (r("a", "b", "c", "d"), False)
+
+
+def test_backread_reads_the_whole_chat_oldest_first(monkeypatch):
+    # Staff: "you need a tool to properly backread gcs by scrolling up" — 50-notch scroll_chat
+    # reads skipped messages and OCR mixed in the sidebar; checking "already offered?" missed.
+    import viber_ui
+    fake = HistoryBackend([["ok", "ok", "listing B"], ["listing A", "ok", "ok"],
+                           ["template", "listing A", "ok"]])
+    _use(monkeypatch, fake, fast_clock=True)
+    out = viber_ui.backread()
+    assert [m["text"] for m in out["messages"]] == ["template", "listing A", "ok", "ok", "listing B"]
+    assert out["reached_top"] and out["gaps"] == 0 and out["messages"][0]["i"] == 1
+
+
+def test_backread_stops_at_the_until_text(monkeypatch):
+    import viber_ui
+    fake = HistoryBackend([["c", "d"], ["b", "c"], ["a", "b"]])
+    _use(monkeypatch, fake, fast_clock=True)
+    out = viber_ui.backread(until="B")
+    assert [m["text"] for m in out["messages"]] == ["b", "c", "d"] and not out["reached_top"]
+
+
 def test_client_name_is_polled_from_the_banner(monkeypatch):
     import viber_gc
     import viber_send
