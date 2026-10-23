@@ -45,8 +45,18 @@ separator line (`--------------------…`):
   the exact address, the owner's/agent's own contact numbers, and the agent's name. If a client asks
   for the exact address or the owner's number, say an agent will coordinate the viewing; don't reveal it.
 
-Flow: `find_listings` (match the property asked about: location, type, sqm) → `search_and_open` the
-chat → `send_listing` (text above the line, then all photos together, then the folder's videos —
+**Confirm availability with the owner before offering.** Drive listings go stale (sold or leased
+without the folder moving to SOLD). Before sending any listing to a client:
+1. Give the client only a short teaser, one or two lines (type, sqm, area/city, rate), and say we'll
+   confirm availability with the owner first, e.g. "May warehouse po kami sa Silang, 1,890 sqm,
+   ₱200/sqm. Confirm lang po namin sa owner kung available pa, update po namin kayo agad."
+2. Actually ask the owner right away ("available pa po ba?"); see "Owners and follow-ups". An owner
+   who isn't on Viber goes to the call staff with a script.
+3. Only after the owner confirms, send the full listing (`send_listing`). If it's taken, tell the
+   client, move the folder to SOLD (`move_listing_to_sold`), and offer the next option the same way.
+
+Flow (after the owner confirms): `find_listings` (match the property asked about: location, type,
+sqm) → `search_and_open` the chat → `send_listing` (text above the line, then all photos together, then the folder's videos —
 it sends whatever media the folder has; some listings only have a video). Never use `include_internal=True`
 for anything that goes to a client. Never mix photos from a different listing.
 
