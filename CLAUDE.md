@@ -259,7 +259,9 @@ Status:
   (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / [group, e.g.
   `LOT` — a comma-less folder with subfolders, `_is_subfolder_group`] / `City, sqm Area`
   folder with one Google Doc (title starts with `*`) plus JPGs. Drive calls use
-  `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common. The doc is split at the typed dashed
+  `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common. Doc
+  text is read via `_plain_export`: Drive's text/plain export uses \r\n and two breaks per empty
+  paragraph, so without it a get_listing → update_listing_doc round trip doubled every gap. The doc is split at the typed dashed
   line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in
   code unless `get_listing(include_internal=True)`. Docs with no dashed line are split by inference
   (`split_listing`: the client part ends with our company contact block, else before the first

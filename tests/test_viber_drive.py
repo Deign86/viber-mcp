@@ -117,6 +117,16 @@ def test_pick_folder_refuses_ambiguous_or_missing():
         viber_drive.pick_folder(CATS, "LOT", "category")
 
 
+def test_doc_export_round_trips_without_doubling_blank_lines():
+    # Live (Pio del Pilar doc, 2026-10-23): get_listing → update_listing_doc doubled every gap,
+    # because Drive's text/plain export writes \r\n and two breaks per empty paragraph.
+    written = "TITLE\n\nFloor Area: 25 sqm\nGROUND\n\n\nNOTE\n---\nOwner: X"
+    exported = ("﻿TITLE\r\n\r\n\r\nFloor Area: 25 sqm\r\nGROUND\r\n\r\n\r\n\r\n\r\nNOTE\r\n"
+                "---\r\nOwner: X").encode("utf-8")
+    assert viber_drive._plain_export(exported) == written
+    assert viber_drive._plain_export("a\nb\n\nc") == "a\nb\n\nc"  # already plain: unchanged
+
+
 def test_listing_doc_text_adds_drive_date_once():
     body = viber_drive.listing_doc_text(LISTING, "October 16, 2026")
     assert body.endswith("\n\nAdded to Drive: October 16, 2026")

@@ -282,10 +282,19 @@ def find_listings(query: str = "", category: str = "", deal: str = "") -> dict:
             "note": "Folder names are 'City, sqm Area'. Pick one and call get_listing(folder_id)."}
 
 
+def _plain_export(data: bytes | str) -> str:
+    """A Google Doc's text/plain export as the doc reads: Drive writes \\r\\n and two line
+    breaks per empty paragraph, so one blank line came back as two and update_listing_doc
+    doubled every gap on a read-then-write (n breaks → n//2 + 1)."""
+    text = data.decode("utf-8-sig") if isinstance(data, bytes) else data
+    text = text.replace("\r\n", "\n")
+    return re.sub(r"\n{3,}", lambda m: "\n" * (len(m.group()) // 2 + 1), text)
+
+
 def _doc_text(f: dict) -> str:
     if f["mimeType"] == GDOC:
-        data = _drive().files().export(fileId=f["id"], mimeType="text/plain").execute(num_retries=RETRIES)
-        return data.decode("utf-8-sig") if isinstance(data, bytes) else data
+        return _plain_export(_drive().files().export(fileId=f["id"], mimeType="text/plain")
+                             .execute(num_retries=RETRIES))
     if f["mimeType"] == DOCX:
         import docx
 
