@@ -52,7 +52,15 @@ The code is split into **platform-neutral domain logic** and a **platform Backen
 port-ready for Windows/Linux — see "Porting" below):
 
 - `server.py` — FastMCP stdio server; thin `@mcp.tool()` wrappers only. Tools: `send_message`,
-  `reply`, `open_chat`, `open_and_read`, `read_open_chat`, `list_chats`, `put_draft`,
+  `reply`, `open_chat`, `open_and_read`, `read_open_chat`, `list_chats` (structured `chats` rows via
+  `viber_ocr.chat_rows`, pure; `unread_only` clicks Viber's Unread/All filter pills at their OCR'd
+  position), `current_chat` (`viber_send.current_chat`: title / subtitle / `is_group` / number from
+  the header band only), `mark_as_read` (right-click the sidebar row → UIA `MenuItem` "Mark as
+  read"; the menu also holds "Delete conversation", never clicked; a posted Escape does NOT close
+  that menu — `_close_sidebar_menu` clicks the "Chats" label instead), `rename_group`
+  (`_rename_open_chat` with `_name_matches`: exact after OCR folding, or prefix for 8+ chars so the
+  truncated sidebar/header name works), `groups_in_common` (`_groups_in_common`; `existing_client`),
+  `put_draft`,
   `search_and_open`, `search_messages` (message-text search: the 2nd `TabComponent` under the
   search box; `message_search_rows` parses the OCR'd rows), `save_to_my_notes`, `open_my_notes`, `list_contacts`, `scroll_chat`,
   `scroll_chat_list` (backend `scroll(area, notches)`; Windows posts `WM_MOUSEWHEEL`, macOS not yet),
@@ -165,6 +173,21 @@ Status:
   messages to the wrong person). Without strong proof a chat is accepted after a 4 s settle only
   if its header differs from the one captured before `open_url`. It also errors "isn't on Viber"
   for non-users and "cannot add yourself" for the user's own number (My Notes is separate).
+- **Every open-chat writer takes `expect_chat`** (`reply`, `paste_into_open_chat`,
+  `reply_to_message`, `send_files`, `send_listing` — passed through to each step):
+  `viber_send.require_open_chat` reads the header band (`_HEADER_REGION`, ~20x cheaper than a full
+  OCR) and raises `SendError` naming the chat that IS open before anything is staged or clicked.
+  `chat_confirmed` does the matching (name prefix-tolerant and OCR-folded, or number digits).
+  Guidelines tell the model to always pass it. On 2026-10-24 a test send with the wrong
+  `expect_chat` reached a staff chat because My Notes hadn't actually been opened — the guard was
+  right, the caller wasn't; `current_chat` first when unsure.
+- **Send verification is UIA-first.** `sent_confirmed(text, before)` compares `own_message_texts()`
+  (my `TextEditItem` texts, isolate marks stripped, long texts by first line) before and after the
+  send; a new matching message = verified. Only without a UI tree (macOS) or when no new message is
+  seen does it fall back to the OCR check (`_verify_sent`: text seen AND placeholder back). The
+  OCR check passes texts under 6 alphanumerics unverified-as-true ("ok"), so short texts still
+  can't fail it. Tests that fake the backend must patch BOTH `backends._backend` and
+  `viber_send.backend` (viber_send keeps its own module-level reference).
 - **Search results are substring-matched and alphabetically sorted**, so the first row is often wrong
   (searching "Ivy" lists "Divya" first). `_find_result_row` scores exact/prefix over substring and
   clicks the matched row's actual OCR position; excludes the search-bar text (y<0.12), section
@@ -272,7 +295,15 @@ Status:
   `send_listing`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`,
   `add_listing_to_drive`, `drive_upload_files`, `update_listing_doc`, `move_listing_to_sold`
   (`sold_target` picks SOLD / SOLD <CATEGORY>; refuses folders already under SOLD — `_property_folders`
-  walks SOLD too, as category "SOLD").
+  walks SOLD too, as category "SOLD"), `view_listing_photos` (`listing_photos`: downloads through
+  the cache, shrinks to 1024 px JPEG with Pillow, EXIF-upright; staff rule: look at the photos and
+  know the client's line of business before recommending), and `record_availability` (Deign's
+  standing rule: every owner availability answer is recorded). It writes
+  `Last availability check (Oct 22, 2026): STATUS. note` as the first line under the separator,
+  replacing an earlier check line (`availability_requests`, pure, tested with fake Docs bodies), via
+  the **Docs API** (`_docs()`, company account, `drive` scope; docs.googleapis.com was enabled in
+  `apg-viber-assistant` on 2026-10-24) with `requiredRevisionId`, so formatting and tabs survive —
+  unlike `update_listing_doc`'s whole-text rewrite.
 - **Two Google identities.** Reads use the read-only service account
   (`viber-drive-reader@apg-viber-assistant.iam.gserviceaccount.com`, gcloud project
   `apg-viber-assistant`). Service accounts have 0 bytes of storage (uploads failed with

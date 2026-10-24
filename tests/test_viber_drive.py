@@ -181,3 +181,109 @@ def test_check_new_listing_refuses_before_sending(monkeypatch, tmp_path):
                                        [str(tmp_path / "missing.jpg")])
     with pytest.raises(viber_drive.DriveError, match="City, sqm Area"):
         viber_drive._check_new_listing(LISTING, "warehouse", "lease", "Malibay", [])
+
+
+def _doc_content(*texts):
+    """A Docs API body: the leading section break, then one paragraph per text (ASCII only, so
+    len() equals UTF-16 units)."""
+    content, i = [{"endIndex": 1, "sectionBreak": {}}], 1
+    for t in texts:
+        content.append({"startIndex": i, "endIndex": i + len(t),
+                        "paragraph": {"elements": [{"textRun": {"content": t}}]}})
+        i += len(t)
+    return content
+
+
+def test_availability_line_format():
+    from datetime import date
+    day = date(2026, 10, 22)
+    assert (viber_drive.availability_line("available.", " Owner Joseph See confirmed on Viber. ", day)
+            == "Last availability check (Oct 22, 2026): AVAILABLE. Owner Joseph See confirmed on Viber.")
+    assert (viber_drive.availability_line("not available", day=date(2026, 10, 5))
+            == "Last availability check (Oct 5, 2026): NOT AVAILABLE.")
+
+
+def test_availability_goes_first_under_the_separator():
+    # TITLE\n = 1..7, separator 7..13, blank 13..14, commission 14..
+    content = _doc_content("TITLE\n", "-----\n", "\n", "1 MONTH STANDARD COMMISSION\n")
+    assert viber_drive.availability_requests(content, "LINE") == [
+        {"insertText": {"location": {"index": 13}, "text": "LINE\n"}}]
+
+
+def test_availability_replaces_the_previous_check_line():
+    content = _doc_content("TITLE\n", "-----\n", "Last availability check (Oct 1, 2026): AVAILABLE.\n",
+                           "Owner: X\n")
+    old_start, old_end = content[3]["startIndex"], content[3]["endIndex"]
+    assert viber_drive.availability_requests(content, "NEW") == [
+        {"deleteContentRange": {"range": {"startIndex": old_start, "endIndex": old_end - 1}}},
+        {"insertText": {"location": {"index": old_start}, "text": "NEW"}}]
+
+
+def test_availability_never_lands_in_the_client_part():
+    # A check line ABOVE the separator is client text: leave it, add the note below the line.
+    content = _doc_content("Last availability check is free\n", "-----\n", "Owner: X\n")
+    assert viber_drive.availability_requests(content, "LINE") == [
+        {"insertText": {"location": {"index": content[2]["endIndex"]}, "text": "LINE\n"}}]
+    # A rule before any content isn't the separator; with no real one there's no internal part.
+    with pytest.raises(viber_drive.DriveError, match="separator"):
+        viber_drive.availability_requests(_doc_content("-----\n", "TITLE\n", "Owner: X\n"), "LINE")
+
+
+def test_availability_when_the_separator_is_the_last_line():
+    content = _doc_content("TITLE\n", "-----\n")
+    assert viber_drive.availability_requests(content, "LINE") == [
+        {"insertText": {"location": {"index": content[2]["endIndex"] - 1}, "text": "\nLINE"}}]
+
+
+class _FakeDocs:
+    def __init__(self, content):
+        self.doc = {"revisionId": "rev-1", "body": {"content": content}}
+        self.updates = []
+
+    def documents(self):
+        return self
+
+    def get(self, documentId):
+        return _Call(self.doc)
+
+    def batchUpdate(self, documentId, body):
+        self.updates.append((documentId, body))
+        return _Call({})
+
+
+class _Call:
+    def __init__(self, result):
+        self.result = result
+
+    def execute(self, num_retries=0):
+        return self.result
+
+
+def test_record_availability_edits_in_place_with_revision_guard(monkeypatch):
+    docs = _FakeDocs(_doc_content("TITLE\n", "-----\n", "Owner: X\n"))
+    monkeypatch.setattr(viber_drive, "_docs", lambda: docs)
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "doc1", "name": "*Cavite, 1890 Silang", "mimeType": viber_drive.GDOC},
+        {"id": "p1", "name": "1.jpg", "mimeType": "image/jpeg"}])
+    got = viber_drive.record_availability("f1", "available", "Owner confirmed on Viber.", "2026-10-22")
+    assert got["line"] == "Last availability check (Oct 22, 2026): AVAILABLE. Owner confirmed on Viber."
+    assert got["replaced_previous"] is False
+    doc_id, body = docs.updates[0]
+    assert doc_id == "doc1" and body["writeControl"] == {"requiredRevisionId": "rev-1"}
+    with pytest.raises(viber_drive.DriveError, match="status"):
+        viber_drive.record_availability("f1", " ")
+
+
+def test_listing_photos_are_shrunk_and_counted(monkeypatch, tmp_path):
+    pil = pytest.importorskip("PIL.Image")
+    big = tmp_path / "big.jpg"
+    pil.new("RGB", (4000, 3000), "white").save(big)
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": f"p{i}", "name": f"{i}.jpg", "mimeType": "image/jpeg"} for i in range(3)]
+        + [{"id": "v", "name": "tour.mp4", "mimeType": "video/mp4"},
+           {"id": "d", "name": "*doc", "mimeType": viber_drive.GDOC}])
+    monkeypatch.setattr(viber_drive, "download", lambda ids: [str(big)] * len(ids))
+    got = viber_drive.listing_photos("f1", max_photos=2, size=800)
+    assert got["names"] == ["0.jpg", "1.jpg"] and got["total_photos"] == 3 and got["videos"] == 1
+    import io
+    assert max(pil.open(io.BytesIO(got["images"][0])).size) == 800

@@ -125,12 +125,16 @@ the PC's own Viber name, which is skipped because the creator is added automatic
 
 | Tool | What it does |
 |------|--------------|
-| `list_chats()` | Inbox overview: the sidebar's chat names, previews, times and unread counts. |
+| `list_chats(unread_only=False)` | Inbox overview: structured `chats` rows (name, time, preview, unread badge, `last_from` me/them) plus the raw sidebar text. `unread_only` reads Viber's Unread filter. |
+| `current_chat()` | What chat is open, from the header only: title, last seen / number / "N participants", `is_group`. |
+| `mark_as_read(name)` | Clear a chat's unread badge from its sidebar row's menu (nothing else in that menu is ever clicked). |
 | `read_open_chat()` | Text of the conversation currently open in Viber (OCR). |
 | `list_messages()` | Exact messages in the open chat from Viber's UI: `n` (1 = newest), from me/them, text or image. |
 | `open_image(n=1)` / `close_viewer()` | Open an image full-size and return it so Claude can read it, then close the viewer. |
 | `unsend_message(text or n, for_everyone=True)` | Unsend one of **your own** messages. Refuses others' messages and ambiguous matches; verifies it's gone. |
-| `reply_to_message(n, text, send=False)` | Quote-reply to a specific message, so the client sees what you're answering. Draft unless `send=True`. |
+| `reply_to_message(n, text, send=True, expect_chat="")` | Quote-reply to a specific message, so the client sees what you're answering. `send=False` drafts. |
+| `rename_group(new_name, expect_current="")` | Rename the open group (info panel → ✎); refuses if the open chat isn't that group. |
+| `groups_in_common(number="")` | Groups the open 1:1 chat's contact already shares with us — the one-GC-per-client check. |
 | `edit_message(n, text)` | Edit one of **your own** sent messages; verifies the new text. |
 | `like_message(n)` | Toggle the heart reaction on a message. |
 | `message_action(n, action)` | Any item from a message's right-click menu: Pin, Forward, Copy message, Translate, Set reminder, Select. Reports confirmation dialogs that appear. |
@@ -139,10 +143,10 @@ the PC's own Viber name, which is skipped because the creator is added automatic
 | `search_and_open(name)` | Find any contact or group by name and open it. Exact and prefix matches beat substrings; returns `low_confidence` when only a weak match was found. |
 | `open_and_read(to)` | Open a chat by number or `contacts.json` name and return its text. |
 | `open_chat(to)` | Open a chat by number or `contacts.json` name. |
-| `put_draft(text)` | Type `text` into the open chat's message box **without sending**, for you to review. |
-| `reply(text)` | Send `text` to the open chat. |
+| `put_draft(text, expect_chat="")` | Type `text` into the open chat's message box **without sending**, for you to review. |
+| `reply(text, expect_chat="")` | Send `text` to the open chat. `expect_chat` (the name you opened) makes it refuse if another chat is open; `verified` = the text showed up as a new message of yours. |
 | `send_message(to, text, dry_run=False)` | Open a chat by number or name, send, and verify it was sent. `dry_run` fills the box only. |
-| `send_files(paths, caption="", dry_run=False)` | Send local files to the **open** chat as one batch (several photos become one album) through Viber's attach (+) button and the Windows "Send a file" dialog, driven with window messages. `dry_run` leaves the files in Viber's preview, unsent. |
+| `send_files(paths, caption="", dry_run=False, expect_chat="")` | Send local files to the **open** chat as one batch (several photos become one album) through Viber's attach (+) button and the Windows "Send a file" dialog, driven with window messages. `dry_run` leaves the files in Viber's preview, unsent. |
 | `save_to_my_notes(text)` / `open_my_notes()` | Use Viber's private "My Notes" chat. |
 | `list_contacts()` | The aliases in `contacts.json`. |
 
@@ -161,7 +165,7 @@ sends the details and photos to a client's chat. Read-only access to Drive.
 | `drive_sign_in()` | Sign in to Google (opens a browser the first time). Other Drive tools do this automatically. |
 | `find_listings(query, category, deal)` | Search the listings tree by text, category (e.g. `WAREHOUSE`) and deal (`FOR LEASE/RENT` or `FOR SALE`). |
 | `get_listing(folder_id, include_internal=False)` | The client-facing text and photo count of one listing. `include_internal=True` also returns the internal part, for staff eyes only. |
-| `send_listing(folder_id, max_photos=20, include_videos=False, dry_run=False)` | Send the client text, then all photos together, to the open chat. |
+| `send_listing(folder_id, max_photos=20, include_videos=True, dry_run=False, expect_chat="")` | Send the client text, then all photos together, then the videos, to the open chat; every step refuses if `expect_chat` isn't the open chat. |
 | `drive_search(query, type_contains)` / `drive_download(file_ids)` | General Drive search and download (to the local cache) for anything outside the listings layout. |
 
 Expected Drive layout:

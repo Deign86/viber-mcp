@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from backends import get_backend
-from viber_send import _poll
+from viber_send import _poll, own_message_texts, require_open_chat, sent_confirmed
 
 # Screenshots wider/taller than this are downscaled (vision models downscale anyway);
 # coordinates are converted back with `_scale`.
@@ -207,6 +207,8 @@ def list_messages() -> dict:
     msgs = _messages(_backend().elements())
     return {
         "count": len(msgs),
+        # Who has the last word: staff rule — a client chat must never end with the client's message.
+        "last_from": ("me" if msgs[-1]["mine"] else "them") if msgs else None,
         "note": "Only messages currently on screen. n=1 is the newest. Use scroll_chat for older ones.",
         "messages": [{"n": m["n"], "from": "me" if m["mine"] else "them", "kind": m["kind"],
                       "text": m["text"]} for m in msgs],
@@ -256,6 +258,7 @@ def backread(screens: int = 40, until: str = "") -> dict:
     jump_to_latest()
     return {
         "count": len(acc),
+        "last_from": acc[-1]["from"] if acc else None,
         "reached_top": reached_top,
         "gaps": gaps,
         "note": "Oldest first. reached_top=false: older messages exist (raise screens). gaps>0: a "
@@ -348,14 +351,16 @@ def _pick_file(path: str) -> None:
         raise UIError(f"Viber didn't accept the file: {path}")
 
 
-def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> dict:
-    """Attach local files to the open chat and send them together (photos, PDFs, videos, ...)."""
+def send_files(paths: list[str], caption: str = "", dry_run: bool = False, expect_chat: str = "") -> dict:
+    """Attach local files to the open chat and send them together (photos, PDFs, videos, ...).
+    With `expect_chat`, refuses unless that chat is the open one."""
     files = [Path(p).expanduser().resolve() for p in paths]
     if not files:
         raise UIError("No files given.")
     missing = [str(f) for f in files if not f.is_file()]
     if missing:
         raise UIError(f"File(s) not found: {', '.join(missing)}")
+    require_open_chat(expect_chat)
     b = _backend()
     if _preview(b.elements()):
         raise UIError("A file preview is already open in Viber — send or close it first (close_viewer).")
@@ -525,9 +530,11 @@ def message_action(n: int, action: str) -> dict:
 
 
 def _compose_and_maybe_send(text: str, send: bool) -> dict:
-    """Replace the message box content with `text`; click send if asked."""
+    """Replace the message box content with `text`; click send if asked. `verified` = the text
+    showed up as a new message of mine (exact, from the UI tree)."""
     b = _backend()
     b.clipboard_set(text)
+    before = own_message_texts(b)
     b.click_compose()
     b.delete()
     b.paste()
@@ -536,13 +543,16 @@ def _compose_and_maybe_send(text: str, send: bool) -> dict:
     b.click_send()
     # The box clears once Viber accepts the send (was a fixed 1.2 s).
     _poll(lambda: _compose_text(b.elements()) == "", timeout=2.5, first=0.15)
-    return {"sent": True, "text": text}
+    verified = _poll(lambda: sent_confirmed(text, before, b), timeout=2.0) if before is not None else None
+    return {"sent": True, "text": text, "verified": verified}
 
 
-def reply_to_message(n: int, text: str, send: bool = True) -> dict:
-    """Quote-reply to message n with `text` (draft unless send=True)."""
+def reply_to_message(n: int, text: str, send: bool = True, expect_chat: str = "") -> dict:
+    """Quote-reply to message n with `text` (draft unless send=True). With `expect_chat`, refuses
+    unless that chat is the open one."""
     if not text:
         raise UIError("Reply text is empty.")
+    require_open_chat(expect_chat)
     quoted = _message(n)
     message_action(n, "Reply")
     result = _compose_and_maybe_send(text, send)
@@ -931,7 +941,7 @@ def _rename_open_chat(gc_name: str, expect: str = "") -> None:
         raise UIError("The group name box didn't open.")
     # A new post elsewhere can switch the open chat (APR LISTING ONLY took over mid-rename on
     # 2026-10-22): only rename the chat we expect, never an existing group.
-    if expect and field["text"].strip() != expect:
+    if expect and not _name_matches(field["text"], expect):
         b.press_key("escape")
         raise UIError(f"The open chat is '{field['text']}', not the new '{expect}'; nothing was renamed.")
     b.click_at(*_mid(field["rect"]))
@@ -950,6 +960,138 @@ def _rename_open_chat(gc_name: str, expect: str = "") -> None:
         if _poll(lambda: rename_field(b.elements(), pencil) is None, timeout=1.5, first=0.1):
             return
     raise UIError(f"The new group name wasn't saved; rename it to '{gc_name}' by hand.")
+
+
+def _name_matches(actual: str, expect: str) -> bool:
+    """Is chat name `actual` the one meant by `expect`? Exact after folding OCR look-alikes, or
+    (for names of 8+ characters) `expect` as a prefix — the sidebar/header truncates long group
+    names ("MON-WH-(2000SQM,..."). Short names ("Group") must match exactly."""
+    a, e = _norm(actual), _norm(expect.rstrip(". …"))
+    return bool(e) and (a == e or (len(e) >= 8 and (a.startswith(e) or e.startswith(a))))
+
+
+def _close_info_panel() -> bool:
+    """Close the right-side info panel via its top-right ✕ (only buttons INSIDE the panel count).
+    True once no panel shows; False if there is none to close or it stayed."""
+    b = _backend()
+    els = b.elements()
+    panel = _side_panel(els)
+    if panel is None:
+        return False
+    pl, pt, pr = panel["rect"][0], panel["rect"][1], panel["rect"][2]
+    close = max((e for e in els if e["type"] == "Button" and e["class"] == "IconButton"
+                 and pl <= e["rect"][0] and e["rect"][2] <= pr + 2 and e["rect"][1] < pt + 60),
+                key=lambda e: e["rect"][0], default=None)
+    if close is None:
+        return False
+    b.click_at(*_mid(close["rect"]))
+    return bool(_poll(lambda: _side_panel(b.elements()) is None, timeout=1.5, first=0.1))
+
+
+def rename_group(new_name: str, expect_current: str = "") -> dict:
+    """Rename the OPEN group chat (info panel → ✎ → type → ✓) to `new_name`. Refuses when the
+    open chat isn't a group, or when `expect_current` is given and isn't the group's name, so a
+    chat that switched under us is never renamed. Verifies the header shows the new name."""
+    import viber_send
+    new_name = new_name.strip()
+    if not new_name:
+        raise UIError("The new group name is empty.")
+    b = _backend()
+    info = viber_send.current_chat()
+    if not info["open"]:
+        raise UIError("No chat is open in Viber; nothing was renamed.")
+    if not info["is_group"]:
+        raise UIError(f"The open chat '{info['title']}' isn't a group (no 'N participants' under its "
+                      "name); nothing was renamed.")
+    if expect_current and not _name_matches(info["title"], expect_current):
+        raise UIError(f"The open chat is '{info['title']}', not '{expect_current}'; nothing was renamed.")
+    had_panel = _side_panel(b.elements()) is not None
+    _rename_open_chat(new_name, expect=expect_current)
+    head = _norm(new_name)[:10]
+    shown, _ = _wait_ocr(lambda t: _norm(t).startswith(head), timeout=8, left_only=False)
+    if not had_panel:
+        _close_info_panel()
+    return {"renamed": bool(shown), "from": info["title"], "to": new_name,
+            "note": None if shown else "The header doesn't show the new name yet; take a screenshot."}
+
+
+def groups_in_common(number: str = "") -> dict:
+    """The groups the OPEN 1:1 chat's contact already shares with us (info panel → Groups in
+    common). Non-empty = EXISTING CLIENT: one GC per client, never make another. With `number`,
+    also refuses unless the open chat is that number's 1:1 chat."""
+    import viber_send
+    b = _backend()
+    info = viber_send.current_chat()
+    if not info["open"]:
+        raise UIError("No chat is open in Viber.")
+    if info["is_group"]:
+        raise UIError(f"'{info['title']}' is a group; open the client's 1:1 chat first (Groups in common "
+                      "is read from there).")
+    if number.strip():
+        chat = next((e for e in b.elements() if e["class"] == "StackView"), None)
+        if not is_one_to_one_with(_ocr_px(), number.strip(), (chat["rect"][1] + 72) if chat else 140):
+            raise UIError(f"The open chat '{info['title']}' isn't {number}'s 1:1 chat.")
+    had_panel = _side_panel(b.elements()) is not None
+    groups = _groups_in_common()
+    if not had_panel:
+        _close_info_panel()
+    return {"chat": info["title"], "groups": groups, "existing_client": bool(groups)}
+
+
+def _close_sidebar_menu(menu) -> None:
+    """Close the chat list's context menu without picking anything. A posted Escape doesn't close
+    it (checked 2026-10-24); a click on the sidebar's "Chats" label does, and that label does
+    nothing itself. Escape is the fallback when the label can't be found."""
+    import viber_ocr
+    b = _backend()
+    label = next((o for o in viber_ocr.observe(region=(0, 0, 0.34, 0.25))
+                  if o["y"] < 0.2 and o["x"] < 0.1 and o["text"].strip().lower() == "chats"), None)
+    if label is not None:
+        img = b.screenshot()
+        b.click_at((label["x"] + label.get("w", 0.03) / 2) * img.width,
+                   (label["y"] + label.get("h", 0.01) / 2) * img.height)
+    else:
+        b.press_key("escape")
+    _poll(lambda: not menu(), timeout=1.5, first=0.1)
+
+
+def mark_as_read(name: str) -> dict:
+    """Clear a chat's unread badge from the sidebar: right-click its row → \"Mark as read\". Opening
+    a chat in the background doesn't clear the badge, so inbox sweeps do this. Only that menu
+    item is ever clicked (the same menu holds \"Delete conversation\"); a chat that is already
+    read (\"Mark as unread\" offered) is left as it is."""
+    import viber_ocr
+    name = name.strip()
+    if not name:
+        raise UIError("Which chat? Give its name as the sidebar shows it.")
+    b = _backend()
+    sidebar = viber_ocr._sidebar_fraction()
+    rows = viber_ocr.chat_rows(viber_ocr.observe(region=(0, 0, sidebar + 0.04, 1)), sidebar)
+    exact = [r for r in rows if _norm(r["name"]) == _norm(name)]
+    hits = exact or [r for r in rows if r["name"] and _name_matches(r["name"], name)]
+    if not hits:
+        raise UIError(f"'{name}' isn't in the visible chat list (scroll_chat_list, or check the name). "
+                      f"Visible: {', '.join(r['name'] for r in rows if r['name']) or 'none'}.")
+    if len(hits) > 1:
+        raise UIError(f"Several visible chats match '{name}': {', '.join(r['name'] for r in hits)}. "
+                      "Give the full name.")
+    row = hits[0]
+    img = b.screenshot()
+    b.click_at(sidebar / 2 * img.width, (row["y"] + 0.01) * img.height, button="right")
+
+    def menu():
+        return [e for e in b.elements() if e["type"] == "MenuItem" and e["name"].strip()]
+    items = _poll(menu, timeout=2.0, first=0.2) or []
+    by_name = {e["name"].strip().lower(): e for e in items}
+    if "mark as read" in by_name:
+        b.click_at(*_mid(by_name["mark as read"]["rect"]))
+        _poll(lambda: not menu(), timeout=1.5, first=0.1)
+        return {"chat": row["name"], "marked_read": True}
+    _close_sidebar_menu(menu)
+    if "mark as unread" in by_name:
+        return {"chat": row["name"], "marked_read": False, "already_read": True}
+    raise UIError(f"The row's menu didn't offer 'Mark as read' (got: {', '.join(by_name) or 'no menu'}); "
+                  "nothing was clicked. Take a screenshot.")
 
 
 def is_one_to_one_with(obs: list[dict], number: str, header_bottom: float) -> bool:

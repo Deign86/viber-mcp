@@ -13,6 +13,7 @@ NON_TOOL_NAMES = {
     "gc_members.json", "listing_folder_id", "gc_name", "preview", "failed", "verified", "STOP",
     "folder_id", "photo_paths", "folder_name",
     "drive_upload", "drive_upload.parent_folder_id", "doc_title", "doc_text", "added_to_drive_reply",
+    "expect_chat", "expect_current", "unread_only", "last_from", "existing_client", "is_group",
 }
 SNAKE = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 
@@ -52,6 +53,15 @@ def test_prompt_texts_only_name_real_tools():
 def test_expected_prompts_exist():
     prompts = {p.name for p in asyncio.run(server.mcp.list_prompts())}
     assert {"inbox_triage", "draft_reply", "unsend", "property_details", "client_gc"} <= prompts
+
+
+def test_open_chat_tools_take_expect_chat():
+    # Every tool that acts on "the open chat" can be told which chat that must be.
+    by_name = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
+    for name in ("reply", "put_draft", "reply_to_message", "send_files", "send_listing"):
+        assert "expect_chat" in by_name[name].inputSchema["properties"], name
+    assert {"current_chat", "rename_group", "groups_in_common", "mark_as_read"} <= set(by_name)
+    assert "unread_only" in by_name["list_chats"].inputSchema["properties"]
 
 
 def test_every_tool_has_a_description():

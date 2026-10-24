@@ -101,17 +101,69 @@ _HEADER_BOTTOM_DEFAULT = 0.135
 _HEADER_X = (0.28, 0.7)
 
 
-def _header_bottom() -> float:
-    """Normalized y under which the open chat's header lies, from the chat pane's UIA rect (the
-    window's title bar height varies); a window fraction where UIA isn't available."""
+_HEADER_TOP_DEFAULT = 0.06
+
+
+def _header_band() -> tuple[float, float]:
+    """Normalized (top, bottom) of the open chat's header band, from the chat pane's UIA rect
+    (the window's title bar height varies); window fractions where UIA isn't available."""
     try:
         pane = next((e for e in backend.elements() if e["class"] == "StackView"), None)
         height = backend.screenshot().height
     except (NotImplementedError, AttributeError, viber_ocr.OCRError):
-        return _HEADER_BOTTOM_DEFAULT
+        return _HEADER_TOP_DEFAULT, _HEADER_BOTTOM_DEFAULT
     if pane is None or not height:
-        return _HEADER_BOTTOM_DEFAULT
-    return (pane["rect"][1] + _HEADER_PX) / height
+        return _HEADER_TOP_DEFAULT, _HEADER_BOTTOM_DEFAULT
+    return pane["rect"][1] / height, (pane["rect"][1] + _HEADER_PX) / height
+
+
+def _header_bottom() -> float:
+    """Normalized y under which the open chat's header lies."""
+    return _header_band()[1]
+
+
+_PARTICIPANTS_RE = re.compile(r"(\d+)\s+participants", re.I)
+
+
+def current_chat() -> dict:
+    """Which chat is open, read from the chat pane's header band ONLY (never the sidebar, the
+    compose placeholder or the messages, which belong to whatever was open before): its title,
+    the line under it (last seen / number / "N participants"), whether it is a group, and the
+    number when one shows (an unsaved number is the title itself)."""
+    top, bottom = _header_band()
+    try:
+        obs = backend.observe(region=_HEADER_REGION)
+    except viber_ocr.OCRError as exc:
+        raise SendError(f"Couldn't read the Viber window: {exc}") from exc
+    # Icons right of the title OCR as junk ("00 0"); the title sits left of them, under the nav.
+    texts = [o["text"].strip() for o in sorted(obs, key=lambda o: o["y"])
+             if _HEADER_X[0] <= o["x"] < 0.6 and top <= o["y"] < bottom and len(o["text"].strip()) > 1]
+    title = texts[0] if texts else ""
+    subtitle = texts[1] if len(texts) > 1 else ""
+    group = _PARTICIPANTS_RE.search(subtitle) or _PARTICIPANTS_RE.search(title)
+    phone = next((t for t in texts[:2] if _PHONE_RE.match(t.strip()) and len(_digits(t)) >= 10), "")
+    return {"open": bool(title), "title": title, "subtitle": subtitle, "is_group": group is not None,
+            "participants": int(group.group(1)) if group else None,
+            "number": ("+" + _digits(phone)) if phone else ""}
+
+
+def require_open_chat(expect: str) -> dict:
+    """Refuse (SendError) unless the open chat's header is `expect`: a chat/contact name (prefix
+    tolerant, OCR look-alikes folded, so the name passed to search_and_open works) or a number.
+    Empty `expect` checks nothing. Returns current_chat(). The guard for every tool that acts on
+    \"the open chat\": the staff member may have switched chats, a viber:// link may not have
+    navigated, or a new post may have pulled another chat to the front."""
+    expect = expect.strip()
+    if not expect:
+        return {}
+    info = current_chat()
+    obs = backend.observe(region=_HEADER_REGION)
+    if chat_confirmed(obs, expect, expect, _header_bottom()):
+        return info
+    shown = f"'{info['title']}'" + (f" ({info['subtitle']})" if info["subtitle"] else "") if info["open"] \
+        else "no chat"
+    raise SendError(f"The open chat is {shown}, not '{expect}'. Nothing was sent — open the right "
+                    "chat first (search_and_open) and try again.")
 
 
 def header_lines(obs: list[dict], header_bottom: float) -> list[str]:
@@ -253,7 +305,7 @@ def _text_landed(text: str, ocr_text: str) -> bool:
 
 
 def _verify_sent(text: str):
-    """After a send, verify the message actually left the compose box.
+    """After a send, verify the message actually left the compose box (OCR).
 
     Returns True only if the text appears in the OCR AND the compose placeholder is back
     (i.e. the box is empty again → it was sent, not left sitting in the box). Returns None if
@@ -264,6 +316,45 @@ def _verify_sent(text: str):
     except viber_ocr.OCRError:
         return None
     return _text_landed(text, ocr) and ("type a message" in ocr.lower())
+
+
+_ISOLATES = str.maketrans("", "", "⁨⁩")
+
+
+def _norm_sent(text: str) -> str:
+    """Message text as Viber's UI reports it back: no bidi isolate marks around numbers/links,
+    no trailing spaces per line."""
+    return "\n".join(line.strip() for line in text.translate(_ISOLATES).replace("\r\n", "\n").strip().split("\n"))
+
+
+def own_message_texts(b=None) -> list[str] | None:
+    """Texts of MY visible messages, exactly from the UI tree (newest last); None where the
+    backend has no UI tree or no chat is open, so callers fall back to OCR. `b` = the backend
+    to read (viber_ui passes its own; default: this module's)."""
+    import viber_ui  # late: viber_ui imports this module
+    try:
+        return [m["text"] for m in viber_ui._messages((b or backend).elements())
+                if m["mine"] and m["kind"] == "text"]
+    except (NotImplementedError, AttributeError, viber_ui.UIError, viber_ocr.OCRError):
+        return None
+
+
+def sent_confirmed(text: str, before: list[str] | None, b=None):
+    """Did `text` arrive as a NEW message of mine since `before` (own_message_texts() taken
+    before the send)? Exact from the UI tree, so long texts and emoji don't give the false
+    negatives OCR does; when the tree isn't available it falls back to the OCR check."""
+    after = own_message_texts(b) if before is not None else None
+    if after is None:
+        return _verify_sent(text)
+    want = _norm_sent(text)
+    first = want.split("\n", 1)[0]
+
+    def hits(texts):
+        return sum(1 for t in texts
+                   if (n := _norm_sent(t)) == want or ("\n" in want and n.split("\n", 1)[0] == first))
+    if hits(after) > hits(before):
+        return True
+    return bool(_verify_sent(text))
 
 
 # A right-side panel (chat-info OR the sticker "Settings" panel) occupies the right edge and
@@ -319,16 +410,18 @@ def _paste_into_compose(text: str) -> None:
     _settle(0.4)
 
 
-def paste_into_open_chat(text: str) -> dict:
+def paste_into_open_chat(text: str, expect_chat: str = "") -> dict:
     """Paste `text` into the CURRENTLY OPEN chat's compose box — no navigation, no send.
 
     Use this to drop a drafted reply into whatever chat the user has open, so they can
-    review and send it themselves. The clipboard is saved and restored.
+    review and send it themselves. The clipboard is saved and restored. With `expect_chat`,
+    refuses unless that chat's header is open.
     """
     if not text:
         raise SendError("Refusing to draft an empty message.")
     if not viber_is_running():
         raise SendError("Viber is not running. Launch and sign in to Viber first.")
+    require_open_chat(expect_chat)
 
     saved = backend.clipboard_get()
     try:
@@ -342,30 +435,36 @@ def paste_into_open_chat(text: str) -> dict:
     return {"drafted": True, "sent": False, "text": text}
 
 
-def reply(text: str) -> dict:
+def reply(text: str, expect_chat: str = "") -> dict:
     """Send `text` into the CURRENTLY OPEN chat — no navigation, no recipient resolution.
 
     Use after read_open_chat when the desired chat is already on screen. Clears any draft,
-    pastes, clicks send, and OCR-verifies. The clipboard is saved and restored.
+    pastes, clicks send, and verifies (a new message of mine in the UI tree, else OCR). The
+    clipboard is saved and restored. With `expect_chat`, refuses unless that chat is open.
     """
     if not text:
         raise SendError("Refusing to send an empty message.")
     if not viber_is_running():
         raise SendError("Viber is not running. Launch and sign in to Viber first.")
+    info = require_open_chat(expect_chat)
 
     saved = backend.clipboard_get()
     verified = None
     try:
         backend.clipboard_set(text)
         backend.focus()
+        before = own_message_texts()
         _paste_into_compose(text)
         backend.click_send()
-        verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
+        verified = _poll(lambda: sent_confirmed(text, before), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
         if saved is not None:
             time.sleep(0.25)  # let the paste read the clipboard before restoring it
             backend.clipboard_set(saved)
-    return {"sent": True, "text": text, "verified": verified}
+    out = {"sent": True, "text": text, "verified": verified}
+    if info:
+        out["chat"] = info["title"]
+    return out
 
 
 # Search-result rows that are not contacts/chats and must never be opened.
@@ -525,17 +624,9 @@ def _search_open(name: str) -> tuple[str, int]:
     return matched_text, score
 
 
-# OCR mangles the colon ("1243 PM", "1-25 PM", "9.49 AM"), so it's optional.
-_ROW_TIME = re.compile(r"(\d{1,2}[:.\-]?\d{2}\s*[AP]M|yesterday|monday|tuesday|wednesday|thursday|"
-                       r"friday|saturday|sunday|\d{1,2}/\d{1,2}/\d{4})$", re.I)
-
-
-def _row_stamp(text: str) -> str | None:
-    """The time/day stamp of a result row ("11:02 AM", "Yesterday"), ignoring a short prefix
-    such as the OCR'd read tick ("W 10:13 AM", "v'/ 12:43 PM"); None if it isn't one."""
-    t = text.strip()
-    m = _ROW_TIME.search(t)
-    return m.group(1) if m and m.start() <= 4 else None
+# The row time/day stamp parser lives with the chat-list reader (shared by both row readers).
+_ROW_TIME = viber_ocr._ROW_TIME
+_row_stamp = viber_ocr.row_stamp
 
 
 def message_search_rows(obs: list[dict]) -> list[dict]:
@@ -680,9 +771,10 @@ def save_to_my_notes(text: str) -> dict:
                 f"Could not confirm My Notes opened (search matched '{matched}'); aborting to "
                 "avoid saving to the wrong chat."
             )
+        before = own_message_texts()
         _paste_into_compose(text)     # also closes the info panel if open
         backend.click_send()
-        verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
+        verified = _poll(lambda: sent_confirmed(text, before), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
         if saved is not None:
             time.sleep(0.25)  # let the paste read the clipboard before restoring it
@@ -707,13 +799,14 @@ def send_message(to: str, text: str, dry_run: bool = False) -> dict:
     try:
         backend.clipboard_set(text)
         backend.focus()
+        before = own_message_texts()
         _paste_into_compose(text)
 
         if dry_run:
             return {"recipient": number, "text": text, "sent": False, "dry_run": True}
 
         backend.click_send()
-        verified = _poll(lambda: _verify_sent(text), timeout=2.5, first=0.3)  # was a fixed 1.3s
+        verified = _poll(lambda: sent_confirmed(text, before), timeout=2.5, first=0.3)  # was a fixed 1.3s
     finally:
         if saved is not None:
             time.sleep(0.25)  # let the paste read the clipboard before restoring it

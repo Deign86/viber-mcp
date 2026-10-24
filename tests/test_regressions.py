@@ -380,9 +380,10 @@ def test_send_listing_keeps_the_photos_it_just_sent(tmp_path, monkeypatch):
         "photos": [{"id": f"id{n}", "name": f"{n}.jpg"} for n in range(3)]})
     monkeypatch.setattr(viber_drive, "download", lambda ids: [str(p) for p in photos])
     monkeypatch.setitem(sys.modules, "viber_send",
-                        types.SimpleNamespace(reply=lambda text: {"verified": True}))
+                        types.SimpleNamespace(reply=lambda text, expect_chat="": {"verified": True},
+                                              require_open_chat=lambda expect: {}))
     monkeypatch.setitem(sys.modules, "viber_ui",
-                        types.SimpleNamespace(send_files=lambda paths: {"verified": True}))
+                        types.SimpleNamespace(send_files=lambda paths, expect_chat="": {"verified": True}))
     viber_drive.send_listing("folder")
     assert all(p.exists() for p in photos)
 
@@ -454,9 +455,10 @@ def test_send_listing_sends_the_folders_videos(monkeypatch):
     monkeypatch.setattr(viber_drive, "prune_downloads", lambda: None)
     batches = []
     monkeypatch.setitem(sys.modules, "viber_send",
-                        types.SimpleNamespace(reply=lambda text: {"verified": True}))
+                        types.SimpleNamespace(reply=lambda text, expect_chat="": {"verified": True},
+                                              require_open_chat=lambda expect: {}))
     monkeypatch.setitem(sys.modules, "viber_ui", types.SimpleNamespace(
-        send_files=lambda paths: batches.append(paths) or {"verified": True}))
+        send_files=lambda paths, expect_chat="": batches.append(paths) or {"verified": True}))
     out = viber_drive.send_listing("folder")
     assert batches == [["/c/p1"], ["/c/v1"]]
     assert out["photos_sent"] == 1 and out["videos_sent"] == 1

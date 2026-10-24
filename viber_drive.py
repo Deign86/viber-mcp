@@ -21,6 +21,7 @@ import os
 import re
 import threading
 import time
+from datetime import date
 from pathlib import Path
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
@@ -126,6 +127,20 @@ def _writer():
         creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False)
         _writer_service = build("drive", "v3", credentials=creds, cache_discovery=False)
     return _writer_service
+
+
+_docs_service = None
+
+
+def _docs():
+    """Google Docs API as the company account, for in-place edits that keep a doc's formatting
+    and link (docs.googleapis.com is enabled in the apg-viber-assistant project)."""
+    global _docs_service
+    if _docs_service is None:
+        from googleapiclient.discovery import build
+        creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False)
+        _docs_service = build("docs", "v1", credentials=creds, cache_discovery=False)
+    return _docs_service
 
 
 def can_upload() -> bool:
@@ -380,13 +395,15 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
 
 
 def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = True,
-                 dry_run: bool = False) -> dict:
+                 dry_run: bool = False, expect_chat: str = "") -> dict:
     """Send a listing to the OPEN Viber chat: its client-facing text, then its photos together,
     then its videos (a separate batch, so a big upload can't hold up the photos). Some listings
-    only have a video. The internal part of the doc is never sent."""
+    only have a video. The internal part of the doc is never sent. With `expect_chat`, every
+    step refuses unless that chat is the open one."""
     import viber_send
     import viber_ui
 
+    viber_send.require_open_chat(expect_chat)
     listing = get_listing(folder_id)
     photos = listing["photos"][:max(0, max_photos)]
     videos = listing["videos"] if include_videos else []
@@ -399,9 +416,9 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Tr
     photo_paths = download([m["id"] for m in photos])
     video_paths = download([m["id"] for m in videos])
     try:
-        text_result = viber_send.reply(listing["client_text"])
-        photos_result = viber_ui.send_files(photo_paths) if photo_paths else {}
-        videos_result = viber_ui.send_files(video_paths) if video_paths else {}
+        text_result = viber_send.reply(listing["client_text"], expect_chat=expect_chat)
+        photos_result = viber_ui.send_files(photo_paths, expect_chat=expect_chat) if photo_paths else {}
+        videos_result = viber_ui.send_files(video_paths, expect_chat=expect_chat) if video_paths else {}
     finally:
         prune_downloads()  # keep fresh files (Viber may still be uploading); drop old ones
     return {"sent": True, "doc": listing["doc"], "text_verified": text_result.get("verified"),
@@ -600,6 +617,90 @@ def update_listing_doc(folder_id: str, text: str) -> dict:
     svc.files().update(fileId=docs[0]["id"], media_body=media,
                        supportsAllDrives=True).execute(num_retries=RETRIES)
     return {"updated": True, "doc_id": docs[0]["id"], "doc": docs[0]["name"]}
+
+
+AVAILABILITY_PREFIX = "Last availability check"
+
+
+def availability_line(status: str, note: str = "", day: date | None = None) -> str:
+    """The internal line coworkers read: 'Last availability check (Oct 22, 2026): AVAILABLE. <note>'."""
+    day = day or date.today()
+    line = f"{AVAILABILITY_PREFIX} ({day:%b} {day.day}, {day.year}): {status.strip().rstrip('.').upper()}."
+    return f"{line} {note.strip()}" if note.strip() else line
+
+
+def _paragraphs(content: list[dict]) -> list[tuple[int, int, str]]:
+    """(startIndex, endIndex, text) of a Docs body's top-level paragraphs."""
+    return [(el["startIndex"], el["endIndex"],
+             "".join(r.get("textRun", {}).get("content", "") for r in el["paragraph"]["elements"]))
+            for el in content if "paragraph" in el]
+
+
+def availability_requests(content: list[dict], line: str) -> list[dict]:
+    """Docs batchUpdate requests that make `line` the doc's availability note: it replaces an
+    earlier 'Last availability check' line below the dashed separator, else it goes in as the
+    first line under the separator (the internal part, never sent to clients)."""
+    paras = _paragraphs(content)
+    sep = next((i for i, (_, _, text) in enumerate(paras)
+                if _SEPARATOR.match(text) and any(t.strip() for _, _, t in paras[:i])), None)
+    if sep is None:
+        raise DriveError("The listing doc has no dashed separator line, so it has no internal part "
+                         "for the note. Add the line first (update_listing_doc).")
+    old = next(((start, end) for start, end, text in paras[sep + 1:]
+                if text.strip().casefold().startswith(AVAILABILITY_PREFIX.casefold())), None)
+    if old:
+        return [{"deleteContentRange": {"range": {"startIndex": old[0], "endIndex": old[1] - 1}}},
+                {"insertText": {"location": {"index": old[0]}, "text": line}}]
+    end = paras[sep][1]
+    if sep + 1 < len(paras):
+        return [{"insertText": {"location": {"index": end}, "text": line + "\n"}}]
+    return [{"insertText": {"location": {"index": end - 1}, "text": "\n" + line}}]  # nothing below it yet
+
+
+def record_availability(folder_id: str, status: str, note: str = "", checked_on: str = "") -> dict:
+    """Write an owner's latest availability answer into a listing doc's internal part, in place
+    (formatting and link kept; the previous 'Last availability check' line is replaced).
+    checked_on: YYYY-MM-DD of the answer, default today."""
+    if not status.strip():
+        raise DriveError("status is required, e.g. AVAILABLE, NOT AVAILABLE or UNDER NEGOTIATION.")
+    line = availability_line(status, note, date.fromisoformat(checked_on) if checked_on else None)
+    docs = [f for f in _children(folder_id) if f["mimeType"] == GDOC]
+    if len(docs) != 1:
+        raise DriveError(f"Expected one Google Doc in the folder, found {len(docs)}.")
+    svc = _docs()
+    doc = svc.documents().get(documentId=docs[0]["id"]).execute(num_retries=RETRIES)
+    requests = availability_requests(doc["body"]["content"], line)
+    # The revision guard makes Google reject the edit (instead of misplacing it) if someone
+    # changed the doc between the read and the write.
+    svc.documents().batchUpdate(documentId=docs[0]["id"], body={
+        "requests": requests, "writeControl": {"requiredRevisionId": doc["revisionId"]},
+    }).execute(num_retries=RETRIES)
+    return {"recorded": True, "doc": docs[0]["name"], "line": line,
+            "replaced_previous": len(requests) == 2}
+
+
+def _shrink(data: bytes, size: int) -> bytes:
+    """A JPEG no larger than size x size, upright (phone photos are ~4,000 px and EXIF-rotated)."""
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:  # Pillow ships with the Windows backend only
+        return data
+    img = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
+    img.thumbnail((size, size))
+    out = io.BytesIO()
+    img.convert("RGB").save(out, "JPEG", quality=80)
+    return out.getvalue()
+
+
+def listing_photos(folder_id: str, max_photos: int = 6, size: int = 1024) -> dict:
+    """A listing's photos, downloaded (cached for send_listing) and shrunk, so they can be looked
+    at before the listing is recommended — the doc alone doesn't show condition or access."""
+    files = _children(folder_id)
+    photos = [f for f in files if f["mimeType"].startswith("image/")]
+    shown = photos[:max(0, max_photos)]
+    return {"images": [_shrink(Path(p).read_bytes(), size) for p in download([f["id"] for f in shown])],
+            "names": [f["name"] for f in shown], "total_photos": len(photos),
+            "videos": sum(f["mimeType"].startswith("video/") for f in files)}
 
 
 SOLD_FOLDER_NAME = "SOLD"

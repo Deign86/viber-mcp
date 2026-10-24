@@ -63,16 +63,28 @@ def open_and_read(to: str) -> dict:
 
 
 @mcp.tool()
-def reply(text: str) -> dict:
+def reply(text: str, expect_chat: str = "") -> dict:
     """Send `text` into the CURRENTLY OPEN chat (no navigation).
 
     Use after read_open_chat when the right chat is already on screen — avoids re-resolving
-    or re-opening the recipient. Returns whether it sent and `verified` (seen on screen).
+    or re-opening the recipient. Returns whether it sent and `verified` (the message seen as a
+    new one of yours in the chat).
 
     Args:
         text: the message body (emoji/unicode/newlines supported).
+        expect_chat: the chat this must go to (the name you opened, or a number). The send is
+            refused if another chat is open — always pass it; the open chat can change under you.
     """
-    return viber_send.reply(text)
+    return viber_send.reply(text, expect_chat=expect_chat)
+
+
+@mcp.tool()
+def current_chat() -> dict:
+    """Which chat is open right now, from the chat pane's header only: title, the line under it
+    (last seen / number / "N participants"), is_group, and the number if shown. Cheap — use it
+    before acting on "the open chat" and after search_and_open / open_chat when in doubt (the
+    sidebar, the message box placeholder and the messages can all belong to the previous chat)."""
+    return viber_send.current_chat()
 
 
 @mcp.tool()
@@ -108,14 +120,29 @@ def search_messages(query: str, pages: int = 2) -> dict:
 
 
 @mcp.tool()
-def list_chats() -> dict:
-    """List recent chats from the sidebar (names, previews, times, unread counts) via OCR.
+def list_chats(unread_only: bool = False) -> dict:
+    """List the chats in the sidebar (OCR): raw lines plus `chats` rows with name, time, preview,
+    unread badge count and last_from ("me"/"them" — who sent the last message, best-effort from
+    the "Me:" prefix / read tick; a client chat should never end on "them").
 
-    Reads only the left-hand chat list of whatever is currently on screen — a quick inbox
-    overview. Reflects the sidebar's current filter/scroll position; scroll the list in Viber
-    to see more.
+    Reads only the left-hand chat list of what is currently on screen; scroll_chat_list for
+    more. unread_only=True switches the list to Viber's "Unread" filter for the read (and back
+    to "All"), so it lists exactly the chats with unread messages.
     """
-    return viber_ocr.read_chat_list()
+    return viber_ocr.read_chat_list(unread_only)
+
+
+@mcp.tool()
+def mark_as_read(name: str) -> dict:
+    """Clear a chat's unread badge: right-clicks its sidebar row and picks "Mark as read" (opening
+    a chat in the background doesn't clear the badge). The row must be visible in the chat list
+    (scroll_chat_list). Already-read chats are left alone; nothing else in that menu is ever
+    clicked.
+
+    Args:
+        name: the chat's name as the sidebar shows it (prefix of a long group name is fine).
+    """
+    return viber_ui.mark_as_read(name)
 
 
 @mcp.tool()
@@ -155,7 +182,7 @@ def scroll_chat_list(direction: str = "down", amount: int = 5) -> dict:
 
 
 @mcp.tool()
-def put_draft(text: str) -> dict:
+def put_draft(text: str, expect_chat: str = "") -> dict:
     """Paste `text` into the currently-open Viber chat's compose box WITHOUT sending.
 
     Does not navigate — it drafts into whatever chat is open right now, so the user can
@@ -164,8 +191,9 @@ def put_draft(text: str) -> dict:
 
     Args:
         text: the drafted reply to place in the compose box.
+        expect_chat: the chat this is for; refused if another chat is open.
     """
-    return viber_send.paste_into_open_chat(text)
+    return viber_send.paste_into_open_chat(text, expect_chat=expect_chat)
 
 
 @mcp.tool()
@@ -248,7 +276,7 @@ def open_image(n: int = 1) -> list:
 
 
 @mcp.tool()
-def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> dict:
+def send_files(paths: list[str], caption: str = "", dry_run: bool = False, expect_chat: str = "") -> dict:
     """Send local files (photos, PDFs, videos, docs) to the OPEN chat in one batch, with an
     optional caption.
 
@@ -259,16 +287,38 @@ def send_files(paths: list[str], caption: str = "", dry_run: bool = False) -> di
         paths: full paths of the files on this PC, in the order to send them.
         caption: optional text sent with the files.
         dry_run: True = stop at the preview, don't send.
+        expect_chat: the chat this must go to; refused if another chat is open. Always pass it.
     """
-    return viber_ui.send_files(paths, caption=caption, dry_run=dry_run)
+    return viber_ui.send_files(paths, caption=caption, dry_run=dry_run, expect_chat=expect_chat)
 
 
 @mcp.tool()
-def reply_to_message(n: int, text: str, send: bool = True) -> dict:
+def reply_to_message(n: int, text: str, send: bool = True, expect_chat: str = "") -> dict:
     """Quote-reply to a specific message (n from list_messages) — the client sees which message
-    you're answering. Sends by default; send=False leaves it as a draft.
+    you're answering. Sends by default; send=False leaves it as a draft. Returns `verified`
+    (the reply seen as a new message of yours). expect_chat: the chat this must go to; refused
+    if another chat is open — always pass it.
     """
-    return viber_ui.reply_to_message(n, text, send)
+    return viber_ui.reply_to_message(n, text, send, expect_chat=expect_chat)
+
+
+@mcp.tool()
+def rename_group(new_name: str, expect_current: str = "") -> dict:
+    """Rename the OPEN group chat (e.g. a client GC after the client accepts a listing:
+    JANE-WH-(~, LAS PINAS) → JANE-WH-(240SQM, LAS PINAS)). Goes through the info panel's pencil
+    and verifies the header shows the new name. Refuses if the open chat isn't a group or (with
+    expect_current) isn't that group — pass the current name so a chat that switched under you is
+    never renamed. Staff see a "You changed the group name" notice in the chat."""
+    return viber_ui.rename_group(new_name, expect_current)
+
+
+@mcp.tool()
+def groups_in_common(number: str = "") -> dict:
+    """The groups the OPEN 1:1 chat's contact already shares with us (info panel → Groups in
+    common). `existing_client: true` means the client already has a GC — HARD RULE: never make
+    another; send the listing in that GC and rename it instead. Check this before any manual GC
+    build. Pass the client's number to also confirm the open chat is their 1:1 chat."""
+    return viber_ui.groups_in_common(number)
 
 
 @mcp.tool()
@@ -395,15 +445,29 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
 
 
 @mcp.tool()
+def view_listing_photos(folder_id: str, max_photos: int = 6) -> list:
+    """Look at a listing's actual photos before recommending, teasing or describing it; the doc
+    alone isn't enough. Check the condition, ceiling height, truck access and frontage, floor and
+    layout, and whether it suits the client's line of business. Returns up to max_photos photos
+    (shrunk) and how many photos/videos the folder has."""
+    got = viber_drive.listing_photos(folder_id, max_photos)
+    return [*(Image(data=b, format="jpeg") for b in got["images"]),
+            f"Showing {len(got['images'])} of {got['total_photos']} photos "
+            f"({', '.join(got['names']) or 'none'}); {got['videos']} video(s) not shown."]
+
+
+@mcp.tool()
 def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = True,
-                 dry_run: bool = False) -> dict:
+                 dry_run: bool = False, expect_chat: str = "") -> dict:
     """Send a listing to the OPEN Viber chat: the client-facing details text, the photos together
     in one batch, then the listing's videos (on by default; some listings only have a video).
     The doc's internal part is never sent.
 
-    dry_run=True previews exactly what would be sent without sending anything.
+    dry_run=True previews exactly what would be sent without sending anything. expect_chat: the
+    chat this must go to (the GC/contact name you opened); each step is refused if another chat
+    is open — always pass it.
     """
-    return viber_drive.send_listing(folder_id, max_photos, include_videos, dry_run)
+    return viber_drive.send_listing(folder_id, max_photos, include_videos, dry_run, expect_chat)
 
 
 @mcp.tool()
@@ -469,6 +533,27 @@ def update_listing_doc(folder_id: str, text: str) -> dict:
     """Replace the whole text of a listing folder's Google Doc (e.g. to reformat it to the
     listing template). The doc keeps its link. The text must have the dashed separator."""
     return viber_drive.update_listing_doc(folder_id, text)
+
+
+@mcp.tool()
+def record_availability(folder_id: str, status: str, note: str = "", checked_on: str = "") -> dict:
+    """Record an owner's availability answer in the listing's Drive doc so coworkers see when it
+    was last checked. Do this EVERY time an owner (or the call staff) answers about a listing
+    (available, taken, partly available, on hold, viewing arranged), right after reading it.
+
+    Writes "Last availability check (Oct 22, 2026): AVAILABLE. <note>" as the first line under the
+    dashed separator (internal part, never sent to clients), replacing the previous check line.
+    The doc is edited in place, so its formatting and link stay. A taken/sold listing still goes
+    to move_listing_to_sold afterwards.
+
+    Args:
+        folder_id: the listing folder (from find_listings).
+        status: e.g. AVAILABLE, NOT AVAILABLE, PARTLY AVAILABLE, UNDER NEGOTIATION, ON HOLD.
+        note: who confirmed and how, plus what coworkers need, e.g. "Owner Joseph See confirmed
+            on Viber. Viewing set Mon, Oct 26, 11 AM (JAYSON-WH)."
+        checked_on: date of the owner's answer as YYYY-MM-DD; empty = today.
+    """
+    return viber_drive.record_availability(folder_id, status, note, checked_on)
 
 
 @mcp.tool()
@@ -572,11 +657,14 @@ def scroll(x: int, y: int, direction: str = "down", amount: int = 5) -> dict:
 @mcp.prompt()
 def inbox_triage() -> str:
     """Summarize the Viber inbox: who is waiting for a reply and what they need."""
-    return ("Check the Viber inbox with list_chats (scroll_chat_list for more). For each chat with "
+    return ("Check the Viber inbox with list_chats(unread_only=True) (scroll_chat_list for more; "
+            "list_chats() shows every chat with last_from = who wrote last). For each chat with "
             "unread messages, open it (search_and_open), read the recent messages (list_messages, "
             "open_image for photos — then close_viewer), and summarize: who, what they need, how "
-            "urgent. Don't reply to anyone. End with a short prioritized list of suggested replies "
-            "for me to approve.")
+            "urgent, and whether the client has the last word. Don't reply to anyone and don't "
+            "mark_as_read unless I ask. If an owner (or the call staff) answered about a listing's "
+            "availability, record it in the listing doc with record_availability (find_listings for "
+            "the folder). End with a short prioritized list of suggested replies for me to approve.")
 
 
 @mcp.prompt()
@@ -585,7 +673,9 @@ def draft_reply(chat: str, guidance: str = "") -> str:
     return (f"Open the Viber chat '{chat}' (search_and_open; if low_confidence or several similar "
             "chats, ask me which). Read the recent messages with list_messages (open_image for photos, "
             "then close_viewer), then write a reply in the chat's language and tone. Guidance: "
-            f"{guidance or 'none — infer from context'}. Show me the reply and what it answers. Put it "
+            f"{guidance or 'none — infer from context'}. If the reply recommends a listing, first make "
+            "sure you know the client's line of business (if not, the reply asks for it) and look at "
+            "the listing's photos with view_listing_photos. Show me the reply and what it answers. Put it "
             "in the message box with put_draft — or, if it answers a specific earlier message, with "
             "reply_to_message(n, text) so it's quoted. Do NOT send.")
 
@@ -602,9 +692,16 @@ def unsend(chat: str, message: str) -> str:
 def property_details(chat: str, property: str) -> str:
     """Send a property listing (text + photos) from Google Drive to a Viber chat."""
     return (f"Open the Viber chat '{chat}' (search_and_open; if low_confidence or several similar "
-            f"chats, ask me which). Then find_listings for '{property}' (if several match, ask me "
-            "which) and send_listing for that folder_id. Never send, quote or summarize the internal "
-            "part of the doc. Report what was sent and whether the text and photos were verified.")
+            "chats, ask me which) and backread_chat for the client's requirements and line of business "
+            "(what the space is for). If the line of business isn't known, ask the client in one short "
+            f"line and stop there. Then find_listings for '{property}' (if several match, ask me "
+            "which), read it with get_listing and look at its photos with view_listing_photos to check "
+            "it fits their business. If the owner hasn't confirmed availability yet, follow the "
+            "guidelines (short teaser, ask the owner, record_availability with the answer) instead of "
+            "sending. Once confirmed, send_listing for that folder_id with expect_chat set to the chat "
+            "name, so it refuses if another chat took over. Never send, quote or summarize the "
+            "internal part of the doc. Report what was sent and whether the text and photos were "
+            "verified.")
 
 
 @mcp.prompt()
