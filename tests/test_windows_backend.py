@@ -372,3 +372,19 @@ def test_uia_timeout_abandons_the_stuck_thread_and_starts_a_fresh_one(monkeypatc
         assert bw._on_uia(lambda x: x * 2, 21) == 42                           # the fresh thread works
     finally:
         bw._uia_pool.shutdown(wait=False)
+
+
+def test_main_window_is_the_viber_ui_not_the_viberpc_popup(monkeypatch):
+    # 2026-10-26: the "ViberPC" notification popup also contains "viber"; a substring match
+    # picked it over "Rakuten Viber" and every capture/search/read on the live app failed.
+    titles = {1: "ViberPC", 2: "QTrayIconMessageWindow", 3: "_q_titlebar", 4: "Rakuten Viber",
+              5: "Viber", 6: ""}
+    monkeypatch.setattr(win32gui, "GetWindowText", lambda h: titles[h])
+    assert [h for h in titles if bw._is_main_window(h)] == [4, 5]
+
+    monkeypatch.setattr(win32gui, "EnumWindows", lambda cb, extra: [cb(h, extra) for h in titles])
+    monkeypatch.setattr(win32gui, "GetParent", lambda h: 0)
+    monkeypatch.setattr(bw.win32process, "GetWindowThreadProcessId", lambda h: (0, 99))
+    backend = bw.WindowsBackend.__new__(bw.WindowsBackend)
+    monkeypatch.setattr(backend, "_viber_pids", lambda: {99}, raising=False)
+    assert backend._find_hwnd() == 4      # the popup comes first in z-order but is skipped
