@@ -2300,7 +2300,7 @@ def test_send_settle_returns_once_the_feed_stops_moving(monkeypatch):
     import viber_ui
     fake = UploadBackend(moving=6)
     slept = _use(monkeypatch, fake, fast_clock=True)
-    assert viber_ui._settle_and_resend(20) == {"attempts": 0, "still_unsent": False}  # fixed wait was 30 s
+    assert viber_ui._settle_and_resend(20) == {"attempts": 0, "still_unsent": False, "uploading": False}  # fixed wait was 30 s
     assert 1.5 <= sum(slept) <= 4.0  # ~6 moving reads, then 4 identical ones at 0.3 s
 
 
@@ -2308,7 +2308,7 @@ def test_send_settle_presses_resend_when_the_banner_follows_the_upload(monkeypat
     import viber_ui
     fake = UploadBackend(moving=3, banner=True)
     _use(monkeypatch, fake, fast_clock=True)
-    assert viber_ui._settle_and_resend(3) == {"attempts": 1, "still_unsent": False}
+    assert viber_ui._settle_and_resend(3) == {"attempts": 1, "still_unsent": False, "uploading": False}
     assert fake.clicks == [(1006, 165)]
 
 
@@ -2316,7 +2316,7 @@ def test_send_settle_caps_at_the_old_fixed_wait_when_the_feed_never_settles(monk
     import viber_ui
     fake = UploadBackend(moving=10 ** 6)
     slept = _use(monkeypatch, fake, fast_clock=True)
-    assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False}
+    assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False, "uploading": False}
     assert abs(sum(slept) - 7.0) < 0.35  # 4 + 1.5 × 2
 
 
@@ -2326,7 +2326,7 @@ def test_send_settle_falls_back_to_the_fixed_wait_without_captures(monkeypatch):
     class NoShots:
         def elements(self): return []
     slept = _use(monkeypatch, NoShots(), fast_clock=True)
-    assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False}
+    assert viber_ui._settle_and_resend(2) == {"attempts": 0, "still_unsent": False, "uploading": False}
     assert slept == [7.0]
 
 
@@ -2594,3 +2594,68 @@ def test_await_results_finishes_at_once_on_no_results(monkeypatch):
     monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock[0])
     obs, match = viber_send._await_results("ZZZ-NOPE")
     assert match is None and obs == none and clock[0] < 1.0
+
+
+# 2026-10-26: a 7-photo album's last photos still showed their (static) upload clocks when the
+# feed went still, send_files returned, and the listing's dashed separator landed in the middle
+# of its photos. Delivered photo bubbles carry an AbstractButton; uploading ones don't.
+
+
+class AlbumBackend(UploadBackend):
+    """A still feed (its captures never change) ending in my photos; the newest `pending`
+    photos get their delivered marker after `deliver_after` reads."""
+    def __init__(self, photos=4, pending=2, deliver_after=8):
+        super().__init__(moving=1)
+        self.photos, self.pending, self.deliver_after = photos, pending, deliver_after
+        self.el_reads = 0
+
+    def elements(self):
+        self.el_reads += 1
+        done = self.el_reads > self.deliver_after
+        els = [_ui("Pane", "StackView", [308, 71, 1100, 959])]
+        for i in range(self.photos):
+            d = len(els)
+            top = 160 + i * 120
+            els.append(_ui("Group", "FeedDelegate", [308, top - 5, 1100, top + 105], parent=0))
+            els.append(_ui("Button", "RemixImageButton", [780, top, 1076, top + 100], parent=d))
+            if done or i < self.photos - self.pending:
+                els.append(_ui("Button", "AbstractButton", [720, top + 40, 750, top + 70], parent=d))
+        els.append(_ui("Edit", "QQuickTextEdit", [320, 900, 760, 940]))
+        return els
+
+
+def test_messages_mark_photos_delivered_by_their_abstract_button():
+    import viber_ui
+    msgs = viber_ui._messages(AlbumBackend(photos=3, pending=1).elements())
+    assert [m["delivered"] for m in msgs] == [True, True, False]
+
+
+def test_send_settle_waits_for_photos_still_uploading_on_a_still_feed(monkeypatch):
+    import viber_ui
+    fake = AlbumBackend(photos=4, pending=2, deliver_after=8)
+    _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(4) == {"attempts": 0, "still_unsent": False, "uploading": False}
+    assert fake.el_reads > 8  # didn't return while the last two showed clocks
+
+
+
+def test_send_settle_reports_photos_that_never_finish_uploading(monkeypatch):
+    import viber_ui
+    fake = AlbumBackend(photos=3, pending=1, deliver_after=10 ** 6)
+    _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(3) == {"attempts": 0, "still_unsent": False, "uploading": True}
+
+
+def test_send_settle_doesnt_wait_out_the_cap_when_someone_posts_after_the_album(monkeypatch):
+    import viber_ui
+
+    class Busy(AlbumBackend):
+        def elements(self):
+            els = super().elements()
+            els.insert(-1, _ui("Group", "FeedDelegate", [308, 700, 1100, 760], parent=0))
+            els.insert(-1, _ui("Text", "TextEditItem", [320, 705, 600, 755], parent=len(els) - 2, text="ok"))
+            return els
+    fake = Busy(photos=3, pending=0)
+    slept = _use(monkeypatch, fake, fast_clock=True)
+    assert viber_ui._settle_and_resend(3)["uploading"] is False
+    assert sum(slept) < 5

@@ -118,8 +118,9 @@ def _on_uia(fn, *args):
 
 
 def _is_main_window(hwnd: int) -> bool:
-    """The "Rakuten Viber" UI, not one of Qt's hidden helper windows (theme observer, tray, ...)."""
-    return "viber" in win32gui.GetWindowText(hwnd).lower()
+    """The "Rakuten Viber" UI, not one of Qt's hidden helper windows (theme observer, tray, ...)
+    or the "ViberPC" notification popup, which a substring match picked up (blank captures)."""
+    return win32gui.GetWindowText(hwnd).strip().lower() in ("rakuten viber", "viber")
 
 
 # Properties fetched in bulk for every element of a tree level (one cross-process call per

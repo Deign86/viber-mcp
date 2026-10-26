@@ -135,7 +135,7 @@ def _messages(elements: list[dict]) -> list[dict]:
     for el in elements:
         if el["parent"] is not None:
             by_parent.setdefault(el["parent"], []).append(el)
-    def make(text_el, image_el, likes):
+    def make(text_el, image_el, likes, delivered=None):
         rect = (text_el or image_el)["rect"]
         # The reaction (heart) button sits beside the bubble, level with it.
         like = next((k for k in likes if rect[1] - 30 <= _mid(k["rect"])[1] <= rect[3] + 30), None)
@@ -149,6 +149,9 @@ def _messages(elements: list[dict]) -> list[dict]:
             "image_rect": image_el["rect"] if image_el else None,
             "like_rect": like["rect"] if like else None,
             "view": view,
+            # Photos only: True once uploaded (Viber adds the bubble's AbstractButton then; while
+            # uploading it shows a static clock instead). None where the tree can't tell.
+            "delivered": delivered,
         }
 
     def is_text(e):
@@ -164,7 +167,9 @@ def _messages(elements: list[dict]) -> list[dict]:
             text_el = next((k for k in kids if is_text(k)), None)
             image_el = next((k for k in kids if k["class"] == "RemixImageButton"), None)
             if text_el or image_el:  # skip date separators, notices without text
-                out.append(make(text_el, image_el, [k for k in kids if k["class"] == "QQuickLoader"]))
+                delivered = any(k["class"] == "AbstractButton" for k in kids) if image_el else None
+                out.append(make(text_el, image_el, [k for k in kids if k["class"] == "QQuickLoader"],
+                                delivered))
     direct = by_parent.get(chat_i, [])
     likes = [k for k in direct if k["class"] == "QQuickLoader"]
     for el in direct:
@@ -396,8 +401,12 @@ def send_files(paths: list[str], caption: str = "", dry_run: bool = False, expec
     resends = _settle_and_resend(len(files))
     newest = next((m for m in reversed(_messages(b.elements()))), None)
     result = {"sent": True, "files": [f.name for f in files], "caption": caption,
-              "verified": bool(newest and newest["mine"]) and not resends["still_unsent"],
+              "verified": (bool(newest and newest["mine"]) and not resends["still_unsent"]
+                           and not resends["uploading"]),
               "resend_attempts": resends["attempts"]}
+    if resends["uploading"]:
+        result["note"] = ("Some photos were still uploading when the wait ran out — check they all "
+                          "arrived before sending anything else to this chat.")
     if resends["still_unsent"]:
         result["note"] = ("Viber still shows 'messages were not sent' after resending — send the "
                           "failed photos again (fresh files, a few at a time).")
@@ -435,20 +444,55 @@ def _feed_still(b, timeout: float, interval: float = 0.3, frames: int = 4) -> bo
     return False
 
 
+def _uploads_pending(elements: list[dict], n_files: int) -> bool | None:
+    """Whether any of my photos among the newest `n_files` messages is still uploading. None
+    when the tree can't tell (no photo of mine with a delivery marker on screen, e.g. macOS)."""
+    try:
+        msgs = _messages(elements)
+    except UIError:
+        return None
+    photos = [m for m in msgs[-n_files:] if m["mine"] and m["kind"] == "image"
+              and m.get("delivered") is not None]
+    if not photos:
+        return None
+    return not all(m["delivered"] for m in photos)
+
+
+def _wait_uploads(b, n_files: int, timeout: float, reads: int = 3) -> bool:
+    """Poll until the newest photos have been delivered on `reads` consecutive reads (the feed
+    going still isn't enough: a photo waiting to upload shows a static clock), the not-sent
+    banner shows, or `timeout`. Returns False only if photos were still uploading at the end."""
+    deadline, done = time.time() + timeout, 0
+    while time.time() < deadline:
+        els = b.elements()
+        if _resend_button(els) is not None:
+            return True
+        pending = _uploads_pending(els, n_files)
+        if pending is None:
+            return True
+        done = 0 if pending else done + 1
+        if done >= reads:
+            return True
+        time.sleep(0.3)
+    return False
+
+
 def _settle_and_resend(n_files: int, max_attempts: int = 2) -> dict:
-    """Wait for the upload to finish (the feed goes still), then press Resend while the not-sent
-    banner shows. The old fixed wait (4 s + 1.5 s per file, at most 30 s) is now only the cap:
-    a few photos are sent, ticks and all, in about two seconds."""
+    """Wait for the upload to finish (the feed goes still and the newest photos show as
+    delivered), then press Resend while the not-sent banner shows. The old fixed wait (4 s +
+    1.5 s per file, at most 30 s) caps the still-feed wait; the delivery wait allows 3 s/file.
+    On 2026-10-26 a listing's separator was sent while photos 4-7 still showed their clocks."""
     b = _backend()
     cap = min(4 + 1.5 * n_files, 30)
     attempts = 0
     while True:
         _feed_still(b, timeout=cap)
+        uploaded = _wait_uploads(b, n_files, timeout=max(30, 3 * n_files))
         button = _resend_button(b.elements())
         if button is None:
-            return {"attempts": attempts, "still_unsent": False}
+            return {"attempts": attempts, "still_unsent": False, "uploading": not uploaded}
         if attempts >= max_attempts:
-            return {"attempts": attempts, "still_unsent": True}
+            return {"attempts": attempts, "still_unsent": True, "uploading": not uploaded}
         b.click_at(*_mid(button["rect"]))
         attempts += 1
 

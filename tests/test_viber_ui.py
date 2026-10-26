@@ -181,5 +181,5 @@ def test_settle_and_resend_presses_resend_until_banner_clears(monkeypatch, fixes
     monkeypatch.setattr(backends, "_backend", fake)
     monkeypatch.setattr(viber_ui.time, "sleep", lambda s: None)
     report = viber_ui._settle_and_resend(3)
-    assert report == {"attempts": attempts, "still_unsent": unsent}
+    assert report == {"attempts": attempts, "still_unsent": unsent, "uploading": False}
     assert fake.clicks == attempts
