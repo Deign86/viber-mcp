@@ -2659,3 +2659,18 @@ def test_send_settle_doesnt_wait_out_the_cap_when_someone_posts_after_the_album(
     slept = _use(monkeypatch, fake, fast_clock=True)
     assert viber_ui._settle_and_resend(3)["uploading"] is False
     assert sum(slept) < 5
+
+
+def test_blank_sqm_is_filled_from_listing_sizes_and_tilde_name_matches_ocr():
+    # CE-WH-(~, TAYTAY): the template's SQM was blank and the Taytay listing (500/710/1,420 sqm) was
+    # sent, but the GC kept "~". Then rename_group refused: OCR read the header as "CE-WH-e, TAYTAY)".
+    from viber_gc_logic import fill_from_listing, gc_name
+    from viber_ui import _name_matches
+
+    naming = gc_name({"name": "Ce", "property_type": "Warehouse", "sqm": "", "location": "Taytay"})
+    assert naming["parts"]["sqm"] == "~" and not naming["uncertain"]
+    filled = fill_from_listing(naming, "Taytay Rizal, 500, 710, 1,420  ", "WAREHOUSE")
+    assert filled["gc_name"] == "CE-WH-(500-1420SQM, TAYTAY)"
+    for ocr in ("CE-WH-e, TAYTAY)", "CE-WH-(-, TAYTAY)", "CE-WH-(~, TAYTAY)"):
+        assert _name_matches(ocr, "CE-WH-(~, TAYTAY)")
+    assert not _name_matches("CE-WH-(500SQM, TAYTAY)", "CE-WH-(~, TAYTAY)")

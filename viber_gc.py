@@ -79,7 +79,8 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
 
     # Only the client's name and Viber number are required: a missing type, size or place is
     # taken from the listing (its folder name "City, sqm Area" and category).
-    if listing and naming["uncertain"]:
+    # A blank SQM is "~" without being "uncertain" — CE-WH-(~, TAYTAY) kept its "~" that way.
+    if listing and (naming["uncertain"] or naming["parts"].get("sqm") in (None, "~")):
         if "name" not in listing:
             try:
                 meta = viber_drive._drive().files().get(

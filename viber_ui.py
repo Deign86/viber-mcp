@@ -1011,6 +1011,11 @@ def _name_matches(actual: str, expect: str) -> bool:
     (for names of 8+ characters) `expect` as a prefix — the sidebar/header truncates long group
     names ("MON-WH-(2000SQM,..."). Short names ("Group") must match exactly."""
     a, e = _norm(actual), _norm(expect.rstrip(". …"))
+    if "~" in expect:
+        # OCR reads the "~" of a placeholder GC name as "-", "e", "(-"…: let it be 0-2 characters.
+        pat = ".{0,2}".join(re.escape(_norm(p)) for p in expect.rstrip(". …").split("~"))
+        if re.fullmatch(pat, a):
+            return True
     return bool(e) and (a == e or (len(e) >= 8 and (a.startswith(e) or e.startswith(a))))
 
 
