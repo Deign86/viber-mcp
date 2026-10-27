@@ -440,7 +440,7 @@ class MacBackend(Backend):
                     "type": kind,
                     "name": str(title or desc or (value if kind == "Text" and value is not None else "")),
                     "class": cls,
-                    "text": str(value) if kind == "Edit" and value is not None else "",
+                    "text": ml.edit_text(value) if kind == "Edit" else "",
                     "parent": parent,
                     "rect": ml.to_rect(frame, origin),
                     "_frame": frame,
@@ -546,7 +546,7 @@ class MacBackend(Backend):
             value = _get(self._target_ref(), "AXValue")
         except OCRError:
             return ""
-        return str(value) if value is not None else ""
+        return ml.edit_text(value)
 
     def _set_value(self, text: str) -> None:
         if AXUIElementSetAttributeValue(self._target_ref(), "AXValue", text) != 0:

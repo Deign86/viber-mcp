@@ -228,3 +228,10 @@ def test_notification_box_dialogs_are_popups_covering_their_text():
     assert [e["name"] for e in els if e["parent"] == els.index(dialog)] == ["Pin", "Cancel"]
     # The OCR region reaches above the buttons, where the title and message are.
     assert dialog["rect"][1] <= 430 - 150 and dialog["rect"][0] < 459 and dialog["rect"][2] > 629
+
+
+def test_edit_text_turns_qt_line_separators_into_newlines():
+    # macOS gives a message's line breaks as U+2028, so a client template parsed as one line.
+    raw = "🏢 Company Name:  👤 Name:  Macroe Donaire 📱 Viber: 09761653772"
+    assert ml.edit_text(raw) == "🏢 Company Name: \n👤 Name:  Macroe Donaire\n📱 Viber: 09761653772"
+    assert ml.edit_text(None) == ""
