@@ -266,3 +266,36 @@ def test_name_and_stamp_read_as_one_line_become_their_own_row():
 def test_a_preview_mentioning_a_time_is_not_split():
     obs = [_o("Meeting at 5:00 PM", 0.065, 0.4, 0.09)]  # doesn't reach the stamp column
     assert viber_ocr.split_name_stamps(obs, 0.15, 0.22) == obs
+
+
+class _SearchLeftOpen:
+    """The sidebar still shows a search ("My Notes") after search_and_open, as on macOS."""
+
+    def __init__(self, query):
+        self.query, self.calls = query, []
+
+    def elements(self):
+        return [_el("Edit", "TextFieldItem", (104, 40, 244, 68), None, text=self.query)]
+
+    def click_search(self):
+        self.calls.append("click_search")
+
+    def delete(self):
+        self.calls.append("delete")
+        self.query = ""
+
+    def press_key(self, key, repeat=1):
+        self.calls.append(key)
+
+    def wait_still(self, timeout=2.0):
+        return 0.0
+
+
+def test_a_leftover_search_is_closed_before_reading_the_chat_list(monkeypatch):
+    fake = _SearchLeftOpen("My Notes")
+    monkeypatch.setattr(backends, "_backend", fake)
+    viber_ocr._leave_search()
+    assert fake.calls == ["click_search", "delete", "escape"] and fake.query == ""
+    fake.calls.clear()
+    viber_ocr._leave_search()  # nothing open: nothing is clicked or typed
+    assert fake.calls == []

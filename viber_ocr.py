@@ -164,11 +164,30 @@ def _click_filter(label: str) -> None:
     b.wait_still()
 
 
+def _leave_search() -> None:
+    """Close a search left open (search box still holding text): the sidebar then shows search
+    results, not the chat list. macOS keeps the search after a result is opened, so a list_chats
+    after search_and_open / open_my_notes found no "Unread" pill and no chat rows."""
+    b = get_backend()
+    try:
+        box = next((e for e in b.elements() if e["type"] == "Edit"
+                    and e["class"].startswith("TextFieldItem")), None)
+    except (NotImplementedError, AttributeError, OCRError):
+        return
+    if box is None or not box["text"].strip():
+        return
+    b.click_search()
+    b.delete()
+    b.press_key("escape")
+    b.wait_still()
+
+
 def read_chat_list(unread_only: bool = False) -> dict:
     """The left-sidebar chat list: its raw text lines plus structured rows (`chats`: name, time,
     preview, unread badge, who sent the last message). Filters OCR to the left column so the
     open conversation's text isn't mixed in. With unread_only, switches the list to Viber's
     "Unread" filter for the read and back to "All" afterwards."""
+    _leave_search()
     if unread_only:
         _click_filter("Unread")
     try:
@@ -192,6 +211,8 @@ def scroll_and_read(area: str, direction: str, amount: int) -> dict:
     if direction not in ("up", "down"):
         raise ValueError("direction must be 'up' or 'down'")
     amount = max(1, min(int(amount), 50))
+    if area == "chats":
+        _leave_search()  # otherwise this scrolls the search results
     get_backend().scroll(area, amount if direction == "up" else -amount)
     time.sleep(0.8)  # let Viber load and render the newly exposed messages/rows
     result = read_chat_list() if area == "chats" else read_open_chat()
