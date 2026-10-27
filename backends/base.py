@@ -34,6 +34,10 @@ class Backend(ABC):
     # True if an open right-side panel displaces the send button (coordinate-based clicks), so
     # the domain must OCR for the panel and close it before sending.
     panel_shifts_send: bool = True
+    # True where an Escape with nothing left to close disturbs the user (macOS hides Viber's
+    # window and real key events take the foreground): closing a search then skips the Escape
+    # once clearing the box has already closed it.
+    avoid_spare_escape: bool = False
 
     # --- app / process ---------------------------------------------------------------
     @abstractmethod

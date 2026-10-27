@@ -158,9 +158,17 @@ _FOLD = str.maketrans({"l": "i", "1": "i", "|": "i", "0": "o"})
 def _click_filter(label: str) -> None:
     """Click one of the chat list's filter pills ("All", "Unread") at its OCR'd position."""
     want = label.lower().translate(_FOLD)
-    pill = next((o for o in observe(region=_FILTER_REGION)
-                 if o["x"] < 0.2 and o["y"] < _FILTER_REGION[3]  # macOS: the pills sit at ~0.23
-                 and o["text"].strip().lower().translate(_FOLD) == want), None)
+
+    def find():
+        return next((o for o in observe(region=_FILTER_REGION)
+                     if o["x"] < 0.2 and o["y"] < _FILTER_REGION[3]  # macOS: the pills sit at ~0.23
+                     and o["text"].strip().lower().translate(_FOLD) == want), None)
+    # Right after a search closes the chat list is still redrawing: look again for a moment.
+    pill = find()
+    deadline = time.monotonic() + 3.0
+    while pill is None and time.monotonic() < deadline:
+        time.sleep(0.3)
+        pill = find()
     if pill is None:
         raise OCRError(f"The chat list's '{label}' filter isn't on screen (is the chat list showing?).")
     b = get_backend()
@@ -184,8 +192,17 @@ def _leave_search() -> None:
         return
     b.click_search()
     b.delete()
-    b.press_key("escape")
+    if not (getattr(b, "avoid_spare_escape", False) and search_closed(b)):
+        b.press_key("escape")
     b.wait_still()
+
+
+def search_closed(b) -> bool:
+    """No search results showing: the result-type tabs under the search box are gone."""
+    try:
+        return not any(e["class"] == "TabComponent" for e in b.elements())
+    except (NotImplementedError, AttributeError, OCRError):
+        return False
 
 
 def read_chat_list(unread_only: bool = False) -> dict:
