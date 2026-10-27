@@ -399,3 +399,11 @@ def test_my_notes_is_searched_again_when_the_first_click_left_another_chat_open(
     monkeypatch.setattr(viber_send, "backend", _NotesBackend())
     assert viber_send.open_my_notes()["opened"] == "My Notes"
     assert state["searches"] == 2
+
+
+def test_time_stamps_with_ocr_lookalikes_still_start_a_row():
+    # Live: "5:01 PM" OCR'd as "5:0TPM"; that row merged into the one above.
+    assert viber_ocr.row_stamp("5:0TPM") == "5:01PM"
+    assert viber_ocr.row_stamp("1O:3O AM") == "10:30 AM"
+    assert viber_ocr.row_stamp("11:02 AM") == "11:02 AM"          # normal times unchanged
+    assert viber_ocr.row_stamp("Total") is None and viber_ocr.row_stamp("STOP PM") is None

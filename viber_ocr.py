@@ -37,12 +37,26 @@ _ROW_TIME = re.compile(r"(\d{1,2}[:.\-]?\d{2}\s*[AP]M|yesterday|monday|tuesday|w
                        r"friday|saturday|sunday|\d{1,2}/\d{1,2}/\d{4})$", re.I)
 
 
+# OCR look-alikes inside a clock time ("5:0TPM" for 5:01 PM): only the digit positions are folded.
+_TIME_LOOKALIKE = re.compile(r"([0-9OoIlT|S]{1,2})([:.\-]?)([0-9OoIlT|S]{2})(\s*[AP]M)$", re.I)
+_DIGIT_FOLD = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "T": "1", "|": "1", "S": "5"})
+
+
 def row_stamp(text: str) -> str | None:
     """The time/day stamp of a chat-list / search-result row ("11:02 AM", "Yesterday"), ignoring
-    a short prefix such as the OCR'd read tick ("W 10:13 AM", "v'/ 12:43 PM"); None if it isn't one."""
+    a short prefix such as the OCR'd read tick ("W 10:13 AM", "v'/ 12:43 PM"); None if it isn't one.
+    A time OCR'd with look-alike letters for digits ("5:0TPM") is read as the time it shows."""
     t = text.strip()
     m = _ROW_TIME.search(t)
-    return m.group(1) if m and m.start() <= 4 else None
+    if m and m.start() <= 4:
+        return m.group(1)
+    m = _TIME_LOOKALIKE.search(t)
+    if m and m.start() <= 4 and any(c.isdigit() for c in m.group(1) + m.group(3)):
+        h, sep, mm, ampm = m.groups()
+        folded = f"{h.translate(_DIGIT_FOLD)}{sep}{mm.translate(_DIGIT_FOLD)}{ampm}"
+        if _ROW_TIME.fullmatch(folded):
+            return folded
+    return None
 
 
 _TICK_WORDS = {"w", "v", "vv", "ww", "v'", "v/", "v'/"}
