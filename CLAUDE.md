@@ -237,7 +237,12 @@ Status:
   (fullscreen puts it on a separate Space, causing window-ID churn and blank captures). Don't resize
   it mid-operation.
 - macOS **Accessibility** (AX tree and input) and **Screen Recording** (capture) granted to the
-  process that launches the server (Claude, or the terminal, e.g. iTerm). A stuck grant shows error 1002 ("not allowed
+  server's *responsible app*. Claude spawns MCP servers with responsibility disclaimed, so the
+  first binary of the command is what macOS asks about: register `~/Applications/Viber MCP.app`
+  (`setup_macos.sh`, `macos/launcher.c`, which spawns the server as its child) so the grant is
+  "Viber MCP" and not `uv`. `client.py`/tests run from a terminal or Claude Code's shell use that
+  app's grants instead. `MacBackend` calls `AXIsProcessTrustedWithOptions(prompt)` /
+  `CGRequestScreenCaptureAccess()` once per run when missing, so the app shows up in Settings. A stuck grant shows error 1002 ("not allowed
   to send keystrokes") despite the toggle being on — fix with
   `tccutil reset Accessibility <bundle-id>` (e.g. `com.googlecode.iterm2`) and relaunch.
 

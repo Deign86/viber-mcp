@@ -33,6 +33,7 @@ import Quartz  # type: ignore
 import Vision  # type: ignore
 from ApplicationServices import (  # type: ignore
     AXIsProcessTrusted,
+    AXIsProcessTrustedWithOptions,
     AXUIElementCopyActionNames,
     AXUIElementCopyAttributeValue,
     AXUIElementCopyElementAtPosition,
@@ -106,6 +107,7 @@ class MacBackend(Backend):
         self._focus_el = None          # text field the last click_at focused
         self._staged: str | None = None
         self._trusted = False
+        self._asked_ax = self._asked_screen = False
         self._sb_cache: tuple = (None, 0)
         self._handoff = threading.Lock()  # held while real input needs Viber in front
 
@@ -123,9 +125,13 @@ class MacBackend(Backend):
         if not self._trusted:
             self._trusted = bool(AXIsProcessTrusted())
         if not self._trusted:
+            if not self._asked_ax:  # once per run: shows macOS's prompt and lists the app
+                self._asked_ax = True
+                AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": True})
             raise OCRError(
-                "macOS hasn't granted Accessibility to the app running the Viber server. Turn it "
-                "on in System Settings → Privacy & Security → Accessibility, then restart it.")
+                "macOS hasn't allowed the Viber server to control Viber. In System Settings → "
+                "Privacy & Security → Accessibility, turn on \"Viber MCP\" (or the app that "
+                "started the server: uv, your terminal), then restart Claude.")
         pid = self._pid if self._pid is not None and _alive(self._pid) else self._viber_pid()
         if pid is None:
             raise OCRError("Viber is not running. Launch and sign in to Viber first.")
@@ -199,6 +205,15 @@ class MacBackend(Backend):
         """The window as a CGImage at full resolution (2x on Retina), in-process (~0.3 s);
         `screencapture -l` (twice as slow) if that API is unavailable."""
         window_id = int(self._window()["kCGWindowNumber"])
+        preflight = getattr(Quartz, "CGPreflightScreenCaptureAccess", None)
+        if preflight is not None and not preflight():
+            if not self._asked_screen:  # once per run: shows macOS's prompt and lists the app
+                self._asked_screen = True
+                Quartz.CGRequestScreenCaptureAccess()
+            raise OCRError(
+                "macOS hasn't allowed the Viber server to see Viber's window. In System Settings → "
+                "Privacy & Security → Screen Recording, turn on \"Viber MCP\" (or the app that "
+                "started the server), then restart Claude.")
         create = getattr(Quartz, "CGWindowListCreateImage", None)
         if create is not None:
             img = create(Quartz.CGRectNull, Quartz.kCGWindowListOptionIncludingWindow, window_id,
@@ -425,7 +440,7 @@ class MacBackend(Backend):
                     "type": kind,
                     "name": str(title or desc or (value if kind == "Text" and value is not None else "")),
                     "class": cls,
-                    "text": str(value) if kind == "Edit" and value is not None else "",
+                    "text": ml.edit_text(value) if kind == "Edit" else "",
                     "parent": parent,
                     "rect": ml.to_rect(frame, origin),
                     "_frame": frame,
@@ -531,7 +546,7 @@ class MacBackend(Backend):
             value = _get(self._target_ref(), "AXValue")
         except OCRError:
             return ""
-        return str(value) if value is not None else ""
+        return ml.edit_text(value)
 
     def _set_value(self, text: str) -> None:
         if AXUIElementSetAttributeValue(self._target_ref(), "AXValue", text) != 0:

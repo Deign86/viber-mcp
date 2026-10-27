@@ -47,6 +47,14 @@ def ax_type(role: str | None, cls: str = "") -> str:
     return _TYPES.get(role, role.removeprefix("AX"))
 
 
+def edit_text(value) -> str:
+    """An Edit's AXValue as the Windows tree gives it: Qt reports line breaks inside a message as
+    U+2028 / U+2029 on macOS, which made a multi-line client template parse as one line."""
+    if value is None:
+        return ""
+    return str(value).replace("\u2028", "\n").replace("\u2029", "\n")
+
+
 def to_rect(frame, origin) -> list[int]:
     """AX frame (x, y, w, h) in screen points -> [l, t, r, b] relative to the window's top-left
     (`origin` = (x, y)), i.e. screenshot coordinates."""
