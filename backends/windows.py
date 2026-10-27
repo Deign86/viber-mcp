@@ -550,12 +550,26 @@ class WindowsBackend(Backend):
         self._enter(self._staged)
 
     # --- element actions -------------------------------------------------------------
+    def _dismiss_remix(self) -> bool:
+        """Close the ChatGPT "Remix your image" pop-up if it covers the window: clicks on the
+        message/search box land on it otherwise (see is_remix_later). True if it was closed."""
+        node = _on_uia(_find_desc, self._hwnd(), lambda c: wl.is_remix_later(
+            c.ControlTypeName, c.ClassName, c.Name), 9)
+        if node is None:
+            return False
+        l, t, r, b = node.rect
+        self._post_click((l + r) / 2, (t + b) / 2)
+        self.wait_still()
+        return True
+
     def click_compose(self) -> None:
+        self._dismiss_remix()
         self._target = _is_compose
         self._target_node = self._click_element(_is_compose, "message box")
         time.sleep(0.25)  # let Qt move focus before keys arrive
 
     def click_search(self) -> None:
+        self._dismiss_remix()
         self._target = _is_search
         self._target_node = self._click_element(_is_search, "search box")
         time.sleep(0.25)
@@ -665,6 +679,11 @@ class WindowsBackend(Backend):
         if not any(e["class"] == "SplitView" for e in els) and self._dismiss_ad():
             els = self._elements()
         if self._dismiss_promo(els):
+            els = self._elements()
+        point = wl.remix_close_point(els)
+        if point is not None:
+            self.click_at(*point)
+            self.wait_still()
             els = self._elements()
         return els
 

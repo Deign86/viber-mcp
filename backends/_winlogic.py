@@ -87,6 +87,24 @@ def ad_close_point(elements: list[dict]) -> tuple[float, float] | None:
     return (ad["rect"][2] - 24, ad["rect"][1] + 16) if ad else None
 
 
+def is_remix_later(control_type: str, cls: str, name: str) -> bool:
+    """Viber's ChatGPT "Remix your image" pop-up's "Maybe later" button. The pop-up shows after
+    photos are posted and covers the window, so the search click never reaches the search box
+    ("No matching contact/chat found for 'APG CLIENTS'"). Only ever "Maybe later" — "Remix image"
+    sends the picture to ChatGPT."""
+    return (control_type in ("Button", "ButtonControl") and cls.startswith("ModalButton")
+            and name.strip().lower() == "maybe later")
+
+
+def remix_close_point(elements: list[dict]) -> tuple[float, float] | None:
+    """Where to click "Maybe later" on the Remix image pop-up (see is_remix_later), or None."""
+    later = next((e for e in elements if is_remix_later(e["type"], e["class"], e["name"])), None)
+    if later is None:
+        return None
+    r = later["rect"]
+    return (r[0] + r[2]) / 2, (r[1] + r[3]) / 2
+
+
 def promo_close_point(elements: list[dict]) -> tuple[float, float] | None:
     """The ✕ of Viber's "Discover a Premium Experience" (Viber Plus) pop-up, or None. Closing the
     Sponsored ad opens it, and it covers the chat so every later click misses. Recognised by its

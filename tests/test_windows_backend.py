@@ -267,6 +267,7 @@ def test_click_compose_keeps_the_box_it_clicked_for_value_reads(monkeypatch):
     posted = _posted(monkeypatch, b)
     node = FakeNode("draft")
     monkeypatch.setattr(b, "_locate", lambda pred, what: node)
+    monkeypatch.setattr(b, "_dismiss_remix", lambda: False)
     b.click_compose()
     assert b._target is bw._is_compose and b._target_node is node
     assert [m for m, _ in posted] == [win32con.WM_MOUSEMOVE, win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP]
@@ -388,3 +389,20 @@ def test_main_window_is_the_viber_ui_not_the_viberpc_popup(monkeypatch):
     backend = bw.WindowsBackend.__new__(bw.WindowsBackend)
     monkeypatch.setattr(backend, "_viber_pids", lambda: {99}, raising=False)
     assert backend._find_hwnd() == 4      # the popup comes first in z-order but is skipped
+
+
+def test_click_search_closes_the_remix_image_popup_first(monkeypatch):
+    # The ChatGPT "Remix your image" pop-up covered the window, so the search click missed.
+    from types import SimpleNamespace
+    b = bw.WindowsBackend()
+    posted = _posted(monkeypatch, b)
+    later = SimpleNamespace(rect=(520, 576, 716, 608))
+    found = [later, None]
+    monkeypatch.setattr(bw, "_on_uia", lambda fn, *a: found.pop(0))
+    monkeypatch.setattr(b, "wait_still", lambda *a, **k: 0.0)
+    monkeypatch.setattr(b, "_locate", lambda pred, what: FakeNode(""))
+    b.click_search()
+    downs = [m for m, _ in posted if m == win32con.WM_LBUTTONDOWN]
+    assert len(downs) == 2                      # "Maybe later", then the search box
+    b.click_search()                            # no pop-up: just the search box
+    assert len([m for m, _ in posted if m == win32con.WM_LBUTTONDOWN]) == 3

@@ -2674,3 +2674,17 @@ def test_blank_sqm_is_filled_from_listing_sizes_and_tilde_name_matches_ocr():
     for ocr in ("CE-WH-e, TAYTAY)", "CE-WH-(-, TAYTAY)", "CE-WH-(~, TAYTAY)"):
         assert _name_matches(ocr, "CE-WH-(~, TAYTAY)")
     assert not _name_matches("CE-WH-(500SQM, TAYTAY)", "CE-WH-(~, TAYTAY)")
+
+
+def test_remix_image_popup_is_dismissed_with_maybe_later_only():
+    # 2026-10-27: after a GC's listing photos were posted, Viber's ChatGPT "Remix your image"
+    # pop-up covered the window, so the search click missed and the DONE reply failed
+    # ("No matching contact/chat found for 'APG CLIENTS'") — twice. Measured on the live app.
+    from backends._winlogic import is_remix_later, remix_close_point
+    els = [{"type": "Window", "class": "QQuickPopupItem", "name": "", "rect": [340, 300, 900, 640], "parent": None},
+           {"type": "Button", "class": "ModalButton", "name": "Remix image", "rect": [520, 530, 716, 562], "parent": 0},
+           {"type": "Button", "class": "ModalButton", "name": "Maybe later", "rect": [520, 576, 716, 608], "parent": 0}]
+    assert remix_close_point(els) == (618, 592)
+    assert remix_close_point(els[:2]) is None          # never "Remix image" (sends it to ChatGPT)
+    assert is_remix_later("ButtonControl", "ModalButton_QMLTYPE_12", "Maybe later")
+    assert not is_remix_later("ButtonControl", "ModalButton_QMLTYPE_12", "Remix image")
