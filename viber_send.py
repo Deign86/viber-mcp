@@ -638,7 +638,8 @@ _row_stamp = viber_ocr.row_stamp
 def message_search_rows(obs: list[dict]) -> list[dict]:
     """Group the sidebar's OCR lines (message-search results) into rows: chat name + time on the
     row's first line, then the matching message preview. Pure, so it's tested with fixtures."""
-    left = sorted((o for o in obs if o["x"] < 0.30 and o["y"] > 0.13), key=lambda o: o["y"])
+    left = sorted((o for o in viber_ocr.split_name_stamps(obs, 0.18, 0.24)
+                   if o["x"] < 0.30 and o["y"] > 0.13), key=lambda o: o["y"])
     stamps = [o for o in left if o["x"] > 0.18 and _row_stamp(o["text"])]
     rows = []
     for i, stamp in enumerate(stamps):

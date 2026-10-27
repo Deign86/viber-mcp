@@ -235,3 +235,34 @@ def test_edit_text_turns_qt_line_separators_into_newlines():
     raw = "🏢 Company Name:  👤 Name:  Macroe Donaire 📱 Viber: 09761653772"
     assert ml.edit_text(raw) == "🏢 Company Name: \n👤 Name:  Macroe Donaire\n📱 Viber: 09761653772"
     assert ml.edit_text(None) == ""
+
+
+def test_chat_pane_falls_back_to_the_stack_view():
+    # macOS's tree has no SplitView; the sidebar then ended at a fixed 30% (325 px) and text
+    # from an image in the open chat leaked into the chat list.
+    els = [_el("Window", "", (0, 0, 1085, 788)), _el("Group", "StackView", (300, 68, 774, 786), 0)]
+    assert viber_ocr._chat_pane(els)["rect"][0] == 300
+    els.append(_el("Group", "SplitView", (298, 0, 1085, 788), 0))
+    assert viber_ocr._chat_pane(els)["class"] == "SplitView"
+
+
+def _o(text, x, y, w):
+    return {"text": text, "x": x, "y": y, "w": w, "h": 0.02}
+
+
+def test_name_and_stamp_read_as_one_line_become_their_own_row():
+    # Vision read "Mark Anthony Sant... ✓✓ 7:59 PM" as one piece; the row merged into the one above.
+    sb = 0.2762
+    obs = [_o("ChatGPT", 0.065, 0.275, 0.07), _o("12:55 PM", 0.218, 0.279, 0.04),
+           _o("No messages", 0.065, 0.303, 0.08),
+           _o("Mark Anthony Sant... ~/ 7:59 PM", 0.065, 0.37, 0.198),
+           _o("oki po noted", 0.065, 0.395, 0.07)]
+    rows = viber_ocr.chat_rows(obs, sb)
+    assert [r["name"] for r in rows] == ["ChatGPT", "Mark Anthony Sant..."]
+    assert rows[1]["time"] == "7:59 PM" and rows[1]["last_from"] == "me"  # the tick stayed on the stamp
+    assert rows[0]["preview"] == "No messages"
+
+
+def test_a_preview_mentioning_a_time_is_not_split():
+    obs = [_o("Meeting at 5:00 PM", 0.065, 0.4, 0.09)]  # doesn't reach the stamp column
+    assert viber_ocr.split_name_stamps(obs, 0.15, 0.22) == obs

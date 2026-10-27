@@ -60,6 +60,36 @@ def _ticked(stamp: dict, line: list[dict]) -> bool:
                for o in line)
 
 
+def split_name_stamps(obs: list[dict], stamp_x: float, right_x: float) -> list[dict]:
+    """Split OCR pieces that read a row's name and its time stamp as one line ("Mark Anthony
+    Sant... ~/ 7:59 PM", seen with Vision on macOS) into a name piece and a stamp piece, so the
+    row grouping sees the stamp. Only pieces that start left of `stamp_x` and reach the stamp
+    column (`right_x`) are split, so a preview mentioning a time stays whole. A tick between the
+    name and the time stays on the stamp (it marks our own last message). Pure."""
+    out = []
+    for o in obs:
+        t = o["text"].strip()
+        m = _ROW_TIME.search(t)
+        w = o.get("w", 0.0)
+        if m is None or m.start() <= 4 or o["x"] >= stamp_x or o["x"] + w < right_x:
+            out.append(o)
+            continue
+        head = t[:m.start()].rstrip()
+        tick = re.search(r"(?:^|\s)(\S{1,3})$", head)
+        if tick and (not any(c.isalnum() for c in tick.group(1)) or tick.group(1).lower() in _TICK_WORDS):
+            name, stamp = head[:tick.start(1)].rstrip(), f"{tick.group(1)} {m.group(1)}"
+        else:
+            name, stamp = head, m.group(1)
+        if not name:
+            out.append(o)
+            continue
+        frac = len(name) / len(t)
+        sx = max(o["x"] + w * frac, stamp_x + 0.001)
+        out.append({**o, "text": name, "w": w * frac})
+        out.append({**o, "text": stamp, "x": sx, "w": max(0.0, o["x"] + w - sx)})
+    return out
+
+
 _LIST_TOP_Y = 0.18   # below the search box, folder icons and the All/Unread filter pills
 _BADGE_RE = re.compile(r"^\d{1,3}$")
 
@@ -72,7 +102,8 @@ def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[di
     stamp. `unread` is the badge count (a bare number at the right edge, 0 if none). `last_from`
     is "me" when the preview starts with "Me:" or the stamp carries our sent/read tick, else
     "them" — best-effort from OCR. `y` is the name line's normalized top, for clicks. Pure."""
-    left = sorted((o for o in obs if o["x"] < sidebar_right and o["y"] > _LIST_TOP_Y),
+    left = sorted((o for o in split_name_stamps(obs, sidebar_right * 0.55, sidebar_right * 0.8)
+                   if o["x"] < sidebar_right and o["y"] > _LIST_TOP_Y),
                   key=lambda o: o["y"])
     stamps = [o for o in left if o["x"] > sidebar_right * 0.55 and row_stamp(o["text"])]
     rows = []
@@ -93,12 +124,19 @@ def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[di
     return rows
 
 
+def _chat_pane(elements: list[dict]):
+    """The element whose left edge is where the chat list ends: the SplitView (Windows), else the
+    chat pane's StackView (macOS's accessibility tree has no SplitView)."""
+    return (next((e for e in elements if e["class"] == "SplitView"), None)
+            or next((e for e in elements if e["class"] == "StackView"), None))
+
+
 def _sidebar_fraction() -> float:
     """The sidebar's right edge as a fraction of the window, from the chat pane's UIA rect
     (the sidebar is a fixed pixel width); the usual fraction where UIA isn't available."""
     b = get_backend()
     try:
-        pane = next((e for e in b.elements() if e["class"] == "SplitView"), None)
+        pane = _chat_pane(b.elements())
         width = b.screenshot().width
     except (NotImplementedError, AttributeError, OCRError):
         return _SIDEBAR_MAX_X
