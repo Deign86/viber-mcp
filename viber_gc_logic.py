@@ -145,9 +145,11 @@ def fill_from_listing(naming: dict, listing_name: str, listing_category: str = "
     if parts.get("type") == "VIRTUALOFFICE":
         return naming
     if parts.get("sqm") in (None, "~"):
-        nums = re.findall(_NUM, rest)
+        nums = [n.replace(",", "") for n in re.findall(_NUM, rest)]
         if nums:
-            parts["sqm"] = nums[0].replace(",", "")
+            # Several unit sizes ("Taytay Rizal, 500, 710, 1,420") → the range, like 1200-1350SQM.
+            lo, hi = min(nums, key=float), max(nums, key=float)
+            parts["sqm"] = lo if lo == hi else f"{lo}-{hi}"
             uncertain = [u for u in uncertain if not u.startswith("SQM not numeric")]
     if parts.get("location") in (None, "?"):
         loc, issue = _location_part(city)
