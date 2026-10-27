@@ -218,7 +218,9 @@ class MacBackend(Backend):
         if create is not None:
             img = create(Quartz.CGRectNull, Quartz.kCGWindowListOptionIncludingWindow, window_id,
                          Quartz.kCGWindowImageBoundsIgnoreFraming)
-            if img is not None and Quartz.CGImageGetWidth(img) > 1:
+            # While the window is being re-shown the image can come back without pixel data.
+            if img is not None and Quartz.CGImageGetWidth(img) > 1 \
+                    and Quartz.CGImageGetDataProvider(img) is not None:
                 return img
         with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
             # -x no sound, -o omit shadow, -l capture the window by id (works while covered).
@@ -234,15 +236,35 @@ class MacBackend(Backend):
         return img
 
     @staticmethod
-    def _pixels(img) -> bytes:
-        return bytes(Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(img)))
+    def _pixels(img) -> tuple[bytes, int]:
+        """(BGRA bytes, bytes per row) of a CGImage. A capture taken while the window is being
+        re-shown can't hand its data over directly, so such an image is redrawn first."""
+        provider = Quartz.CGImageGetDataProvider(img)
+        data = Quartz.CGDataProviderCopyData(provider) if provider is not None else None
+        if data is not None:
+            return bytes(data), Quartz.CGImageGetBytesPerRow(img)
+        w, h = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img)
+        ctx = Quartz.CGBitmapContextCreate(
+            None, w, h, 8, w * 4, Quartz.CGColorSpaceCreateDeviceRGB(),
+            Quartz.kCGImageAlphaPremultipliedFirst | Quartz.kCGBitmapByteOrder32Little)
+        Quartz.CGContextDrawImage(ctx, Quartz.CGRectMake(0, 0, w, h), img)
+        redrawn = Quartz.CGBitmapContextCreateImage(ctx)
+        data = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(redrawn))
+        if data is None or not bytes(data).strip(b"\0"):
+            # All black: the window is mid-redraw, or macOS withholds the pixels from this
+            # process (Screen Recording not in effect for the app that started it).
+            raise OCRError("Viber's window came back blank. Try again; if it keeps happening, "
+                           "re-allow Screen Recording for the app running the server and restart it.")
+        return bytes(data), Quartz.CGImageGetBytesPerRow(redrawn)
+
+    def _pil(self, img) -> Image.Image:
+        data, row = self._pixels(img)
+        w, h = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img)
+        return Image.frombuffer("RGBA", (w, h), data, "raw", "BGRA", row, 1).convert("RGB")
 
     def grab(self) -> Image.Image:
         """The window at full resolution (2x on Retina)."""
-        img = self._cgimage()
-        w, h = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img)
-        return Image.frombuffer("RGBA", (w, h), self._pixels(img), "raw", "BGRA",
-                                Quartz.CGImageGetBytesPerRow(img), 1).convert("RGB")
+        return self._pil(self._cgimage())
 
     def screenshot(self):
         """The Viber window as a PIL image in points (1 px = 1 pt, also on Retina), the
@@ -288,9 +310,9 @@ class MacBackend(Backend):
         bottom = int(full_h * (region[3] if region else 1))
         x0 = int(right * 0.6)
         crop = Quartz.CGImageCreateWithImageInRect(cgimage, Quartz.CGRectMake(x0, top, right - x0, bottom - top))
-        w, h = Quartz.CGImageGetWidth(crop), Quartz.CGImageGetHeight(crop)
-        col = Image.frombuffer("RGBA", (w, h), self._pixels(crop), "raw", "BGRA",
-                               Quartz.CGImageGetBytesPerRow(crop), 1).convert("RGB")
+        if crop is None:
+            return []
+        col = self._pil(crop)
         boxes = ml.badge_boxes(col)
         if not boxes:
             return []
@@ -389,7 +411,7 @@ class MacBackend(Backend):
         start, last = time.monotonic(), None
         time.sleep(interval)
         while True:
-            digest = hashlib.blake2b(self._pixels(self._cgimage()), digest_size=8).digest()
+            digest = hashlib.blake2b(self._pixels(self._cgimage())[0], digest_size=8).digest()
             if digest == last or time.monotonic() - start >= timeout:
                 return time.monotonic() - start
             last = digest
@@ -741,6 +763,7 @@ class MacBackend(Backend):
             raise ValueError(f"Unknown key {key!r}. Supported: {', '.join(sorted(ml.KEYCODES))}. "
                              "Modifier shortcuts (Cmd+...) aren't offered.")
         self._target_el = None  # Escape/Enter may close or change the page
+        shown = self._onscreen_window() is not None
 
         def keys():
             # Real key events: posted to the process, Escape doesn't reach the image viewer.
@@ -752,6 +775,11 @@ class MacBackend(Backend):
                     time.sleep(0.012)
                 time.sleep(0.03)
         self._with_viber_front(keys)
+        if shown and self._onscreen_window() is None:
+            # On macOS an Escape with nothing left to close hides Viber's window (like the red ✕).
+            time.sleep(0.2)
+            if self._onscreen_window() is None:
+                self.focus()
 
     def type_into_focus(self, text: str) -> None:
         """Type into whatever field has Viber's focus — click it first. Newlines (Enter would
