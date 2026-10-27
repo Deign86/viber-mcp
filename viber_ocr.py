@@ -37,12 +37,26 @@ _ROW_TIME = re.compile(r"(\d{1,2}[:.\-]?\d{2}\s*[AP]M|yesterday|monday|tuesday|w
                        r"friday|saturday|sunday|\d{1,2}/\d{1,2}/\d{4})$", re.I)
 
 
+# OCR look-alikes inside a clock time ("5:0TPM" for 5:01 PM): only the digit positions are folded.
+_TIME_LOOKALIKE = re.compile(r"([0-9OoIlT|S]{1,2})([:.\-]?)([0-9OoIlT|S]{2})(\s*[AP]M)$", re.I)
+_DIGIT_FOLD = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "T": "1", "|": "1", "S": "5"})
+
+
 def row_stamp(text: str) -> str | None:
     """The time/day stamp of a chat-list / search-result row ("11:02 AM", "Yesterday"), ignoring
-    a short prefix such as the OCR'd read tick ("W 10:13 AM", "v'/ 12:43 PM"); None if it isn't one."""
+    a short prefix such as the OCR'd read tick ("W 10:13 AM", "v'/ 12:43 PM"); None if it isn't one.
+    A time OCR'd with look-alike letters for digits ("5:0TPM") is read as the time it shows."""
     t = text.strip()
     m = _ROW_TIME.search(t)
-    return m.group(1) if m and m.start() <= 4 else None
+    if m and m.start() <= 4:
+        return m.group(1)
+    m = _TIME_LOOKALIKE.search(t)
+    if m and m.start() <= 4 and any(c.isdigit() for c in m.group(1) + m.group(3)):
+        h, sep, mm, ampm = m.groups()
+        folded = f"{h.translate(_DIGIT_FOLD)}{sep}{mm.translate(_DIGIT_FOLD)}{ampm}"
+        if _ROW_TIME.fullmatch(folded):
+            return folded
+    return None
 
 
 _TICK_WORDS = {"w", "v", "vv", "ww", "v'", "v/", "v'/"}
@@ -96,6 +110,7 @@ def split_name_stamps(obs: list[dict], stamp_x: float, right_x: float) -> list[d
     return out
 
 
+_ROW_H = 0.085       # a chat-list row's height as a fraction of the window (about 73 pt)
 _LIST_TOP_Y = 0.18   # below the search box, folder icons and the All/Unread filter pills
 _BADGE_RE = re.compile(r"^\d{1,3}$")
 
@@ -108,8 +123,13 @@ def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[di
     stamp. `unread` is the badge count (a bare number at the right edge, 0 if none). `last_from`
     is "me" when the preview starts with "Me:" or the stamp carries our sent/read tick, else
     "them" — best-effort from OCR. `y` is the name line's normalized top, for clicks. Pure."""
+    # Viber's "Sponsored" ad box covers the bottom of the list (the Windows backend closes it,
+    # macOS shows it): nothing from its label down belongs to a chat.
+    ad = min((o["y"] for o in obs if o["text"].strip().lower() == "sponsored"
+              and o["x"] < sidebar_right * 0.6 and o["y"] > _LIST_TOP_Y), default=None)
     left = sorted((o for o in split_name_stamps(obs, sidebar_right * 0.55, sidebar_right * 0.8)
-                   if o["x"] < sidebar_right and o["y"] > _LIST_TOP_Y),
+                   if o["x"] < sidebar_right and o["y"] > _LIST_TOP_Y
+                   and (ad is None or o["y"] < ad - 0.005)),
                   key=lambda o: o["y"])
     stamps = [o for o in left if o["x"] > sidebar_right * 0.55 and row_stamp(o["text"])]
     rows = []
@@ -127,6 +147,10 @@ def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[di
         rows.append({"name": first["text"].strip() if names else "", "time": row_stamp(stamp["text"]),
                      "preview": preview, "unread": int(badge["text"]) if badge else 0,
                      "last_from": "me" if mine else "them", "y": first["y"]})
+    if ad is not None:
+        # A row the ad cuts off may have its unread badge or preview hidden: leave it out
+        # (scroll_chat_list brings it into view whole).
+        rows = [r for r in rows if r["y"] < ad - _ROW_H]
     return rows
 
 
@@ -158,9 +182,17 @@ _FOLD = str.maketrans({"l": "i", "1": "i", "|": "i", "0": "o"})
 def _click_filter(label: str) -> None:
     """Click one of the chat list's filter pills ("All", "Unread") at its OCR'd position."""
     want = label.lower().translate(_FOLD)
-    pill = next((o for o in observe(region=_FILTER_REGION)
-                 if o["x"] < 0.2 and o["y"] < _FILTER_REGION[3]  # macOS: the pills sit at ~0.23
-                 and o["text"].strip().lower().translate(_FOLD) == want), None)
+
+    def find():
+        return next((o for o in observe(region=_FILTER_REGION)
+                     if o["x"] < 0.2 and o["y"] < _FILTER_REGION[3]  # macOS: the pills sit at ~0.23
+                     and o["text"].strip().lower().translate(_FOLD) == want), None)
+    # Right after a search closes the chat list is still redrawing: look again for a moment.
+    pill = find()
+    deadline = time.monotonic() + 3.0
+    while pill is None and time.monotonic() < deadline:
+        time.sleep(0.3)
+        pill = find()
     if pill is None:
         raise OCRError(f"The chat list's '{label}' filter isn't on screen (is the chat list showing?).")
     b = get_backend()
@@ -184,8 +216,17 @@ def _leave_search() -> None:
         return
     b.click_search()
     b.delete()
-    b.press_key("escape")
+    if not (getattr(b, "avoid_spare_escape", False) and search_closed(b)):
+        b.press_key("escape")
     b.wait_still()
+
+
+def search_closed(b) -> bool:
+    """No search results showing: the result-type tabs under the search box are gone."""
+    try:
+        return not any(e["class"] == "TabComponent" for e in b.elements())
+    except (NotImplementedError, AttributeError, OCRError):
+        return False
 
 
 def read_chat_list(unread_only: bool = False) -> dict:

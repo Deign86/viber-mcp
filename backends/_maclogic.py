@@ -185,3 +185,36 @@ def nest_popups(els: list[dict], refs: list) -> tuple[list[dict], list]:
             l, t, r, b = e["rect"]
             e["rect"] = [max(0, l - 150), max(0, t - 200), r + 150, b + 20]
     return out, out_refs
+
+
+def vertical_shift(before, after, direction: int = 0, max_shift: int | None = None) -> int:
+    """How many pixels the content of `before` moved down to give `after` (negative = up), two
+    same-size grayscale PIL crops. Used to calibrate scrolling: the scrollbar's AXValue is a
+    percentage of a height macOS doesn't expose. `direction` (+1 down, -1 up, 0 either) is the
+    known scroll direction: repeating content (chat-list rows) also matches a whole row away,
+    so only shifts that way count and the smallest near-best one wins. 0 if nothing moved."""
+    from PIL import ImageChops, ImageStat
+
+    w, h = before.size
+    if after.size != before.size or h < 8:
+        return 0
+    if h > 480:  # compare at half size (once): ~4x faster, still accurate to 2 px
+        half = (max(1, w // 2), h // 2)
+        return 2 * vertical_shift(before.resize(half), after.resize(half), direction,
+                                  max_shift // 2 if max_shift else None)
+    max_shift = max_shift or h // 2
+    lo = 1 if direction > 0 else -max_shift
+    hi = -1 if direction < 0 else max_shift
+    scores = []
+    for d in range(lo, hi + 1):
+        if d >= 0:
+            a, b = before.crop((0, 0, w, h - d)), after.crop((0, d, w, h))
+        else:
+            a, b = before.crop((0, -d, w, h)), after.crop((0, 0, w, h + d))
+        scores.append((ImageStat.Stat(ImageChops.difference(a, b)).mean[0], d))
+    if not scores:
+        return 0
+    best = min(score for score, _ in scores)
+    if ImageStat.Stat(ImageChops.difference(before, after)).mean[0] <= best + 0.5:
+        return 0  # no shift explains the change better than none
+    return min((d for score, d in scores if score <= best * 1.05 + 0.5), key=abs)

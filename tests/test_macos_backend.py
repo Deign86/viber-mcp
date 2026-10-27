@@ -292,6 +292,7 @@ class _SearchLeftOpen:
 
 
 def test_a_leftover_search_is_closed_before_reading_the_chat_list(monkeypatch):
+    # Windows (no avoid_spare_escape): clear, then Escape, exactly as before.
     fake = _SearchLeftOpen("My Notes")
     monkeypatch.setattr(backends, "_backend", fake)
     viber_ocr._leave_search()
@@ -311,3 +312,98 @@ def test_a_preview_ending_in_a_time_is_not_made_into_a_row():
     rows = viber_ocr.chat_rows(obs, sb)
     assert [r["name"] for r in rows] == ["Mitch Kim"]
     assert "5:00 PM" in rows[0]["preview"] and "3:30 PM" in rows[0]["preview"]
+
+
+def test_filter_pill_is_looked_for_again_while_the_list_redraws(monkeypatch):
+    # Right after a leftover search was closed the first read showed no pills yet.
+    reads = iter([[], [{"text": "Unread", "x": 0.075, "y": 0.226, "w": 0.045, "h": 0.02}]])
+    fake = _FilterBackend([])
+    fake.observe = lambda region=None: next(reads)
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_ocr.time, "sleep", lambda s: None)
+    viber_ocr._click_filter("Unread")
+    assert len(fake.clicks) == 1
+
+
+def _stripes(h=300, offset=0):
+    img = Image.new("L", (120, h), 0)
+    d = ImageDraw.Draw(img)
+    for y in range(-400, h + 400, 37):
+        d.rectangle((10, y + offset, 110, y + offset + 9), fill=200)
+        d.text((12, y + offset + 14), str(y), fill=120)
+    return img
+
+
+def test_vertical_shift_measures_scrolled_content():
+    before = _stripes()
+    assert ml.vertical_shift(before, _stripes(offset=24)) in (24, 22, 26)   # content moved down
+    assert ml.vertical_shift(before, _stripes(offset=-40)) in (-40, -38, -42)
+    assert ml.vertical_shift(before, before.copy()) == 0
+
+
+def test_vertical_shift_is_not_fooled_by_repeating_rows():
+    # Chat-list rows are all 73 pt tall: a shift also matches a whole row further away. The
+    # known scroll direction and the smallest match decide.
+    def rows(off):
+        img = Image.new("L", (210, 400), 0)
+        d = ImageDraw.Draw(img)
+        for y in range(-400, 800, 73):
+            d.rectangle((10, y + off, 200, y + off + 30), fill=200)
+        return img
+    base = rows(0)
+    assert ml.vertical_shift(base, rows(48), direction=1) == 48
+    assert ml.vertical_shift(base, rows(-30), direction=-1) == -30
+
+
+def test_macos_skips_the_spare_escape_once_the_search_is_closed(monkeypatch):
+    # macOS: clearing the box closes the search (its tabs go); an extra Escape would hide
+    # Viber's window and take the foreground, so it's skipped.
+    fake = _SearchLeftOpen("My Notes")
+    fake.avoid_spare_escape = True
+    monkeypatch.setattr(backends, "_backend", fake)
+    viber_ocr._leave_search()
+    assert fake.calls == ["click_search", "delete"]
+
+
+def test_sponsored_ad_box_is_not_read_as_chat_rows():
+    # The ad at the bottom of the chat list leaked into the last row's preview and hid its badge.
+    sb = 0.2762
+    obs = [_o("ChatGPT", 0.065, 0.275, 0.07), _o("12:55 PM", 0.218, 0.279, 0.04),
+           _o("No messages", 0.065, 0.303, 0.08),
+           _o("Max Alpha", 0.065, 0.371, 0.07), _o("8:30 PM", 0.218, 0.372, 0.04),
+           _o("Photo message", 0.065, 0.395, 0.08),
+           _o("MACROE-CS-(25-30S...", 0.065, 0.66, 0.15), _o("4:53PM", 0.218, 0.66, 0.04),
+           _o("Sponsored", 0.015, 0.70, 0.06), _o("FlickReels", 0.02, 0.75, 0.07),
+           _o("App Store", 0.03, 0.95, 0.06)]
+    rows = viber_ocr.chat_rows(obs, sb)
+    assert [r["name"] for r in rows] == ["ChatGPT", "Max Alpha"]  # MACROE is cut off by the ad
+    assert all("Sponsored" not in r["preview"] and "App Store" not in r["preview"] for r in rows)
+
+
+def test_my_notes_is_searched_again_when_the_first_click_left_another_chat_open(monkeypatch):
+    # Live: APG CLIENTS (a big group) was still loading and stayed open after the click.
+    opened = iter(["APG CLIENTS", "My Notes"])
+    state = {"chat": "APG CLIENTS", "searches": 0}
+
+    def search(name):
+        state["searches"] += 1
+        state["chat"] = next(opened)
+        return ("My Notes", 3)
+
+    def header(expect):
+        if state["chat"] != expect:
+            raise viber_send.SendError(f"The open chat is '{state['chat']}'")
+    monkeypatch.setattr(viber_send, "_search_open", search)
+    monkeypatch.setattr(viber_send, "require_open_chat", header)
+    monkeypatch.setattr(viber_send, "viber_is_running", lambda: True)
+    monkeypatch.setattr(viber_send, "backend", _NotesBackend())
+    assert viber_send.open_my_notes()["opened"] == "My Notes"
+    assert state["searches"] == 2
+
+
+def test_time_stamps_with_ocr_lookalikes_still_start_a_row():
+    # Live: "5:01 PM" OCR'd as "5:0TPM"; that row merged into the one above.
+    assert viber_ocr.row_stamp("5:0TPM") == "5:01PM"
+    assert viber_ocr.row_stamp("1O:3O AM") == "10:30 AM"
+    assert viber_ocr.row_stamp("11:02 AM") == "11:02 AM"          # normal times unchanged
+    assert viber_ocr.row_stamp("Total") is None and viber_ocr.row_stamp("STOP PM") is None

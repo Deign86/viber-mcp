@@ -16,6 +16,7 @@ from pathlib import Path
 
 import viber_drive
 import viber_gc_logic as logic
+import viber_ocr
 import viber_send
 import viber_ui
 
@@ -302,7 +303,8 @@ def gc_exists(name: str) -> tuple[bool, bool]:
     def leave_search():
         b.click_search()
         b.delete()
-        b.press_key("escape")
+        if not (getattr(b, "avoid_spare_escape", False) and viber_ocr.search_closed(b)):
+            b.press_key("escape")
         b.wait_still()
     if verdict == "unknown":
         header = next((o for o in obs if o["text"].strip().lower() in

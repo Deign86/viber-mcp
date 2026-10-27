@@ -97,6 +97,7 @@ class MacBackend(Backend):
     name = "macos"
     input_confirmed = True     # text goes in through AXValue and is read back
     panel_shifts_send = False  # the send button is found by identity, not position
+    avoid_spare_escape = True  # clearing the search box closes the search by itself here
 
     def __init__(self) -> None:
         # A real HID event source so Qt accepts our synthetic events.
@@ -205,6 +206,11 @@ class MacBackend(Backend):
         """The window as a CGImage at full resolution (2x on Retina), in-process (~0.3 s);
         `screencapture -l` (twice as slow) if that API is unavailable."""
         window_id = int(self._window()["kCGWindowNumber"])
+        session = Quartz.CGSessionCopyCurrentDictionary() or {}
+        if session.get("CGSSessionScreenIsLocked") or Quartz.CGDisplayIsAsleep(Quartz.CGMainDisplayID()):
+            # Every window captures black while the Mac is locked or its display sleeps.
+            raise OCRError("The Mac's screen is locked or asleep, so Viber can't be read. Unlock "
+                           "it (and keep it awake) and try again.")
         preflight = getattr(Quartz, "CGPreflightScreenCaptureAccess", None)
         if preflight is not None and not preflight():
             if not self._asked_screen:  # once per run: shows macOS's prompt and lists the app
@@ -236,7 +242,7 @@ class MacBackend(Backend):
         return img
 
     @staticmethod
-    def _pixels(img) -> tuple[bytes, int]:
+    def _pixels(img, whole_window: bool = False) -> tuple[bytes, int]:
         """(BGRA bytes, bytes per row) of a CGImage. A capture taken while the window is being
         re-shown can't hand its data over directly, so such an image is redrawn first."""
         provider = Quartz.CGImageGetDataProvider(img)
@@ -250,21 +256,24 @@ class MacBackend(Backend):
         Quartz.CGContextDrawImage(ctx, Quartz.CGRectMake(0, 0, w, h), img)
         redrawn = Quartz.CGBitmapContextCreateImage(ctx)
         data = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(redrawn))
-        if data is None or not bytes(data).strip(b"\0"):
-            # All black: the window is mid-redraw, or macOS withholds the pixels from this
-            # process (Screen Recording not in effect for the app that started it).
+        if data is None:
+            raise OCRError("Couldn't read the Viber window's pixels; try again.")
+        if whole_window and not bytes(data).strip(b"\0"):
+            # A whole window that's all black: it's mid-redraw, or macOS withholds the pixels
+            # from this process (Screen Recording not in effect for the app that started it).
+            # (A crop can legitimately be black: the empty strip of a dark-mode chat list.)
             raise OCRError("Viber's window came back blank. Try again; if it keeps happening, "
                            "re-allow Screen Recording for the app running the server and restart it.")
         return bytes(data), Quartz.CGImageGetBytesPerRow(redrawn)
 
-    def _pil(self, img) -> Image.Image:
-        data, row = self._pixels(img)
+    def _pil(self, img, whole_window: bool = False) -> Image.Image:
+        data, row = self._pixels(img, whole_window)
         w, h = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img)
         return Image.frombuffer("RGBA", (w, h), data, "raw", "BGRA", row, 1).convert("RGB")
 
     def grab(self) -> Image.Image:
         """The window at full resolution (2x on Retina)."""
-        return self._pil(self._cgimage())
+        return self._pil(self._cgimage(), whole_window=True)
 
     def screenshot(self):
         """The Viber window as a PIL image in points (1 px = 1 pt, also on Retina), the
@@ -720,15 +729,27 @@ class MacBackend(Backend):
                     AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev_pid), "AXFrontmost", True)
 
     def scroll(self, area: str, notches: int) -> None:
-        """Mouse-wheel `notches` over the chat list ("chats") or the conversation; positive
-        scrolls up (older messages / top of the list)."""
+        """Scroll the chat list ("chats") or the conversation by `notches` mouse-wheel notches;
+        positive scrolls up (older messages / top of the list)."""
         _, _, w, h = self._wframe()
         anchor, fallback_x = (ml.is_search, 0.15) if area == "chats" else (ml.is_compose, 0.65)
         e, _ = self._find(anchor, "", required=False)
         x = (e["rect"][0] + e["rect"][2]) / 2 if e else w * fallback_x
-        self.scroll_at(x, h * 0.55, notches)
+        # A wheel notch moves Viber's chat list about one row, a conversation about 3 lines.
+        self.scroll_at(x, h * 0.55, notches, per_notch=73.0 if area == "chats" else 60.0)
 
-    def scroll_at(self, x: float, y: float, notches: int) -> None:
+    def scroll_at(self, x: float, y: float, notches: int, per_notch: float = 60.0) -> None:
+        """Scroll whatever is under (x, y). In the background through the scrollbar's AXValue
+        (posted wheel events are ignored by a background Qt window); real wheel events with Viber
+        brought forward only where there's no scrollbar to drive."""
+        notches = int(notches)
+        if notches == 0:
+            return
+        try:
+            if self._ax_scroll(x, y, notches, per_notch):
+                return
+        except OCRError:
+            pass
         sx, sy = self._to_screen(x, y)
         step = 1 if notches > 0 else -1
 
@@ -737,13 +758,54 @@ class MacBackend(Backend):
                                                   Quartz.kCGMouseButtonLeft)
             Quartz.CGEventPost(Quartz.kCGHIDEventTap, move)
             time.sleep(0.05)
-            for _ in range(abs(int(notches))):
+            for _ in range(abs(notches)):
                 e = Quartz.CGEventCreateScrollWheelEvent(self._src, Quartz.kCGScrollEventUnitLine, 1, 3 * step)
                 Quartz.CGEventSetLocation(e, (sx, sy))
                 Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
                 time.sleep(0.01)
             time.sleep(0.1)
         self._with_viber_front(wheel)
+
+    def _ax_scroll(self, x: float, y: float, notches: int, per_notch: float) -> bool:
+        """Scroll by setting the scrollbar's AXValue (0 = top, 100 = bottom), in the background.
+        The value is a percentage of the scrollable height, which isn't exposed, so a 1% nudge
+        is measured on screen first and the rest set from it. False if there's no scrollbar."""
+        els, refs = self._walk()
+        bars = [(e, r) for e, r in zip(els, refs) if r is not None and e["class"] == "ScrollBar"
+                and e["rect"][1] <= y <= e["rect"][3] and e["rect"][0] >= x - 20]
+        if not bars:
+            return False
+        bar, ref = min(bars, key=lambda br: br[0]["rect"][0] - x)
+        value = _get(ref, "AXValue")
+        if value is None:
+            return False
+        value = float(value)
+        sign = -1.0 if notches > 0 else 1.0  # up = toward 0; content then moves down
+        l, t, r, b = bar["rect"]
+        box = (max(0, l - 220), t, max(1, l - 8), b)
+        px_per_pct = None
+        # A small nudge first: in a long list 1% can be several rows, and rows look alike.
+        for nudge in (0.2, 1.0, 5.0):
+            probe = max(0.0, min(100.0, value + sign * nudge))
+            if probe == value:
+                return True  # already at that end
+            before = self._strip(box)
+            AXUIElementSetAttributeValue(ref, "AXValue", probe)
+            time.sleep(0.25)
+            moved = ml.vertical_shift(before, self._strip(box), direction=1 if notches > 0 else -1)
+            if moved:
+                px_per_pct = abs(moved) / abs(probe - value)
+                break
+            value = probe
+        target = value + sign * abs(notches) * per_notch / (px_per_pct or 40.0)
+        AXUIElementSetAttributeValue(ref, "AXValue", max(0.0, min(100.0, target)))
+        time.sleep(0.3)
+        return True
+
+    def _strip(self, box) -> Image.Image:
+        """Grayscale crop of the window in points (box = l, t, r, b in screenshot coordinates)."""
+        img = self.screenshot()
+        return img.crop(tuple(int(v) for v in box)).convert("L")
 
     # --- keys: posted to Viber's process (works while it's in the background) --------
     def _post_key(self, code: int, flags: int = 0, text: str | None = None) -> None:

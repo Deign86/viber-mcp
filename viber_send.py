@@ -749,11 +749,26 @@ def open_my_notes() -> dict:
     if not viber_is_running():
         raise SendError("Viber is not running. Launch and sign in to Viber first.")
     backend.focus()
-    matched, score = _search_open("My Notes")
-    if "notes" not in matched.lower():
-        raise SendError(f"Could not confirm the My Notes chat opened (matched '{matched}').")
-    require_open_chat("My Notes")  # the search row said so; the header must too
+    matched = _open_my_notes_checked()
     return {"opened": "My Notes", "matched": matched}
+
+
+def _open_my_notes_checked() -> str:
+    """Search-open My Notes and confirm it from the chat HEADER (a matching search row isn't
+    proof: a click on a busy screen — a big group still loading — can leave the old chat open).
+    One retry, then SendError."""
+    for attempt in range(2):
+        matched, _ = _search_open("My Notes")
+        if "notes" not in matched.lower():
+            raise SendError(
+                f"Could not confirm My Notes opened (search matched '{matched}'); aborting to "
+                "avoid saving to the wrong chat.")
+        try:
+            require_open_chat("My Notes")
+            return matched
+        except SendError:
+            if attempt:
+                raise
 
 
 def save_to_my_notes(text: str) -> dict:
@@ -773,14 +788,7 @@ def save_to_my_notes(text: str) -> dict:
     try:
         backend.clipboard_set(text)
         backend.focus()
-        matched, score = _search_open("My Notes")
-        if "notes" not in matched.lower():
-            raise SendError(
-                f"Could not confirm My Notes opened (search matched '{matched}'); aborting to "
-                "avoid saving to the wrong chat."
-            )
-        # A matching search row isn't proof: a click that lands on another row opens that chat.
-        require_open_chat("My Notes")
+        _open_my_notes_checked()
         before = own_message_texts()
         _paste_into_compose(text)     # also closes the info panel if open
         backend.click_send()
