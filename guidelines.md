@@ -194,6 +194,10 @@ each GC created and each template skipped or failed (with the reason).
   `NAME-VIRTUALOFFICE`. Unknown SQM is `~`. LOCATION is the city (Quezon City → QC), or the province
   when one is given (Valenzuela, Bulacan → BULACAN). SQM is the total only — "1,000 sqm (500 sqm
   per floor)" → `1000SQM`, not `1000-500SQM`.
+- **No listing in the template → no listing in the GC.** When a staff template names no listing,
+  make the GC without one (template + "Hello @client" only) and keep the blanks as `~`; the
+  employee who posted it sends the listing themselves. Never pick one for them
+  (`create_client_gc(n, listing_folder_id="none")`; `process_client_templates` does this).
 - **Fill blanks from the suggested listing at creation.** Whenever the GC is made with a listing,
   any blank in the template (SQM, type, location) comes from that listing — never leave `~` when
   a listing was sent. A listing with several unit sizes gives the range: "Taytay Rizal, 500, 710,

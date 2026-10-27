@@ -403,7 +403,9 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
     Args:
         template_n: the template message's n (from list_messages in the templates chat).
         gc_name: override the derived name (required when the plan reports it's uncertain).
-        listing_folder_id: override/choose the listing folder (from find_listings), or "none".
+        listing_folder_id: the listing the template names, when it couldn't be matched (from
+            find_listings), or "none". A template with no listing gets none — the employee
+            sends it; never pick one yourself.
         dry_run: True = plan only.
     """
     return viber_gc.create_client_gc(template_n, gc_name, listing_folder_id, dry_run)

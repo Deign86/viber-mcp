@@ -1761,6 +1761,29 @@ def test_tick_participant_fails_loudly_when_the_counter_does_not_move(monkeypatc
         viber_ui._tick_participant("Arjee Alpha")
 
 
+def test_picker_search_retypes_a_dropped_first_letter(monkeypatch):
+    # 2026-10-27: staff saw "ark Anthony Santos" typed into the Add participants search (the "M"
+    # was lost), then the retry fixed it. The first letter is now typed alone and checked.
+    import viber_ui
+
+    class DropsFirst(PickerBackend):
+        CONTACTS = ["Mark Anthony Santos"]
+        dropped = False
+
+        def type_into_focus(self, text):
+            if not self.dropped and self.focus == "search" and not self.search_text:
+                self.dropped = True       # the first keystroke after focusing the box is lost
+                self.typed.append(text)
+                return
+            super().type_into_focus(text)
+
+    fake = DropsFirst()
+    _use(monkeypatch, fake, fast_clock=True)
+    viber_ui._tick_participant("Mark Anthony Santos")
+    assert fake.typed == ["M", "M", "ark Anthony Santos"]   # one pass, no full retype
+    assert fake.search_text == "Mark Anthony Santos" and fake.counter == 1
+
+
 class PanelBackend:
     """A 1:1 chat whose info panel has a main page (pencil, Groups in common) and a sub-page."""
     INFO, PENCIL, STAR = [1050, 20, 1080, 50], [800, 150, 820, 170], [830, 150, 850, 170]
