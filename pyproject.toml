@@ -11,6 +11,7 @@ dependencies = [
     "pyobjc-framework-cocoa>=12.2.1 ; sys_platform == 'darwin'",
     "pyobjc-framework-quartz>=12.2.1 ; sys_platform == 'darwin'",
     "pyobjc-framework-vision>=12.2.1 ; sys_platform == 'darwin'",
+    "pyobjc-framework-applicationservices>=12.2.1 ; sys_platform == 'darwin'",
     # cryptography 49 dropped Intel-Mac wheels; 48 still ships universal2 (else uv builds it with Rust).
     # The second line keeps every other platform on 49+ (uv would otherwise lock 48 for all).
     "cryptography<49 ; sys_platform == 'darwin' and platform_machine == 'x86_64'",

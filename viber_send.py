@@ -745,6 +745,7 @@ def open_my_notes() -> dict:
     matched, score = _search_open("My Notes")
     if "notes" not in matched.lower():
         raise SendError(f"Could not confirm the My Notes chat opened (matched '{matched}').")
+    require_open_chat("My Notes")  # the search row said so; the header must too
     return {"opened": "My Notes", "matched": matched}
 
 
@@ -771,6 +772,8 @@ def save_to_my_notes(text: str) -> dict:
                 f"Could not confirm My Notes opened (search matched '{matched}'); aborting to "
                 "avoid saving to the wrong chat."
             )
+        # A matching search row isn't proof: a click that lands on another row opens that chat.
+        require_open_chat("My Notes")
         before = own_message_texts()
         _paste_into_compose(text)     # also closes the info panel if open
         backend.click_send()

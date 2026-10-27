@@ -1,0 +1,214 @@
+"""macOS backend: the pure AX → element helpers (run on every OS), plus the domain changes the
+Mac tree needed (popup nesting, the preview caption, the filter pills, the My Notes guard)."""
+
+import sys
+from pathlib import Path
+
+import pytest
+from PIL import Image, ImageDraw
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import backends  # noqa: E402
+import viber_ocr  # noqa: E402
+import viber_send  # noqa: E402
+import viber_ui  # noqa: E402
+from backends import _maclogic as ml  # noqa: E402
+
+_PATH = "QGuiApplication.MainWindow_QMLTYPE_78.ApplicationWindowContentControl.SplitView_QMLTYPE_480"
+
+
+def _el(kind, cls, rect, parent=None, text="", name="", ident=""):
+    return {"type": kind, "name": name, "class": cls, "text": text, "parent": parent,
+            "rect": list(rect), "_ident": ident}
+
+
+def test_short_class_takes_the_last_qml_segment():
+    assert ml.short_class(_PATH + ".StackView_QMLTYPE_732.FeedDelegate_QMLTYPE_1472."
+                          "TextEditItem_QMLTYPE_1552_QML_1559") == "TextEditItem"
+    assert ml.short_class(_PATH + ".StackView_QMLTYPE_732.SendToolbarButton") == "SendToolbarButton"
+    assert ml.short_class("") == "" and ml.short_class(None) == ""
+
+
+def test_ax_roles_map_to_the_uia_types_viber_ui_matches():
+    assert ml.ax_type("AXTextField") == "Edit"
+    assert ml.ax_type("AXButton") == "Button"
+    assert ml.ax_type("AXMenuItem") == "MenuItem"
+    assert ml.ax_type("AXStaticText") == "Text"
+    assert ml.ax_type("AXGroup", "QQuickPopupItem") == "Window"
+    assert ml.ax_type("AXSomethingNew") == "SomethingNew"
+
+
+def test_rects_are_relative_to_the_window():
+    assert ml.to_rect((740, 774, 36, 36), (8, 33)) == [732, 741, 768, 777]
+
+
+def test_visible_center_clips_to_the_window():
+    window = (8, 33, 1085, 785)
+    assert ml.visible_center((100, 100, 20, 20), window) == (110, 110)
+    # Scrolled half out of the bottom: hit-test the part that's still on screen.
+    assert ml.visible_center((803, 792, 136, 136), window) == (871, 805)
+    assert ml.visible_center((803, 900, 136, 136), window) is None
+
+
+def test_utf16_units_count_surrogate_pairs():
+    assert ml.utf16_units("a") == 1
+    assert ml.utf16_units("😀") == 2
+
+
+def test_press_key_names_match_the_windows_backend():
+    assert set(ml.KEYCODES) == {"escape", "esc", "enter", "return", "backspace", "delete", "tab",
+                                "space", "up", "down", "left", "right", "pageup", "pagedown",
+                                "home", "end"}
+
+
+def test_field_predicates():
+    assert ml.is_compose(_el("Edit", "QQuickTextEdit", (0, 0, 1, 1)))
+    assert ml.is_search(_el("Edit", "TextFieldItem", (0, 0, 1, 1)))
+    assert ml.is_send(_el("Button", "SendToolbarButton", (0, 0, 1, 1)))
+    assert not ml.is_compose(_el("Edit", "TextArea", (0, 0, 1, 1)))  # the ChatGPT panel's box
+
+
+def _badge_column():
+    img = Image.new("RGB", (120, 260), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.text((10, 10), "1:55 PM", fill=ml.BADGE_RGB)  # unread time stamp: same purple, thin text
+    d.ellipse((80, 40, 100, 60), fill=ml.BADGE_RGB)  # "5"
+    d.text((87, 44), "5", fill=(255, 255, 255))
+    d.rounded_rectangle((74, 120, 104, 140), radius=10, fill=ml.BADGE_RGB)  # "23" (a pill)
+    d.text((82, 124), "23", fill=(255, 255, 255))
+    return img
+
+
+def test_badge_boxes_find_circles_and_pills_but_not_purple_text():
+    boxes = ml.badge_boxes(_badge_column())
+    assert len(boxes) == 2
+    (l1, t1, r1, b1), (l2, t2, r2, b2) = boxes
+    assert (l1, t1) == (80, 40) and r1 - l1 >= 19
+    assert (l2, t2) == (74, 120) and r2 - l2 > b2 - t2  # the pill is wider than tall
+
+
+def _preview_elements():
+    """What macOS reports while the file-send preview is up: everything hangs off the window, the
+    hidden ChatGPT panel's TextArea first; the identifiers keep the popup's levels."""
+    popup = "QGuiApplication.MainWindow_QMLTYPE_78.Popup"
+    els = [
+        _el("Window", "", (0, 0, 1085, 788)),
+        _el("Edit", "TextArea", (809, 695, 1049, 712), 0, name="Ask ChatGPT",
+            ident=_PATH + ".SplitView_QMLTYPE_480.ScrollView_QMLTYPE_483.TextArea_QMLTYPE_484"),
+        _el("Button", "IconButton", (1049, 48, 1065, 64), 0, ident=popup + ".IconButton_QMLTYPE_63"),
+        _el("Button", "IconButton", (545, 629, 605, 689), 0, ident=popup + ".IconButton_QMLTYPE_63"),
+        _el("Edit", "TextArea", (259, 729, 791, 749), 0, name="Add a caption...",
+            ident=popup + ".ScrollView_QMLTYPE_483.TextArea_QMLTYPE_484_QML_1154"),
+        _el("Button", "RoundIconButton", (799, 721, 835, 757), 0, ident=popup + ".RoundIconButton_QMLTYPE_215"),
+        _el("Group", "StackView", (300, 68, 784, 788), 0, ident=_PATH + ".StackView_QMLTYPE_732"),
+        _el("Edit", "TextEditItem", (489, 398, 756, 551), 6, text="one",
+            ident=_PATH + ".StackView_QMLTYPE_732.FeedDelegate_QMLTYPE_1472.TextEditItem_QMLTYPE_1552"),
+        _el("Edit", "TextEditItem", (557, 635, 756, 652), 6, text="two",
+            ident=_PATH + ".StackView_QMLTYPE_732.FeedDelegate_QMLTYPE_1472.TextEditItem_QMLTYPE_1552"),
+    ]
+    return els, list(range(len(els)))
+
+
+def test_nest_popups_rebuilds_the_preview_levels():
+    els, refs = ml.nest_popups(*_preview_elements())
+    assert all("_ident" not in e for e in els)
+    popup = next(i for i, e in enumerate(els) if e["class"] == "QQuickPopupItem")
+    assert els[popup]["type"] == "Window" and refs[popup] is None
+    caption = next(e for e in els if e["name"] == "Add a caption...")
+    scroll = els[caption["parent"]]
+    assert scroll["class"] == "ScrollView" and scroll["parent"] == popup
+    assert els[popup]["rect"] == [259, 48, 1065, 757]  # covers all its children
+    # Repeated page items aren't merged into one virtual FeedDelegate.
+    texts = [e for e in els if e["class"] == "TextEditItem"]
+    assert all(els[t["parent"]]["class"] == "StackView" for t in texts)
+    # The real elements keep their AX refs, in order.
+    assert [r for r in refs if r is not None] == list(range(9))
+
+
+def test_preview_skips_the_hidden_chatgpt_textarea():
+    els, _ = ml.nest_popups(*_preview_elements())
+    caption, send, add, close = viber_ui._preview(els)
+    assert caption["name"] == "Add a caption..."
+    assert send["class"] == "RoundIconButton"
+    assert add["rect"] == [545, 629, 605, 689]
+    assert close["rect"] == [1049, 48, 1065, 64]
+
+
+def test_preview_is_none_without_an_overlay():
+    els = [_el("Window", "", (0, 0, 1085, 788)),
+           _el("Edit", "TextArea", (809, 695, 1049, 712), 0, name="Ask ChatGPT")]
+    assert viber_ui._preview(els) is None
+
+
+def test_popup_window_is_named_by_its_title_text():
+    popup = "QGuiApplication.MainWindow_QMLTYPE_78.Popup"
+    els = [_el("Window", "", (0, 0, 1085, 788)),
+           _el("Text", "", (400, 300, 600, 320), 0, name="Pin note?", ident=popup + ".Label_QMLTYPE_9"),
+           _el("Button", "NotificationButton", (420, 360, 500, 390), 0, name="Pin",
+               ident=popup + ".NotificationButton_QMLTYPE_7")]
+    els, _ = ml.nest_popups(els, list(range(len(els))))
+    dialog = viber_ui._popup(els)
+    assert dialog is not None and dialog["name"] == "Pin note?"
+
+
+class _FilterBackend:
+    def __init__(self, obs):
+        self.obs, self.clicks = obs, []
+
+    def observe(self, region=None):
+        return self.obs
+
+    def screenshot(self):
+        class Img:
+            width, height = 1085, 788
+        return Img()
+
+    def click_at(self, x, y, button="left", double=False):
+        self.clicks.append((x, y))
+
+    def wait_still(self, timeout=2.0):
+        return 0.0
+
+
+def test_filter_pills_lower_on_a_mac_window_are_found(monkeypatch):
+    # The Mac window's pills sit at ~0.23 of its height (Windows: under 0.22).
+    fake = _FilterBackend([{"text": "All", "x": 0.024, "y": 0.226, "w": 0.019, "h": 0.02},
+                           {"text": "Unread", "x": 0.075, "y": 0.226, "w": 0.045, "h": 0.02}])
+    monkeypatch.setattr(backends, "_backend", fake)
+    viber_ocr._click_filter("Unread")
+    assert len(fake.clicks) == 1 and fake.clicks[0][0] == pytest.approx((0.075 + 0.0225) * 1085)
+
+
+class _NotesBackend:
+    def __init__(self):
+        self.sent = False
+
+    def app_running(self):
+        return True
+
+    def clipboard_get(self):
+        return None
+
+    def clipboard_set(self, text):
+        pass
+
+    def focus(self):
+        pass
+
+    def click_send(self):
+        self.sent = True
+
+
+def test_save_to_my_notes_checks_the_header_not_just_the_search_row(monkeypatch):
+    # The search row read "My Notes" but the click opened another chat: nothing may be sent.
+    fake = _NotesBackend()
+    monkeypatch.setattr(viber_send, "backend", fake)
+    monkeypatch.setattr(viber_send, "_search_open", lambda name: ("My Notes", 3))
+
+    def wrong_chat(expect):
+        raise viber_send.SendError(f"The open chat is 'Mark', not '{expect}'.")
+    monkeypatch.setattr(viber_send, "require_open_chat", wrong_chat)
+    monkeypatch.setattr(viber_send, "_paste_into_compose", lambda text: pytest.fail("pasted"))
+    with pytest.raises(viber_send.SendError):
+        viber_send.save_to_my_notes("note")
+    assert not fake.sent

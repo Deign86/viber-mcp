@@ -683,7 +683,7 @@ def _shrink(data: bytes, size: int) -> bytes:
     """A JPEG no larger than size x size, upright (phone photos are ~4,000 px and EXIF-rotated)."""
     try:
         from PIL import Image, ImageOps
-    except ImportError:  # Pillow ships with the Windows backend only
+    except ImportError:  # Pillow is a dependency; only a broken install lacks it
         return data
     img = ImageOps.exif_transpose(Image.open(io.BytesIO(data)))
     img.thumbnail((size, size))

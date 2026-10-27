@@ -297,7 +297,7 @@ whitelist, the dashed-line split, pending-template detection, listing choice (ne
 reading in both of Viber's UI layouts (and that other people's messages are never treated as yours),
 the send-preview controls, OCR-tolerant name/number matching, and that every tool the staff rules
 mention exists. Bugs found on the live app get a regression test in `tests/test_regressions.py`.
-GitHub Actions runs it on every push (`.github/workflows/tests.yml`, Windows).
+GitHub Actions runs it on every push (`.github/workflows/tests.yml`, Windows and macOS).
 
 ## Test without Claude
 
@@ -319,19 +319,56 @@ uv run client.py call open_image '{"n": 1}'    #   returned images are saved as 
 
 ## macOS
 
-The original macOS backend is included. It works differently from Windows: it takes over the
-mouse and keyboard (HID-sourced events, which Qt requires) and reads the window with Apple Vision OCR.
+macOS 13+ on Apple Silicon or Intel, with [Viber Desktop](https://www.viber.com/download/) signed
+in and [`uv`](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
 
 ```bash
+git clone https://github.com/Deign86/viber-mcp.git ~/Developer/viber-mcp
+cd ~/Developer/viber-mcp
 uv sync
-cp contacts.example.json contacts.json
-claude mcp add --transport stdio --scope user viber -- uv --directory "$(pwd)" run server.py
+claude mcp add --transport stdio --scope user viber -- "$(command -v uv)" --directory "$(pwd)" run server.py
 ```
 
-Grant **Accessibility** and **Screen Recording** to the app that launches the server
-(System Settings → Privacy & Security), then fully quit and reopen it. Keep Viber in a normal
-window, not fullscreen. If the toggle is on but you still get error 1002, run
-`tccutil reset Accessibility <bundle-id>` and relaunch.
+For Claude Desktop, add the same command to
+`~/Library/Application Support/Claude/claude_desktop_config.json`, with the full path to `uv`
+(Mac apps don't see your shell's PATH):
+
+```json
+{
+  "mcpServers": {
+    "viber": {
+      "command": "/Users/you/.local/bin/uv",
+      "args": ["--directory", "/Users/you/Developer/viber-mcp", "run", "server.py"]
+    }
+  }
+}
+```
+
+Grant **Accessibility** and **Screen Recording** to the app that launches the server (Claude, or
+your terminal) in System Settings → Privacy & Security, then fully quit and reopen it. If the toggle
+is on but input still fails, run `tccutil reset Accessibility <bundle-id>` and relaunch.
+
+The Drive key goes in `~/viber-mcp/google_service_account.json` (or point
+`VIBER_MCP_GOOGLE_SERVICE_ACCOUNT` at it); tokens and the download cache live in `~/viber-mcp/` too.
+
+**How it stays out of your way.** Viber's Qt accessibility tree reaches macOS with the same class
+names the Windows backend uses, so the tools find controls by identity there too:
+
+| Step | How | Your Mac |
+|------|-----|----------|
+| See | Window capture + Apple Vision OCR | Works while Viber is covered. |
+| Find controls, type, send, press buttons | Accessibility (AXValue, AXPress) | Cursor, keyboard and front app untouched. |
+| Type into a focused field (mentions, captions) | Key events posted to Viber's process | Untouched. |
+| Click a chat row or search result, right-click a message, scroll, press Escape/Enter/arrows, choose a file in the picker | Real input: Viber comes to the front for a moment, then your app and cursor are put back | Brief hand-off. |
+
+- **Keep Viber's window open** (behind other windows is fine). If you close it with the red ✕ the
+  server reopens it; minimized windows are restored.
+- **Don't use Viber at the same moment**, as on Windows. Every tool that writes to "the open chat"
+  checks the header first and refuses if another chat is open.
+- **OCR speed:** Vision takes ~2-3 s for a full read on an Intel Mac (much less on Apple Silicon),
+  so read-heavy tools are slower than on Windows.
+- **Not on macOS yet:** `like_message` (Viber doesn't expose the reaction hearts to macOS
+  accessibility).
 
 ## Project layout
 
@@ -345,7 +382,8 @@ window, not fullscreen. If the toggle is on but you still get error 1002, run
 | `viber_drive.py` | Google Drive listings: OAuth sign-in, search, listing text/photo split, download cache |
 | `google_oauth_client.json` | OAuth client for Drive (git-ignored; see Google Drive setup) |
 | `backends/windows.py` | Windows backend: PrintWindow + OCR, UI Automation, posted input |
-| `backends/macos.py` | macOS backend: Quartz/Vision/AppKit |
+| `backends/macos.py` | macOS backend: Accessibility + Vision OCR, posted keys, brief real-input hand-off |
+| `backends/_maclogic.py` | Pure macOS helpers (AX → elements, popup nesting, unread badges), tested on every OS |
 | `backends/base.py` | The `Backend` interface each platform implements |
 | `windows_selftest.py` | Safe Windows health check |
 | `client.py` | Standalone test client |

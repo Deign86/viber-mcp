@@ -304,10 +304,24 @@ def _mid(rect) -> tuple[float, float]:
 
 def _preview(elements: list[dict]):
     """(caption box, send button, add-more button) of Viber's file-preview overlay, or None."""
-    caption = next((e for e in elements if e["type"] == "Edit" and e["class"] == "TextArea"), None)
-    if caption is None or caption["parent"] is None:
+    # The caption whose overlay holds the send button: macOS also lists the hidden ChatGPT
+    # panel's TextArea, ahead of the caption. Otherwise the first TextArea, as before.
+    found = None
+    for caption in (e for e in elements if e["type"] == "Edit" and e["class"] == "TextArea"):
+        parts = _preview_parts(elements, caption)
+        if parts is not None and (found is None or (parts[1] is not None and found[1] is None)):
+            found = parts
+        if found is not None and found[1] is not None:
+            break
+    return found
+
+
+def _preview_parts(elements: list[dict], caption: dict):
+    if caption["parent"] is None:
         return None
     overlay = elements[caption["parent"]]["parent"]  # caption → ScrollView → overlay
+    if overlay is None:
+        return None  # a TextArea right under the window isn't an overlay's caption
     cy = _mid(caption["rect"])[1]
     send = next((e for e in elements if e["type"] == "Button" and e["class"] == "RoundIconButton"
                  and e["parent"] == overlay and abs(_mid(e["rect"])[1] - cy) < 30), None)
