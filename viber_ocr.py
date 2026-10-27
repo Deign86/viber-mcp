@@ -115,7 +115,7 @@ def _click_filter(label: str) -> None:
     """Click one of the chat list's filter pills ("All", "Unread") at its OCR'd position."""
     want = label.lower().translate(_FOLD)
     pill = next((o for o in observe(region=_FILTER_REGION)
-                 if o["x"] < 0.2 and o["y"] < 0.22
+                 if o["x"] < 0.2 and o["y"] < _FILTER_REGION[3]  # macOS: the pills sit at ~0.23
                  and o["text"].strip().lower().translate(_FOLD) == want), None)
     if pill is None:
         raise OCRError(f"The chat list's '{label}' filter isn't on screen (is the chat list showing?).")

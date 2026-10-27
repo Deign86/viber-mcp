@@ -558,9 +558,10 @@ def _await_results(name: str, timeout: float = 2.4):
     Replaces a fixed 1.6s wait plus one read. The first read after typing still shows the OLD
     chat list, with the same name at a different y — so a match counts only once a results
     section header is visible and two reads in a row agree on the row."""
-    state = {"prev": None, "obs": [], "match": None, "headed": False}
+    state = {"prev": None, "obs": [], "match": None, "headed": False, "reads": 0}
 
     def check():
+        state["reads"] += 1
         obs = backend.observe(region=_RESULTS_REGION)
         match = _find_result_row(name, obs)
         header = _results_header_visible(obs) or _no_results(obs)
@@ -574,7 +575,12 @@ def _await_results(name: str, timeout: float = 2.4):
         state.update(prev=match, obs=obs, match=match, headed=header)
         return ready
 
-    _poll(check, timeout=timeout, first=0.3)
+    ready = _poll(check, timeout=timeout, first=0.3)
+    # Slow OCR (Vision on an Intel Mac: 1.5-4 s a read) fits only one read in the timeout, and
+    # that one may still show the old chat list: always allow a few reads.
+    while not ready and state["reads"] < 3:
+        time.sleep(0.1)
+        ready = check()
     return state["obs"], state["match"]
 
 
@@ -745,6 +751,7 @@ def open_my_notes() -> dict:
     matched, score = _search_open("My Notes")
     if "notes" not in matched.lower():
         raise SendError(f"Could not confirm the My Notes chat opened (matched '{matched}').")
+    require_open_chat("My Notes")  # the search row said so; the header must too
     return {"opened": "My Notes", "matched": matched}
 
 
@@ -771,6 +778,8 @@ def save_to_my_notes(text: str) -> dict:
                 f"Could not confirm My Notes opened (search matched '{matched}'); aborting to "
                 "avoid saving to the wrong chat."
             )
+        # A matching search row isn't proof: a click that lands on another row opens that chat.
+        require_open_chat("My Notes")
         before = own_message_texts()
         _paste_into_compose(text)     # also closes the info panel if open
         backend.click_send()

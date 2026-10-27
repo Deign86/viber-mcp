@@ -4,9 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A macOS-only MCP server that sends and reads Viber Desktop messages by **automating the running,
-signed-in Viber app** — Viber has no API, its message DB is encrypted, and its Qt accessibility tree
-is unusable, so everything is done via the `viber://` URL scheme, synthetic HID input, and screen OCR.
+An MCP server (Windows and macOS) that sends and reads Viber Desktop messages by **automating the
+running, signed-in Viber app** — Viber has no API and its message DB is encrypted, so everything goes
+through the UI: the `viber://` URL scheme, Qt's accessibility tree (UIA on Windows, AX on macOS) to
+find and read controls, input the OS lets a background app receive, and screen OCR.
 
 ## Commands
 
@@ -63,7 +64,8 @@ port-ready for Windows/Linux — see "Porting" below):
   `put_draft`,
   `search_and_open`, `search_messages` (message-text search: the 2nd `TabComponent` under the
   search box; `message_search_rows` parses the OCR'd rows), `save_to_my_notes`, `open_my_notes`, `list_contacts`, `scroll_chat`,
-  `scroll_chat_list` (backend `scroll(area, notches)`; Windows posts `WM_MOUSEWHEEL`, macOS not yet),
+  `scroll_chat_list` (backend `scroll(area, notches)`; Windows posts `WM_MOUSEWHEEL`, macOS sends
+  real wheel events during a brief front hand-off),
   `backread_chat` (`viber_ui.backread`: scrolls up 10 notches a screen from the newest, joins the
   UIA screens at their longest overlap (`_merge_older`, keeps repeated "ok"/photo rows), stops
   when the top stops moving twice; returns the whole chat oldest first, then jumps back down).
@@ -77,9 +79,10 @@ port-ready for Windows/Linux — see "Porting" below):
   - `base.py` — `Backend` ABC + `OCRError`. Semantic interface: `app_running/focus/open_url`,
     `observe()→[{text,x,y}]`, clipboard, `type_text/select_all/delete/paste`, and element clicks
     `click_compose/send/search/result(norm_y)/panel_close`. The domain never sees pixels or key codes.
-  - `macos.py` — `MacBackend`: all Quartz/Vision/AppKit code AND the macOS Viber-layout constants
-    (element pixel/fraction offsets). This is the only file with OS APIs.
-  - `__init__.py` — `get_backend()` picks the backend by `sys.platform` (macOS only today).
+  - `macos.py` — `MacBackend`: AX (ApplicationServices), Quartz, Vision; `_maclogic.py` holds its
+    pure helpers (AX node → element dict, popup nesting, unread-badge detection), tested everywhere.
+  - `windows.py` — `WindowsBackend` (UIA, PrintWindow, posted messages); pure helpers in `_winlogic.py`.
+  - `__init__.py` — `get_backend()` picks the backend by `sys.platform`.
 - `client.py` — standalone MCP stdio client for testing.
 - `contacts.json` — name→E.164 map, **git-ignored (real numbers)**; ship `contacts.example.json`.
 
@@ -97,7 +100,7 @@ Status:
 
 | Platform | Backend | State |
 |----------|---------|-------|
-| macOS | `backends/macos.py` (`MacBackend`) | ✅ implemented (Quartz/Vision/AppKit, coordinate-based) |
+| macOS | `backends/macos.py` (`MacBackend`) | ✅ implemented, mostly background (AX to locate/read/type/press, Vision OCR, posted characters; real input with a brief front hand-off for clicks on non-controls, scrolling and named keys) |
 | Windows | `backends/windows.py` (`WindowsBackend`) | ✅ implemented, background (PrintWindow + Windows.Media.Ocr, UIA to locate, posted messages for input; `windows_selftest.py`) |
 | Linux | — | ❌ not started |
 
@@ -116,7 +119,7 @@ Status:
 - **Speed (profiled 2026-10-21 on the live app).** OCR takes the raw BGRA pixels straight into a
   `SoftwareBitmap` (the PNG round trip cost more than recognition; words are identical).
   `observe(region=(l, t, r, b))` crops before OCR — the sidebar is ~5x cheaper, the header band
-  ~20x; it's a *hint* (macOS ignores it), so callers still filter by x/y. UIA is read through
+  ~20x; it's a *hint*, so callers still filter by x/y. UIA is read through
   `_levels()` (one `FindAllBuildCache` per tree level, `_Node`s with cached properties) — never
   go back to per-property `Control` reads in loops. The message/search box located by
   `click_compose`/`click_search` is kept (`_target_node`) so `_value()` polls cost ~1 ms; anything
@@ -150,19 +153,50 @@ Status:
 
 ## Critical, non-obvious constraints (most bugs here come from violating these)
 
-- **All synthetic input MUST come from a real HID event source**
-  (`_SRC = CGEventSourceCreate(kCGEventSourceStateHIDSystemState)`). Qt silently drops plain
-  `CGEvent`s and System Events keystrokes. Use the `_click` / `_key` / `_type` helpers.
-- **`_type` must zero modifier flags per event.** A Cmd leaking from a prior `Cmd+A` turns the next
-  character into a shortcut (e.g. typing "My Notes" → **Cmd+M = minimize the window**).
-- **Sidebar/search/send-button/panel-close are targeted by fixed PIXEL offsets from window edges**
-  (`_send_point`, `_panel_close_point`, and the `b["X"]+175` search click), NOT fractions of the
-  window. The sidebar and side panels have fixed pixel widths, so fraction-based clicks miss on
-  wide/maximized windows. Only the compose box uses a fraction (`_COMPOSE_FRAC`) because the input is
-  wide and forgiving.
-- **Close any right-side panel before sending.** The chat-info and sticker "Settings" panels shift
-  the send button left; `_ensure_panel_closed` (called inside `_paste_into_compose`) detects
-  (`_side_panel_open` via OCR markers) and closes them.
+- **macOS (Viber 29.1, macOS 15) — measured, not assumed:**
+  - Qt's accessibility tree IS usable on macOS: every AX element's `AXIdentifier` is the QML object
+    path, so `short_class` gives the same classes as Windows UIA (StackView, TextEditItem,
+    SendToolbarButton, QQuickTextEdit, TextFieldItem, SideBarContent, …). AX skips role-less
+    items, so the tree is flatter: messages are direct children of the StackView (`_messages`
+    handles that layout) and popups lose their levels — `nest_popups` rebuilds them from the
+    identifier (Popup → `Window`/`QQuickPopupItem`, then ScrollView …), only for popups. Dialogs
+    ("Pin note?", "Couldn't be added") are `MainWindow.NotificationBox` with only their
+    NotificationButtons in AX (no title text): the virtual window's rect is widened above the
+    buttons so `_ocr_px(popup rect)` reads the message.
+  - Qt exposes items it isn't drawing (the hidden ChatGPT panel's `TextArea`, pages under a side
+    panel); `_walk` keeps only elements that `AXUIElementCopyElementAtPosition` at their visible
+    centre returns (self, descendant or ancestor). Popup overlays don't take part in that hit test,
+    so code looking for a popup's part must check structure (`_preview` picks the TextArea whose
+    overlay has a send button).
+  - Work in the background: `AXValue` set on the message/search box (search reacts to it),
+    `AXPress` on buttons (Viber rebuilds the send button once text is in — look it up fresh), and
+    characters posted with `CGEventPostToPid`. Ignored in the background: posted mouse clicks
+    (even with the window-number fields), posted wheel events, posted Escape to the image viewer.
+    Those go through `_with_viber_front`: Viber made frontmost via `AXFrontmost`, real HID events,
+    then the cursor and the previous front app are restored (~0.6 s). It holds `_handoff`, and it
+    sends nothing unless Viber really is in front (the input would land in the user's app);
+    `hold_foreground` only acts while it can take that lock.
+  - `NSWorkspace.frontmostApplication()` goes stale in this run-loop-less process and the
+    system-wide AX focused app is empty for Electron apps: `foreground()` reads the owner of the
+    topmost layer-0 window.
+  - All synthetic input comes from a HID event source with zeroed modifier flags (a leftover Cmd
+    turns "M" into Cmd+M = minimize).
+  - Vision misses a lone white digit in the purple unread badge: `badge_boxes` finds the badges by
+    colour, `_read_badges` reads them as one line of black-on-white digits and maps each digit by
+    its character box; they're added to `observe()` as bare-number observations for `chat_rows`.
+    Language correction is off (it rewrites names/numbers and costs ~25%).
+  - Coordinates are points relative to the window's top-left (title bar included);
+    `screenshot()` is downscaled to points on Retina so viber_ui's pixel offsets hold.
+  - The red ✕ hides Viber's window without quitting; `focus()` reopens it with `open -g -b`.
+    Viber activates itself on a `viber://` link even with `open -g`, so `open_url` hands the
+    front back for 4 s in a thread (like the Windows backend).
+  - The file picker is an `AXSheet` ("send a file"). Cmd+Shift+G (real keys) opens a nested sheet
+    with the path field; set `AXValue` AND `AXFocused` before Return, or Return goes nowhere and
+    Open stays disabled. Then `AXPress` Open.
+  - The reaction hearts aren't in the macOS AX tree, so `like_message` can't find them there.
+- **The send button is found by identity** (`SendToolbarButton`) on both platforms, so side panels
+  that shift it don't matter (`panel_shifts_send = False`); `_ensure_panel_closed` only runs for a
+  backend that clicks by position.
 - **Click the send button; do not press Return.** "Send message on Enter" may be off, in which case
   Return just inserts a newline.
 - **`viber://chat?number=` navigation is slow (~seconds), mobile-first, and sometimes doesn't
@@ -183,7 +217,7 @@ Status:
   right, the caller wasn't; `current_chat` first when unsure.
 - **Send verification is UIA-first.** `sent_confirmed(text, before)` compares `own_message_texts()`
   (my `TextEditItem` texts, isolate marks stripped, long texts by first line) before and after the
-  send; a new matching message = verified. Only without a UI tree (macOS) or when no new message is
+  send; a new matching message = verified. Only without a UI tree or when no new message is
   seen does it fall back to the OCR check (`_verify_sent`: text seen AND placeholder back). The
   OCR check passes texts under 6 alphanumerics unverified-as-true ("ok"), so short texts still
   can't fail it. Tests that fake the backend must patch BOTH `backends._backend` and
@@ -192,7 +226,8 @@ Status:
   (searching "Ivy" lists "Divya" first). `_find_result_row` scores exact/prefix over substring and
   clicks the matched row's actual OCR position; excludes the search-bar text (y<0.12), section
   headers, phone numbers, and action rows.
-- **`find_viber_window` ignores the tiny menu-bar window** (>200px filter) so captures aren't blank.
+- **`MacBackend._onscreen_window` ignores the tiny menu-bar window** (>200px filter) so captures
+  aren't blank.
 - **OCR interleaves the sidebar and the open conversation.** Use x-position filtering
   (`read_chat_list` keeps x<0.30) or headers to disambiguate; OCR also garbles small/emoji text.
 
@@ -201,8 +236,8 @@ Status:
 - Viber running, signed in, and in a **normal window on the main desktop — not macOS fullscreen**
   (fullscreen puts it on a separate Space, causing window-ID churn and blank captures). Don't resize
   it mid-operation.
-- macOS **Accessibility** (synthetic input) and **Screen Recording** (capture) granted to the process
-  that launches the server (the terminal, e.g. iTerm). A stuck grant shows error 1002 ("not allowed
+- macOS **Accessibility** (AX tree and input) and **Screen Recording** (capture) granted to the
+  process that launches the server (Claude, or the terminal, e.g. iTerm). A stuck grant shows error 1002 ("not allowed
   to send keystrokes") despite the toggle being on — fix with
   `tccutil reset Accessibility <bundle-id>` (e.g. `com.googlecode.iterm2`) and relaunch.
 

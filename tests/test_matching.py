@@ -107,3 +107,24 @@ def test_to_observations_normalizes_sorts_and_drops_blank():
 
 def test_normalize_viber_url_encodes_plus():
     assert normalize_viber_url("viber://chat?number=+639171234567") == "viber://chat?number=%2B639171234567"
+
+
+def test_await_results_reads_a_few_times_when_ocr_is_slow(monkeypatch):
+    # Live-app regression (macOS, Intel): one OCR read took longer than the whole timeout, it
+    # showed the old chat list, and open_my_notes failed with "no matching chat".
+    import viber_send
+    stale = [{"text": "Eugene Gre", "x": 0.1, "y": 0.3}]
+    results = [{"text": "Conversations", "x": 0.05, "y": 0.13}, {"text": "My Notes", "x": 0.1, "y": 0.179}]
+    reads = iter([stale, results, results, results])
+    clock = {"t": 0.0}
+
+    class SlowBackend:
+        def observe(self, region=None):
+            clock["t"] += 3.0  # each read outlasts the 2.4 s timeout
+            return next(reads)
+
+    monkeypatch.setattr(viber_send, "backend", SlowBackend())
+    monkeypatch.setattr(viber_send.time, "sleep", lambda s: None)
+    monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock["t"])
+    _, match = viber_send._await_results("My Notes")
+    assert match is not None and match[0] == "My Notes"
