@@ -647,7 +647,8 @@ def like_message(n: int) -> dict:
 
 def _sidebar_right(elements: list[dict], width: float) -> float:
     """Right edge of Viber's left sidebar: where the chat pane (SplitView) begins."""
-    pane = next((e for e in elements if e["class"] == "SplitView"), None)
+    import viber_ocr
+    pane = viber_ocr._chat_pane(elements)
     return pane["rect"][0] if pane else width * 0.28
 
 
@@ -659,7 +660,8 @@ def _sidebar_right_cached(b, img) -> float:
     Only a found pane is cached: it can be missing from the tree while the Sponsored ad shows."""
     key = (id(b), img.width, img.height)
     if key not in _SB_CACHE:
-        pane = next((e for e in b.elements() if e["class"] == "SplitView"), None)
+        import viber_ocr
+        pane = viber_ocr._chat_pane(b.elements())
         if pane is None:
             return img.width * 0.28
         _SB_CACHE.clear()
