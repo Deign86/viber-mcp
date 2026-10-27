@@ -325,28 +325,19 @@ in and [`uv`](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/inst
 ```bash
 git clone https://github.com/Deign86/viber-mcp.git ~/Developer/viber-mcp
 cd ~/Developer/viber-mcp
-uv sync
-claude mcp add --transport stdio --scope user viber -- "$(command -v uv)" --directory "$(pwd)" run server.py
+./setup_macos.sh
 ```
 
-For Claude Desktop, add the same command to
-`~/Library/Application Support/Claude/claude_desktop_config.json`, with the full path to `uv`
-(Mac apps don't see your shell's PATH):
+`setup_macos.sh` installs the dependencies, builds `~/Applications/Viber MCP.app` (a small launcher,
+`macos/launcher.c`) and registers it as the `viber` server with Claude Code and Claude Desktop.
+Then **fully quit and reopen Claude** (Cmd+Q): Claude Desktop rewrites its config while it runs.
 
-```json
-{
-  "mcpServers": {
-    "viber": {
-      "command": "/Users/you/.local/bin/uv",
-      "args": ["--directory", "/Users/you/Developer/viber-mcp", "run", "server.py"]
-    }
-  }
-}
-```
-
-Grant **Accessibility** and **Screen Recording** to the app that launches the server (Claude, or
-your terminal) in System Settings → Privacy & Security, then fully quit and reopen it. If the toggle
-is on but input still fails, run `tccutil reset Accessibility <bundle-id>` and relaunch.
+The first time Claude uses Viber, macOS asks to allow **"Viber MCP"** for **Accessibility** and
+**Screen Recording** (System Settings → Privacy & Security). Allow both, then restart Claude. The
+launcher exists for this: Claude starts MCP servers as their own "responsible app", so without it
+macOS would ask about `uv`, and allowing that would let every script run through uv control the
+Mac. Re-running the script keeps the permissions unless `macos/launcher.c` changed (a rebuilt app
+has a new signature and must be allowed again).
 
 The Drive key goes in `~/viber-mcp/google_service_account.json` (or point
 `VIBER_MCP_GOOGLE_SERVICE_ACCOUNT` at it); tokens and the download cache live in `~/viber-mcp/` too.
@@ -388,6 +379,7 @@ names the Windows backend uses, so the tools find controls by identity there too
 | `windows_selftest.py` | Safe Windows health check |
 | `client.py` | Standalone test client |
 | `setup.ps1` | One-shot Windows setup and Claude registration |
+| `setup_macos.sh`, `macos/launcher.c` | One-shot macOS setup; the "Viber MCP" launcher app the permissions are granted to |
 | `contacts.example.json` | Template for `contacts.json` (git-ignored; holds real numbers) |
 
 ## Privacy
