@@ -64,17 +64,23 @@ def split_name_stamps(obs: list[dict], stamp_x: float, right_x: float) -> list[d
     """Split OCR pieces that read a row's name and its time stamp as one line ("Mark Anthony
     Sant... ~/ 7:59 PM", seen with Vision on macOS) into a name piece and a stamp piece, so the
     row grouping sees the stamp. Only pieces that start left of `stamp_x` and reach the stamp
-    column (`right_x`) are split, so a preview mentioning a time stays whole. A tick between the
-    name and the time stays on the stamp (it marks our own last message). Pure."""
+    column (`right_x`) are split, and never a preview: a line just under a real stamp (the row's
+    second line) or one with a "Sender:" prefix. A tick between the name and the time stays on
+    the stamp (it marks our own last message). Pure."""
+    stamps_y = [o["y"] for o in obs if o["x"] >= stamp_x and row_stamp(o["text"])]
     out = []
     for o in obs:
         t = o["text"].strip()
         m = _ROW_TIME.search(t)
         w = o.get("w", 0.0)
-        if m is None or m.start() <= 4 or o["x"] >= stamp_x or o["x"] + w < right_x:
+        if m is None or m.start() <= 4 or o["x"] >= stamp_x or o["x"] + w < right_x \
+                or any(0 < o["y"] - y <= 0.035 for y in stamps_y):
             out.append(o)
             continue
         head = t[:m.start()].rstrip()
+        if ":" in head.split()[0] if head.split() else False:  # "Kru: …", "Me: …" — a preview
+            out.append(o)
+            continue
         tick = re.search(r"(?:^|\s)(\S{1,3})$", head)
         if tick and (not any(c.isalnum() for c in tick.group(1)) or tick.group(1).lower() in _TICK_WORDS):
             name, stamp = head[:tick.start(1)].rstrip(), f"{tick.group(1)} {m.group(1)}"

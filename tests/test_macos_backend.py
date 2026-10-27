@@ -299,3 +299,15 @@ def test_a_leftover_search_is_closed_before_reading_the_chat_list(monkeypatch):
     fake.calls.clear()
     viber_ocr._leave_search()  # nothing open: nothing is clicked or typed
     assert fake.calls == []
+
+
+def test_a_preview_ending_in_a_time_is_not_made_into_a_row():
+    # Windows/macOS: a preview line that happens to end with a time and fill the row must not
+    # become a fake chat row.
+    sb = 0.2762
+    obs = [_o("Mitch Kim", 0.065, 0.37, 0.07), _o("1:02 PM", 0.218, 0.372, 0.04),
+           _o("sige see you tomorrow at 5:00 PM", 0.065, 0.395, 0.2),     # under a stamp
+           _o("Kru: dito na kami around 3:30 PM", 0.065, 0.5, 0.2)]        # "Sender:" prefix
+    rows = viber_ocr.chat_rows(obs, sb)
+    assert [r["name"] for r in rows] == ["Mitch Kim"]
+    assert "5:00 PM" in rows[0]["preview"] and "3:30 PM" in rows[0]["preview"]
