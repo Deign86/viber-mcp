@@ -832,6 +832,19 @@ def _compose_text(elements: list[dict]) -> str:
                  and e["class"].startswith("QQuickTextEdit")), "")
 
 
+def _type_first_letter_checked(b, name: str) -> None:
+    """Type `name` into the focused picker search box, first letter on its own: staff saw the
+    first letter dropped ("ark Anthony Santos", then the retry fixed it). The letter is typed
+    again if the box doesn't show it, then the rest follows."""
+    def box():
+        p = add_participants_picker(b.elements())
+        return p[0]["text"] if p else None
+    b.type_into_focus(name[0])
+    if not _poll(lambda: box() == name[0], timeout=0.6, first=0.05) and box() == "":
+        b.type_into_focus(name[0])
+    b.type_into_focus(name[1:])
+
+
 def _panel_search_type(name: str) -> dict:
     """Type `name` into the picker's search box (replacing what's there). A click that misses
     the box leaves focus in the message box, so text that lands there is backspaced away."""
@@ -847,7 +860,7 @@ def _panel_search_type(name: str) -> dict:
         if search["text"]:
             b.press_key("end")
             b.press_key("backspace", len(search["text"]) + 2)
-        b.type_into_focus(name)
+        _type_first_letter_checked(b, name)
 
         # The box's UIA value says where the text landed (was a fixed 1.2 s).
         def landed():

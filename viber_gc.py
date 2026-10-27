@@ -72,8 +72,9 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
             problems.append(pick["problem"])
     else:
         # Not a blocker: the GC is still made (template + mention); a listing can be passed.
-        listing_note = ("The template names no listing — the GC will be created without one. "
-                        "Pass listing_folder_id (from find_listings) to include a listing.")
+        # Staff rule (2026-10-27): no listing in the template = the employee sends it themselves.
+        listing_note = ("The template names no listing — the GC is created without one; the "
+                        "employee who posted it sends the listing. Don't pick one for them.")
     if listing and listing.get("folder_id") == "none":
         listing = None
 
