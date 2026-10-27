@@ -25,6 +25,7 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 from collections import deque
 
@@ -106,6 +107,7 @@ class MacBackend(Backend):
         self._staged: str | None = None
         self._trusted = False
         self._sb_cache: tuple = (None, 0)
+        self._handoff = threading.Lock()  # held while real input needs Viber in front
 
     # --- app / process ---------------------------------------------------------------
     def _viber_pid(self) -> int | None:
@@ -164,8 +166,14 @@ class MacBackend(Backend):
                     return
 
     def open_url(self, url: str) -> None:
+        """Hand a viber:// link to Viber. Viber activates itself to handle it even with `open -g`,
+        so the user's front app is handed back for a few seconds (in a thread: chat polling
+        starts at once), as the Windows backend does."""
         self._target_el = None  # opening a chat rebuilds the page
-        subprocess.run(["open", "-g", url], check=True)  # -g: don't bring Viber to the front
+        prev = self.foreground()
+        subprocess.run(["open", "-g", url], check=True)
+        if prev and prev != self._pid:
+            threading.Thread(target=self.hold_foreground, args=(prev, 4.0), daemon=True).start()
 
     # --- window geometry -------------------------------------------------------------
     def _window(self) -> dict:
@@ -650,25 +658,29 @@ class MacBackend(Backend):
 
     def _with_viber_front(self, action) -> None:
         """Run `action` (real HID input) with Viber in front, then give the front app and the
-        cursor back. macOS delivers mouse and wheel input by position, so Viber must be on top."""
-        prev_pid = self.foreground() or None
-        cursor = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
-        app = self._app()
-        if prev_pid != self._pid:
-            AXUIElementSetAttributeValue(app, "AXFrontmost", True)
-            for _ in range(50):
-                if self.foreground() == self._pid:
-                    break
-                time.sleep(0.02)
-            time.sleep(0.05)
-        try:
-            action()
-        finally:
-            time.sleep(0.1)
-            Quartz.CGWarpMouseCursorPosition(cursor)
-            Quartz.CGAssociateMouseAndMouseCursorPosition(True)
-            if prev_pid is not None and prev_pid != self._pid:
-                AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev_pid), "AXFrontmost", True)
+        cursor back. macOS delivers mouse and wheel input by position, so Viber must be on top;
+        if it can't be brought there nothing is sent (the input would land in the user's app)."""
+        with self._handoff:  # hold_foreground pauses meanwhile
+            prev_pid = self.foreground() or None
+            cursor = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
+            app = self._app()
+            if prev_pid != self._pid:
+                AXUIElementSetAttributeValue(app, "AXFrontmost", True)
+                for _ in range(50):
+                    if self.foreground() == self._pid:
+                        break
+                    time.sleep(0.02)
+                time.sleep(0.05)
+            if self.foreground() != self._pid:
+                raise OCRError("Couldn't bring Viber to the front for a click; nothing was sent.")
+            try:
+                action()
+            finally:
+                time.sleep(0.1)
+                Quartz.CGWarpMouseCursorPosition(cursor)
+                Quartz.CGAssociateMouseAndMouseCursorPosition(True)
+                if prev_pid is not None and prev_pid != self._pid:
+                    AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev_pid), "AXFrontmost", True)
 
     def scroll(self, area: str, notches: int) -> None:
         """Mouse-wheel `notches` over the chat list ("chats") or the conversation; positive
@@ -759,8 +771,12 @@ class MacBackend(Backend):
             return
         end = time.time() + seconds
         while time.time() < end:
-            if self.foreground() != prev:
-                AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev), "AXFrontmost", True)
+            if self._handoff.acquire(blocking=False):  # never mid-click
+                try:
+                    if self.foreground() != prev:
+                        AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev), "AXFrontmost", True)
+                finally:
+                    self._handoff.release()
             time.sleep(0.05)
 
     # --- Viber's "send a file" picker (a standard macOS open panel, as a sheet) -------

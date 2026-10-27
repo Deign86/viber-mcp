@@ -212,3 +212,19 @@ def test_save_to_my_notes_checks_the_header_not_just_the_search_row(monkeypatch)
     with pytest.raises(viber_send.SendError):
         viber_send.save_to_my_notes("note")
     assert not fake.sent
+
+
+def test_notification_box_dialogs_are_popups_covering_their_text():
+    # macOS: "Pin note?" exposes only its NotificationButtons, under MainWindow.NotificationBox.
+    box = "QGuiApplication.MainWindow_QMLTYPE_78.NotificationBox"
+    els = [_el("Window", "", (0, 0, 1085, 788)),
+           _el("Button", "NotificationButton", (459, 430, 528, 463), 0, name="Pin",
+               ident=box + ".NotificationButton_QMLTYPE_66_QML_70"),
+           _el("Button", "NotificationButton", (536, 430, 629, 463), 0, name="Cancel",
+               ident=box + ".NotificationButton_QMLTYPE_66_QML_72")]
+    els, refs = ml.nest_popups(els, list(range(len(els))))
+    dialog = viber_ui._popup(els)
+    assert dialog is not None
+    assert [e["name"] for e in els if e["parent"] == els.index(dialog)] == ["Pin", "Cancel"]
+    # The OCR region reaches above the buttons, where the title and message are.
+    assert dialog["rect"][1] <= 430 - 150 and dialog["rect"][0] < 459 and dialog["rect"][2] > 629

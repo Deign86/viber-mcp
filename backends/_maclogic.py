@@ -118,6 +118,11 @@ def badge_boxes(img, tol: int = 40) -> list[tuple[int, int, int, int]]:
     return boxes
 
 
+# QML items that are popups: the file-send preview ("Popup") and dialogs ("NotificationBox":
+# "Pin note?", "Couldn't be added", …). Both are QQuickPopupItem windows in the Windows tree.
+POPUP_ROOTS = ("Popup", "NotificationBox")
+
+
 def nest_popups(els: list[dict], refs: list) -> tuple[list[dict], list]:
     """Rebuild the levels macOS drops inside Qt popups (the file-send preview, dialogs).
 
@@ -138,7 +143,7 @@ def nest_popups(els: list[dict], refs: list) -> tuple[list[dict], list]:
         parent = new_idx.get(p) if p is not None else None
         ppath = els[p]["_ident"].split(".") if p is not None and els[p].get("_ident") else []
         missing = segs[len(ppath):-1] if segs[:len(ppath)] == ppath else []
-        start = next((k for k, seg in enumerate(missing) if short_class(seg) == "Popup"), None)
+        start = next((k for k, seg in enumerate(missing) if short_class(seg) in POPUP_ROOTS), None)
         if start is not None:
             prefix = ppath + missing[:start]
             for seg in missing[start:]:
@@ -146,10 +151,12 @@ def nest_popups(els: list[dict], refs: list) -> tuple[list[dict], list]:
                 key = ".".join(prefix)
                 if key not in virtual:
                     cls = short_class(seg)
+                    root = cls in POPUP_ROOTS
                     virtual[key] = len(out)
-                    out.append({"type": "Window" if cls == "Popup" else "Group", "name": "",
-                                "class": "QQuickPopupItem" if cls == "Popup" else cls,
-                                "text": "", "parent": parent, "rect": list(e["rect"])})
+                    out.append({"type": "Window" if root else "Group", "name": "",
+                                "class": "QQuickPopupItem" if root else cls,
+                                "text": "", "parent": parent, "rect": list(e["rect"]),
+                                "_dialog": cls == "NotificationBox"})
                     out_refs.append(None)
                 else:  # grow the virtual box to cover this child too
                     r = out[virtual[key]]["rect"]
@@ -159,9 +166,14 @@ def nest_popups(els: list[dict], refs: list) -> tuple[list[dict], list]:
         new_idx[i] = len(out)
         out.append({k: v for k, v in e.items() if k != "_ident"} | {"parent": parent})
         out_refs.append(refs[i])
-    for e in out:  # a dialog is named by its title, as in the Windows tree
+    for i, e in enumerate(out):
         if e["type"] == "Window" and e["class"] == "QQuickPopupItem" and not e["name"]:
-            i = out.index(e)
+            # Named by its title, as in the Windows tree (when the title is in the AX tree).
             e["name"] = next((c["name"] for c in out if c["parent"] == i and c["type"] == "Text"
                               and c["name"]), "")
+        if e.pop("_dialog", False):
+            # Only a dialog's buttons are in the AX tree; its title and message sit above them.
+            # Callers OCR inside the popup's rect, so cover where the text is.
+            l, t, r, b = e["rect"]
+            e["rect"] = [max(0, l - 150), max(0, t - 200), r + 150, b + 20]
     return out, out_refs

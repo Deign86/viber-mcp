@@ -159,7 +159,10 @@ Status:
     SendToolbarButton, QQuickTextEdit, TextFieldItem, SideBarContent, …). AX skips role-less
     items, so the tree is flatter: messages are direct children of the StackView (`_messages`
     handles that layout) and popups lose their levels — `nest_popups` rebuilds them from the
-    identifier (Popup → `Window`/`QQuickPopupItem`, then ScrollView …), only for popups.
+    identifier (Popup → `Window`/`QQuickPopupItem`, then ScrollView …), only for popups. Dialogs
+    ("Pin note?", "Couldn't be added") are `MainWindow.NotificationBox` with only their
+    NotificationButtons in AX (no title text): the virtual window's rect is widened above the
+    buttons so `_ocr_px(popup rect)` reads the message.
   - Qt exposes items it isn't drawing (the hidden ChatGPT panel's `TextArea`, pages under a side
     panel); `_walk` keeps only elements that `AXUIElementCopyElementAtPosition` at their visible
     centre returns (self, descendant or ancestor). Popup overlays don't take part in that hit test,
@@ -170,7 +173,9 @@ Status:
     characters posted with `CGEventPostToPid`. Ignored in the background: posted mouse clicks
     (even with the window-number fields), posted wheel events, posted Escape to the image viewer.
     Those go through `_with_viber_front`: Viber made frontmost via `AXFrontmost`, real HID events,
-    then the cursor and the previous front app are restored (~0.6 s).
+    then the cursor and the previous front app are restored (~0.6 s). It holds `_handoff`, and it
+    sends nothing unless Viber really is in front (the input would land in the user's app);
+    `hold_foreground` only acts while it can take that lock.
   - `NSWorkspace.frontmostApplication()` goes stale in this run-loop-less process and the
     system-wide AX focused app is empty for Electron apps: `foreground()` reads the owner of the
     topmost layer-0 window.
@@ -183,7 +188,8 @@ Status:
   - Coordinates are points relative to the window's top-left (title bar included);
     `screenshot()` is downscaled to points on Retina so viber_ui's pixel offsets hold.
   - The red ✕ hides Viber's window without quitting; `focus()` reopens it with `open -g -b`.
-    `open_url` uses `open -g` so Viber isn't raised.
+    Viber activates itself on a `viber://` link even with `open -g`, so `open_url` hands the
+    front back for 4 s in a thread (like the Windows backend).
   - The file picker is an `AXSheet` ("send a file"). Cmd+Shift+G (real keys) opens a nested sheet
     with the path field; set `AXValue` AND `AXFocused` before Return, or Return goes nowhere and
     Open stays disabled. Then `AXPress` Open.
