@@ -363,3 +363,39 @@ def test_macos_skips_the_spare_escape_once_the_search_is_closed(monkeypatch):
     monkeypatch.setattr(backends, "_backend", fake)
     viber_ocr._leave_search()
     assert fake.calls == ["click_search", "delete"]
+
+
+def test_sponsored_ad_box_is_not_read_as_chat_rows():
+    # The ad at the bottom of the chat list leaked into the last row's preview and hid its badge.
+    sb = 0.2762
+    obs = [_o("ChatGPT", 0.065, 0.275, 0.07), _o("12:55 PM", 0.218, 0.279, 0.04),
+           _o("No messages", 0.065, 0.303, 0.08),
+           _o("Max Alpha", 0.065, 0.371, 0.07), _o("8:30 PM", 0.218, 0.372, 0.04),
+           _o("Photo message", 0.065, 0.395, 0.08),
+           _o("MACROE-CS-(25-30S...", 0.065, 0.66, 0.15), _o("4:53PM", 0.218, 0.66, 0.04),
+           _o("Sponsored", 0.015, 0.70, 0.06), _o("FlickReels", 0.02, 0.75, 0.07),
+           _o("App Store", 0.03, 0.95, 0.06)]
+    rows = viber_ocr.chat_rows(obs, sb)
+    assert [r["name"] for r in rows] == ["ChatGPT", "Max Alpha"]  # MACROE is cut off by the ad
+    assert all("Sponsored" not in r["preview"] and "App Store" not in r["preview"] for r in rows)
+
+
+def test_my_notes_is_searched_again_when_the_first_click_left_another_chat_open(monkeypatch):
+    # Live: APG CLIENTS (a big group) was still loading and stayed open after the click.
+    opened = iter(["APG CLIENTS", "My Notes"])
+    state = {"chat": "APG CLIENTS", "searches": 0}
+
+    def search(name):
+        state["searches"] += 1
+        state["chat"] = next(opened)
+        return ("My Notes", 3)
+
+    def header(expect):
+        if state["chat"] != expect:
+            raise viber_send.SendError(f"The open chat is '{state['chat']}'")
+    monkeypatch.setattr(viber_send, "_search_open", search)
+    monkeypatch.setattr(viber_send, "require_open_chat", header)
+    monkeypatch.setattr(viber_send, "viber_is_running", lambda: True)
+    monkeypatch.setattr(viber_send, "backend", _NotesBackend())
+    assert viber_send.open_my_notes()["opened"] == "My Notes"
+    assert state["searches"] == 2

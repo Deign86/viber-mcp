@@ -96,6 +96,7 @@ def split_name_stamps(obs: list[dict], stamp_x: float, right_x: float) -> list[d
     return out
 
 
+_ROW_H = 0.085       # a chat-list row's height as a fraction of the window (about 73 pt)
 _LIST_TOP_Y = 0.18   # below the search box, folder icons and the All/Unread filter pills
 _BADGE_RE = re.compile(r"^\d{1,3}$")
 
@@ -108,8 +109,13 @@ def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[di
     stamp. `unread` is the badge count (a bare number at the right edge, 0 if none). `last_from`
     is "me" when the preview starts with "Me:" or the stamp carries our sent/read tick, else
     "them" — best-effort from OCR. `y` is the name line's normalized top, for clicks. Pure."""
+    # Viber's "Sponsored" ad box covers the bottom of the list (the Windows backend closes it,
+    # macOS shows it): nothing from its label down belongs to a chat.
+    ad = min((o["y"] for o in obs if o["text"].strip().lower() == "sponsored"
+              and o["x"] < sidebar_right * 0.6 and o["y"] > _LIST_TOP_Y), default=None)
     left = sorted((o for o in split_name_stamps(obs, sidebar_right * 0.55, sidebar_right * 0.8)
-                   if o["x"] < sidebar_right and o["y"] > _LIST_TOP_Y),
+                   if o["x"] < sidebar_right and o["y"] > _LIST_TOP_Y
+                   and (ad is None or o["y"] < ad - 0.005)),
                   key=lambda o: o["y"])
     stamps = [o for o in left if o["x"] > sidebar_right * 0.55 and row_stamp(o["text"])]
     rows = []
@@ -127,6 +133,10 @@ def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[di
         rows.append({"name": first["text"].strip() if names else "", "time": row_stamp(stamp["text"]),
                      "preview": preview, "unread": int(badge["text"]) if badge else 0,
                      "last_from": "me" if mine else "them", "y": first["y"]})
+    if ad is not None:
+        # A row the ad cuts off may have its unread badge or preview hidden: leave it out
+        # (scroll_chat_list brings it into view whole).
+        rows = [r for r in rows if r["y"] < ad - _ROW_H]
     return rows
 
 
