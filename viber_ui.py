@@ -1022,8 +1022,11 @@ def _rename_open_chat(gc_name: str, expect: str = "") -> None:
     b.press_key("backspace", len(field["text"]) + 2)
     b.type_into_focus(gc_name)
 
+    # Re-find the box each read: a long name wraps to two lines and the box grows ("Group" is one
+    # line), so matching its old rect read "" and every long GC name was left as "Group".
     def typed_now():
-        return next((e["text"] for e in b.elements() if e["type"] == "Edit" and e["rect"] == field["rect"]), "")
+        box = rename_field(b.elements(), pencil)
+        return box["text"] if box else ""
     typed = typed_now() if _poll(lambda: typed_now() == gc_name, timeout=1.5, first=0.1) else typed_now()
     if typed != gc_name:
         raise UIError(f"The group name didn't take (got {typed!r}); rename it to '{gc_name}' by hand.")
