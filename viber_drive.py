@@ -202,6 +202,7 @@ def _fetch(fid: str) -> str:
 
     cached = _cached_download(fid)
     if cached is not None:
+        os.utime(cached)  # in use again: the age-based prune must not take it before it's sent
         return str(cached)  # no metadata round trip for a photo we already have
     meta = _drive().files().get(fileId=fid, fields="id,name,size,mimeType",
                                 supportsAllDrives=True).execute(num_retries=RETRIES)
@@ -230,7 +231,11 @@ def download(file_ids: list[str]) -> list[str]:
         return []
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     with ThreadPoolExecutor(max_workers=min(DOWNLOAD_THREADS, len(file_ids))) as pool:
-        return list(pool.map(_fetch, file_ids))
+        paths = list(pool.map(_fetch, file_ids))
+    # Every download also drops what's gone stale (view_listing_photos / drive_download used to
+    # leave photos behind until the next send_listing). The ones just fetched are fresh.
+    prune_downloads()
+    return paths
 
 
 # ------------------------------------------------------------------------ listings

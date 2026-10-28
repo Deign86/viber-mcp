@@ -5,6 +5,7 @@ Transport: stdio. Register with Claude Code via `claude mcp add` (see README).
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP, Image
@@ -721,4 +722,6 @@ def client_gc(client: str = "") -> str:
 
 
 if __name__ == "__main__":
+    # Drop listing photos older than the keep window even on days nothing is downloaded or sent.
+    threading.Thread(target=viber_drive.prune_downloads, daemon=True).start()
     mcp.run(transport="stdio")

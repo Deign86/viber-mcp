@@ -15,7 +15,7 @@ Usage:
   uv run client.py read
   uv run client.py contacts
   uv run client.py call <tool> '<json args>'   # any tool, e.g. call list_messages
-                                              #   images are saved as tool_image_N.png
+                                              #   images go to <temp>/viber-mcp-images/tool_image_N.png
 """
 
 from __future__ import annotations
@@ -24,12 +24,15 @@ import asyncio
 import base64
 import json
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 SERVER = str(Path(__file__).with_name("server.py"))
+IMAGE_DIR = Path(tempfile.gettempdir()) / "viber-mcp-images"
 
 
 async def _run(argv: list[str]) -> None:
@@ -93,8 +96,14 @@ async def _run(argv: list[str]) -> None:
                 return
             # Images are saved to files; structured content when available, else the text blocks.
             images = [b for b in result.content if b.type == "image"]
+            if images:
+                # Screenshots show client chats: keep them out of the repo, a day at most.
+                IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+                for old in IMAGE_DIR.glob("tool_image_*.png"):
+                    if time.time() - old.stat().st_mtime > 86400:
+                        old.unlink(missing_ok=True)
             for i, block in enumerate(images):
-                out = Path(f"tool_image_{i}.png")
+                out = IMAGE_DIR / f"tool_image_{i}.png"
                 out.write_bytes(base64.b64decode(block.data))
                 print(f"[image saved to {out}]")
             if result.structuredContent is not None:
