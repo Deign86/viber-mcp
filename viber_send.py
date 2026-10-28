@@ -597,8 +597,9 @@ def _same_row(a, b) -> bool:
     return a[0] == b[0] and abs(a[1] - b[1]) < 0.01
 
 
-def _search_open(name: str) -> tuple[str, int]:
-    """Type `name` in the search box and click the best-matching result row.
+def _search_open(name: str, _retry: bool = True) -> tuple[str, int]:
+    """Type `name` in the search box and click the best-matching result row, then confirm the
+    chat header shows it (one more search if not).
 
     Returns (matched_row_text, score). Raises SendError if no result matches.
     """
@@ -626,8 +627,16 @@ def _search_open(name: str) -> tuple[str, int]:
         )
     matched_text, norm_y, score = match
     backend.click_result(norm_y)
-    _poll(lambda: _header_matches(matched_text), timeout=2.0)  # usually ~0.5s; was a fixed 1.2s
-    return matched_text, score
+    # Usually ~0.5 s. The row's y can still be the old chat list's (slow OCR on macOS): then
+    # another chat opens — "Anne" opened "kristine joy andes" (2026-10-28) and was reported
+    # as matched, because this result used to be ignored.
+    if _poll(lambda: _header_matches(matched_text), timeout=2.0):
+        return matched_text, score
+    if _retry:
+        return _search_open(name, _retry=False)
+    raise SendError(f"Searching for '{name}' didn't open '{matched_text}' (another chat's header "
+                    "is showing). Nothing was sent; check with current_chat or use a phone "
+                    "number with open_chat.")
 
 
 # The row time/day stamp parser lives with the chat-list reader (shared by both row readers).
@@ -704,9 +713,10 @@ def _header_matches(name: str) -> bool:
     """Is the open chat's header title `name` (allowing truncation and OCR look-alikes)?"""
     want = _ocr_fold(re.sub(r"[^a-z0-9]", "", name.lower()))
     for o in backend.observe(region=_HEADER_REGION):
-        if 0.3 <= o["x"] < 0.6 and o["y"] < 0.12:
+        # A title with no line under it (My Notes) is centred lower: y 0.125 on macOS.
+        if 0.3 <= o["x"] < 0.6 and o["y"] < 0.15:
             got = _ocr_fold(re.sub(r"[^a-z0-9]", "", o["text"].lower()))
-            if len(got) >= 4 and (want.startswith(got) or got.startswith(want)):
+            if got == want or (len(got) >= 4 and (want.startswith(got) or got.startswith(want))):
                 return True
     return False
 

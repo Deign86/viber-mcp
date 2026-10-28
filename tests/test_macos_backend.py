@@ -407,3 +407,37 @@ def test_time_stamps_with_ocr_lookalikes_still_start_a_row():
     assert viber_ocr.row_stamp("1O:3O AM") == "10:30 AM"
     assert viber_ocr.row_stamp("11:02 AM") == "11:02 AM"          # normal times unchanged
     assert viber_ocr.row_stamp("Total") is None and viber_ocr.row_stamp("STOP PM") is None
+
+
+def test_misread_yesterday_still_starts_a_row():
+    # Live 2026-10-28: "Yesterday" OCR'd as "Yosterday"/"Yostorday" dropped ERWIN-CS and
+    # VIRLENN-WH from the chat list, so mark_as_read said they weren't visible.
+    assert viber_ocr.row_stamp("Yosterday") == "Yesterday"
+    assert viber_ocr.row_stamp("Yostorday") == "Yesterday"
+    assert viber_ocr.row_stamp("Wednesdav") == "Wednesday"
+    assert viber_ocr.row_stamp("Yesterday") == "Yesterday"
+    for not_a_day in ("Mondo", "Yesterday's listing", "Noted po", "Sundae", "Fridge"):
+        assert viber_ocr.row_stamp(not_a_day) is None
+
+
+def test_call_with_timeout_returns_the_result():
+    assert ml.call_with_timeout(lambda: 42, 1.0) == (True, 42)
+
+
+def test_call_with_timeout_gives_up_on_a_call_that_never_returns():
+    # 2026-10-28: CGWindowListCreateImage never returned when the server was started from Claude
+    # Code's shell (client.py); every tool then hung until the client timed out.
+    import threading
+    import time
+    release = threading.Event()
+    start = time.time()
+    assert ml.call_with_timeout(release.wait, 0.2) == (False, None)
+    assert time.time() - start < 1.0
+    release.set()
+
+
+def test_call_with_timeout_reraises_errors():
+    def boom():
+        raise ValueError("x")
+    with pytest.raises(ValueError):
+        ml.call_with_timeout(boom, 1.0)

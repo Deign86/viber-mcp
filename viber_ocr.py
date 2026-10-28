@@ -40,6 +40,19 @@ _ROW_TIME = re.compile(r"(\d{1,2}[:.\-]?\d{2}\s*[AP]M|yesterday|monday|tuesday|w
 # OCR look-alikes inside a clock time ("5:0TPM" for 5:01 PM): only the digit positions are folded.
 _TIME_LOOKALIKE = re.compile(r"([0-9OoIlT|S]{1,2})([:.\-]?)([0-9OoIlT|S]{2})(\s*[AP]M)$", re.I)
 _DIGIT_FOLD = str.maketrans({"O": "0", "o": "0", "I": "1", "l": "1", "T": "1", "|": "1", "S": "5"})
+_DAYS = ("yesterday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _day_lookalike(word: str) -> str | None:
+    """A day stamp OCR'd with a letter or two wrong ("Yosterday", "Yostorday" on macOS, 2026-10-28):
+    same length and first letter as the day, at most 2 letters off. Only the long days: a short
+    one is too close to ordinary words ("Sundae")."""
+    w = word.lower()
+    for day in _DAYS:
+        if len(day) >= 7 and len(w) == len(day) and w[0] == day[0] \
+                and sum(a != b for a, b in zip(w, day)) <= 2:
+            return day.capitalize()
+    return None
 
 
 def row_stamp(text: str) -> str | None:
@@ -56,6 +69,9 @@ def row_stamp(text: str) -> str | None:
         folded = f"{h.translate(_DIGIT_FOLD)}{sep}{mm.translate(_DIGIT_FOLD)}{ampm}"
         if _ROW_TIME.fullmatch(folded):
             return folded
+    words = t.split()
+    if words and len(t) - len(words[-1]) <= 4:
+        return _day_lookalike(words[-1])
     return None
 
 
