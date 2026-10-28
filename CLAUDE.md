@@ -38,6 +38,8 @@ regression test** in `tests/test_regressions.py` (or the matching test file) bef
 Flows that poll (`_poll`) are tested with stateful fakes (`ChatBackend`, `PickerBackend`,
 `PanelBackend`, `GroupFlowBackend` in `test_regressions.py`) that change state after N reads; a
 fake that must make a poll time out uses `_use(..., fast_clock=True)` so the deadline is virtual.
+`conftest.py` replaces `backends._backend` and `viber_send.backend` with a guard that fails the
+test on use: on a dev Mac a test that reached the real backend typed into the live Viber.
 `tests/test_windows_backend.py` unit-tests the Windows backend (cached UIA walk, `wait_still`,
 `observe(region)`, value caching, `open_url`) with fake COM elements; it skips off Windows.
 
@@ -194,6 +196,15 @@ Status:
     with the path field; set `AXValue` AND `AXFocused` before Return, or Return goes nowhere and
     Open stays disabled. Then `AXPress` Open.
   - The reaction hearts aren't in the macOS AX tree, so `like_message` can't find them there.
+  - **Posted characters go to Viber's keyboard focus, which is often still the message box**:
+    AXFocused on another field doesn't always take, and Viber hands focus back to the message
+    box when a search closes. `type_into_focus` therefore posts nothing unless the field last
+    focused by `click_at`/`click_compose`/`click_search` still has the focus (`_check_focus`,
+    `typing_target_ok`). Search text goes in via AXValue on the box itself, and
+    `viber_send.type_search_query` checks the message box didn't change (puts it back, raises).
+  - With Viber's search already open the hit test can miss the search box; `click_search`
+    falls back to the unfiltered tree (`sidebar_search_box`: a TextFieldItem in the sidebar's
+    top bar only). `search_and_open` accepts an unconfirmed chat only if the header changed.
 - **The send button is found by identity** (`SendToolbarButton`) on both platforms, so side panels
   that shift it don't matter (`panel_shifts_send = False`); `_ensure_panel_closed` only runs for a
   backend that clicks by position.

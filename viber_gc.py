@@ -292,9 +292,7 @@ def gc_exists(name: str) -> tuple[bool, bool]:
     Searches Viber; when the highlighted result title can't be read, opens the top result and
     compares the chat header (reliable). opened_a_chat tells the caller the open chat changed."""
     b = viber_ui._backend()
-    b.click_search()
-    b.delete()
-    b.type_text(name[:30])
+    viber_send.type_search_query(name[:30], b, settle=False)
     # The results column, read once the result-section header is up (was a fixed 2 s).
     obs, _ = viber_send._await_results(name[:30])
     texts = [o["text"] for o in obs if o["y"] > 0.1 and o["x"] < 0.3]

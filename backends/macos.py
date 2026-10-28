@@ -441,9 +441,10 @@ class MacBackend(Backend):
             raise OCRError("Viber's window isn't in the accessibility tree.")
         return app, win
 
-    def _walk(self) -> tuple[list[dict], list]:
+    def _walk(self, hit_test: bool = True) -> tuple[list[dict], list]:
         """Visible elements (dicts like the Windows backend's) and their AX elements, BFS order,
-        parents before children."""
+        parents before children. hit_test=False keeps everything inside the window, drawn or
+        not (only for a fallback that checks what it picks)."""
         app, win = self._ax_window()
         wframe = self._wframe()
         origin = wframe[:2]
@@ -481,7 +482,7 @@ class MacBackend(Backend):
                 index_of.setdefault(CFHash(el), []).append((el, idx))
             for kid in kids or []:
                 queue.append((kid, idx if idx is not None else parent))
-        visible = self._visible(app, out, refs, index_of, wframe)
+        visible = self._visible(app, out, refs, index_of, wframe) if hit_test else [True] * len(out)
         return ml.nest_popups(*self._reindex(out, refs, visible))
 
     def _lookup(self, index_of, el) -> int | None:
@@ -626,17 +627,29 @@ class MacBackend(Backend):
         self._enter(self._staged)
 
     # --- element actions -------------------------------------------------------------
-    def _focus_target(self, predicate, what: str) -> None:
+    def _focus_target(self, predicate, what: str, el=None) -> None:
         self._target = predicate
-        _, self._target_el = self._find(predicate, what)
+        self._target_el = el if el is not None else self._find(predicate, what)[1]
         AXUIElementSetAttributeValue(self._target_el, "AXFocused", True)
+        self._focus_el = self._target_el
         time.sleep(0.1)
 
     def click_compose(self) -> None:
         self._focus_target(ml.is_compose, "message box")
 
     def click_search(self) -> None:
-        self._focus_target(ml.is_search, "search box")
+        """Pick the sidebar's search box. Its text goes in through AXValue on the box itself, so
+        it can't land in a message box even when Viber keeps the keyboard focus there."""
+        _, el = self._find(ml.is_search, "search box", required=False)
+        if el is None:
+            # Search already open: the hit test can miss the box (2026-10-28, "Recent chats"
+            # showing). Take it from the unfiltered tree, the sidebar's top bar only.
+            els, refs = self._walk(hit_test=False)
+            box = ml.sidebar_search_box(els, self._wframe()[2])
+            if box is None:
+                raise OCRError("Viber's search box was not found (is a chat open?).")
+            el = refs[els.index(box)]
+        self._focus_target(ml.is_search, "search box", el)
 
     def click_send(self) -> None:
         # Viber rebuilds the button once the box has text, so look it up fresh each time.
@@ -843,10 +856,35 @@ class MacBackend(Backend):
             if self._onscreen_window() is None:
                 self.focus()
 
+    def _focused(self):
+        return _get(self._app(), "AXFocusedUIElement")
+
+    def _check_focus(self) -> None:
+        """Refuse to post characters unless the field we focused (click_at on a text field,
+        click_compose / click_search) still has Viber's keyboard focus: they go to whatever has
+        it, and that can be the message box of a client's chat. One retry re-focuses the field."""
+        wanted = self._focus_el
+        if wanted is None:
+            return
+        want_id = _get(wanted, "AXIdentifier")
+        for attempt in range(2):
+            focused = self._focused()
+            if ml.typing_target_ok(_get(focused, "AXIdentifier") if focused is not None else None,
+                                   want_id or ""):
+                return
+            if attempt == 0:
+                AXUIElementSetAttributeValue(wanted, "AXFocused", True)
+                time.sleep(0.15)
+        cls = ml.short_class(_get(focused, "AXIdentifier")) if focused is not None else ""
+        raise OCRError(f"Viber's keyboard focus is on {ml.field_kind(cls)}, not on the field that "
+                       "was clicked; nothing was typed. Click the field again, then type.")
+
     def type_into_focus(self, text: str) -> None:
         """Type into whatever field has Viber's focus — click it first. Newlines (Enter would
-        send) are appended through AXValue on the focused field instead."""
+        send) are appended through AXValue on the focused field instead. Nothing is typed unless
+        the clicked field really has the focus (`_check_focus`)."""
         if "\n" not in text and "\r" not in text:
+            self._check_focus()
             for ch in text:
                 self._post_key(0, 0, ch)
             time.sleep(0.2 + len(text) / 400)

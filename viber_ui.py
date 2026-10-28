@@ -13,7 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from backends import get_backend
+from backends import OCRError, get_backend
 from viber_send import _poll, own_message_texts, require_open_chat, sent_confirmed
 
 # Screenshots wider/taller than this are downscaled (vision models downscale anyway);
@@ -876,7 +876,10 @@ def _panel_search_type(name: str) -> dict:
         if search["text"]:
             b.press_key("end")
             b.press_key("backspace", len(search["text"]) + 2)
-        _type_first_letter_checked(b, name)
+        try:
+            _type_first_letter_checked(b, name)
+        except OCRError:
+            continue  # macOS: the click didn't give the box the focus, so nothing was typed
 
         # The box's UIA value says where the text landed (was a fixed 1.2 s).
         def landed():

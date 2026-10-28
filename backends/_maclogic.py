@@ -92,6 +92,36 @@ def is_send(e: dict) -> bool:
     return e["class"] == "SendToolbarButton"
 
 
+def sidebar_search_box(elements: list[dict], width: float) -> dict | None:
+    """The sidebar's search box among elements that skipped the hit-test filter, or None. With
+    Viber's search already open (its "Recent chats" list, or the Sponsored ad) the hit test at
+    the box's centre can miss it although it's on screen, and search_and_open failed with "search
+    box was not found". Only a search field in the sidebar's top bar counts: putting text into
+    one through AXValue can't send anything, unlike a message box."""
+    return next((e for e in elements if is_search(e) and e["rect"][1] < 100
+                 and e["rect"][2] <= width * 0.45), None)
+
+
+def field_kind(cls: str) -> str:
+    """What a focused element is, for error messages."""
+    if cls.startswith("QQuickTextEdit"):
+        return "the message box"
+    if cls.startswith("TextFieldItem"):
+        return "a search box"
+    return f"'{cls}'" if cls else "nothing"
+
+
+def typing_target_ok(focused_ident: str | None, wanted_ident: str | None) -> bool:
+    """May characters be posted? Posted keys go to whatever has Viber's keyboard focus, and that
+    is often still the message box after AXFocused on another field (Viber hands focus back to
+    the message box when a search closes), so typing meant for a search box landed in a client's
+    chat. Only when the field we focused still has the focus (same QML object path), or when
+    nothing was focused on purpose (`wanted_ident` None: the type_text tool after a real click)."""
+    if wanted_ident is None:
+        return True
+    return bool(focused_ident) and focused_ident == wanted_ident
+
+
 BADGE_RGB = (115, 96, 242)  # Viber's unread-badge purple (light and dark theme)
 
 
