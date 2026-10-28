@@ -597,19 +597,56 @@ def _same_row(a, b) -> bool:
     return a[0] == b[0] and abs(a[1] - b[1]) < 0.01
 
 
+def _compose_text(b) -> str | None:
+    """The open chat's message box text, or None when the backend has no UI tree to read."""
+    try:
+        els = b.elements()
+    except (NotImplementedError, AttributeError, viber_ocr.OCRError):
+        return None
+    return next((e["text"] for e in els if e["type"] == "Edit"
+                 and e["class"].startswith("QQuickTextEdit")), "")
+
+
+def type_search_query(query: str, b=None, settle: bool = True) -> None:
+    """Put `query` in Viber's search box (replacing what's there) and make sure none of it went
+    into the open chat's message box. A click that misses the search box leaves the keyboard
+    focus in the message box, and from there an Enter or the next send posts the query to a
+    client (2026-10-28: "frn" reached "Hazel- Franchise Support"). Nothing here presses a key
+    that could send; a message box that changed is put back as it was and SendError is raised.
+    `b` is the backend (default: this module's); `settle` adds the fixed pauses macOS needed."""
+    b = backend if b is None else b
+    pause = settle and not getattr(b, "input_confirmed", False)
+    before = _compose_text(b)
+    b.click_search()
+    if pause:
+        time.sleep(0.4)
+    b.select_all()            # clear any previous query
+    if pause:
+        time.sleep(0.1)
+    b.delete()
+    if pause:
+        time.sleep(0.2)
+    b.type_text(query)
+    after = _compose_text(b)
+    if before is None or after is None or after == before:
+        return
+    b.click_compose()
+    b.select_all()
+    b.delete()
+    if before:
+        b.type_text(before)
+    raise SendError(
+        "The search text went into the open chat's message box instead of Viber's search box; "
+        "it was removed and nothing was sent. Try again (current_chat shows which chat is open).")
+
+
 def _search_open(name: str, _retry: bool = True) -> tuple[str, int]:
     """Type `name` in the search box and click the best-matching result row, then confirm the
     chat header shows it (one more search if not).
 
     Returns (matched_row_text, score). Raises SendError if no result matches.
     """
-    backend.click_search()
-    _settle(0.4)
-    backend.select_all()            # clear any previous query
-    _settle(0.1)
-    backend.delete()
-    _settle(0.2)
-    backend.type_text(name)
+    type_search_query(name)
 
     obs, match = _await_results(name)
     if match is None:
@@ -671,11 +708,7 @@ def search_messages(query: str, pages: int = 2) -> dict:
         raise SendError("Search query is empty.")
     if not viber_is_running():
         raise SendError("Viber is not running. Launch and sign in to Viber first.")
-    backend.click_search()
-    time.sleep(0.4)
-    backend.select_all()
-    backend.delete()
-    backend.type_text(query)
+    type_search_query(query)
 
     # Result-type tabs under the search box, left to right: names, messages, businesses.
     def tabs_now():
@@ -740,8 +773,22 @@ def search_and_open(name: str) -> dict:
     if _header_matches(name):  # already open
         return {"query": name, "matched": name, "low_confidence": False, "opened": True,
                 "text": viber_ocr.read_open_chat()["text"]}
+    # The chat open now: without the name in the header, the result is accepted only once the
+    # header has changed from this (a result click can miss and leave this chat open — on
+    # 2026-10-28 "Sir Mark/Sean" stayed open and was reported as "Hazel- Franchise").
+    header_bottom = _header_bottom()
+    try:
+        previous = header_key(header_lines(backend.observe(region=_HEADER_REGION), header_bottom))
+    except viber_ocr.OCRError:
+        previous = None
     matched_text, score = _search_open(name)
-    result = _wait_for_sendable_chat(number=name, name=name, timeout=8.0)
+    try:
+        result = _wait_for_sendable_chat(number=name, name=name, timeout=8.0,
+                                         previous_header=previous, header_bottom=header_bottom)
+    except SendError as exc:
+        raise SendError(
+            f"Clicked the search result '{matched_text}', but its chat didn't open (the header "
+            "doesn't show it). Nothing was sent; check current_chat and search again.") from exc
     return {
         "query": name,
         "matched": matched_text,

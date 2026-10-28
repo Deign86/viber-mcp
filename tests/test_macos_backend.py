@@ -409,6 +409,29 @@ def test_time_stamps_with_ocr_lookalikes_still_start_a_row():
     assert viber_ocr.row_stamp("Total") is None and viber_ocr.row_stamp("STOP PM") is None
 
 
+def test_open_search_box_is_found_without_the_hit_test_but_only_in_the_sidebar_bar():
+    # 2026-10-28: with Viber's search already open ("Recent chats"), the hit test missed the
+    # box and search_and_open failed. The unfiltered tree has it; the picker's search in the
+    # side panel and message boxes never qualify.
+    els = [_el("Window", "", (0, 0, 1085, 785)),
+           _el("Edit", "TextFieldItem", (80, 40, 252, 68), 0, name="Search..."),
+           _el("Edit", "TextFieldItem", (800, 90, 1070, 120), 0),
+           _el("Edit", "QQuickTextEdit", (420, 751, 716, 768), 0)]
+    assert ml.sidebar_search_box(els, 1085)["rect"] == [80, 40, 252, 68]
+    assert ml.sidebar_search_box(els[2:], 1085) is None
+
+
+def test_characters_are_posted_only_while_the_clicked_field_has_the_focus():
+    search = "QGuiApplication.MainWindow.SearchItem_QML_812.TextFieldItem_QMLTYPE_155"
+    compose = "QGuiApplication.MainWindow.StackView_QMLTYPE_578.QQuickTextEdit_QML_1132"
+    assert ml.typing_target_ok(search, search)
+    assert not ml.typing_target_ok(compose, search)  # focus bounced back to the message box
+    assert not ml.typing_target_ok(None, search)
+    assert not ml.typing_target_ok(search, "")       # the clicked field is gone
+    assert ml.typing_target_ok(compose, None)        # nothing focused on purpose: type_text tool
+    assert ml.field_kind(ml.short_class(compose)) == "the message box"
+
+
 def test_misread_yesterday_still_starts_a_row():
     # Live 2026-10-28: "Yesterday" OCR'd as "Yosterday"/"Yostorday" dropped ERWIN-CS and
     # VIRLENN-WH from the chat list, so mark_as_read said they weren't visible.

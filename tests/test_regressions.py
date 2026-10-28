@@ -2445,6 +2445,7 @@ class GcSearchBackend:
         self.results, self.stills, self.keys = [], 0, []
 
     def click_search(self): pass
+    def select_all(self): pass
     def delete(self): pass
     def type_text(self, text): pass
     def press_key(self, key, repeat=1): self.keys.append(key)
@@ -2732,6 +2733,149 @@ def test_remix_image_popup_is_dismissed_with_maybe_later_only():
     assert remix_close_point(els[:2]) is None          # never "Remix image" (sends it to ChatGPT)
     assert is_remix_later("ButtonControl", "ModalButton_QMLTYPE_12", "Maybe later")
     assert not is_remix_later("ButtonControl", "ModalButton_QMLTYPE_12", "Remix image")
+
+
+class SearchFocusBackend:
+    """Viber's sidebar search, the open chat's header and its message box. With `missed`, the
+    search box never gets the keyboard focus (it stays in the message box, as on 2026-10-28), so
+    typed text lands in the message box. `opens` is the header the result click shows."""
+    input_confirmed = True
+
+    def __init__(self, header="Sir Mark/Sean", missed=False, draft="", opens=None):
+        self.header, self.missed, self.compose, self.search = header, missed, draft, ""
+        self.opens = opens
+        self.target, self.clicks, self.keys, self.sent = "compose", [], [], []
+
+    def focus(self): pass
+    def screenshot(self): return _Img()
+
+    def elements(self):
+        return [_ui("Pane", "StackView", [308, 71, 792, 959]),
+                _ui("Edit", "TextFieldItem", [104, 40, 244, 68], text=self.search),
+                _ui("Edit", "QQuickTextEdit", [320, 900, 760, 940], parent=0, text=self.compose)]
+
+    def observe(self, region=None):
+        import viber_send
+        obs = [_obs(self.header, 0.32, 0.1)]
+        if self.search and region != viber_send._HEADER_REGION:
+            obs += [_obs("Conversations", 0.05, 0.13), _obs("Hazel- Franchise Sup...", 0.08, 0.17)]
+        return obs
+
+    def click_search(self): self.target = "compose" if self.missed else "search"
+    def click_compose(self): self.target = "compose"
+    def select_all(self): pass
+
+    def delete(self):
+        setattr(self, self.target, "")
+
+    def type_text(self, text):
+        setattr(self, self.target, getattr(self, self.target) + text)
+
+    def click_result(self, norm_y):
+        self.clicks.append(norm_y)
+        if self.opens:
+            self.header = self.opens
+
+    def press_key(self, key, repeat=1): self.keys.append(key)
+    def click_send(self): self.sent.append(self.compose)
+
+
+def _use_search(monkeypatch, fake):
+    import backends
+    import viber_send
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_send, "backend", fake)
+    monkeypatch.setattr(viber_send, "viber_is_running", lambda: True)
+    clock = [0.0]
+
+    def sleep(s):
+        clock[0] += s
+    monkeypatch.setattr(viber_send.time, "sleep", sleep)
+    monkeypatch.setattr(viber_send.time, "time", lambda: clock[0])
+    monkeypatch.setattr(viber_send.time, "monotonic", lambda: clock[0])
+
+
+def test_search_text_that_lands_in_the_message_box_is_removed_and_never_sent(monkeypatch):
+    # 2026-10-28: with Viber's keyboard focus left in a client's message box, search text went
+    # there ("frn" was then sent to "Hazel- Franchise Support"). The query is taken back out,
+    # nothing is clicked, pressed or sent, and the search reports it.
+    import viber_send
+    import pytest
+    fake = SearchFocusBackend(header="Hazel- Franchise Supp...", missed=True)
+    _use_search(monkeypatch, fake)
+    with pytest.raises(viber_send.SendError, match="message box"):
+        viber_send._search_open("Hazel- Franchise")
+    assert fake.compose == "" and fake.clicks == [] and fake.keys == [] and fake.sent == []
+
+
+def test_a_staff_draft_is_put_back_after_stray_search_text(monkeypatch):
+    import viber_send
+    import pytest
+    fake = SearchFocusBackend(missed=True, draft="Hi po, ")
+    _use_search(monkeypatch, fake)
+    with pytest.raises(viber_send.SendError):
+        viber_send.type_search_query("Hazel")
+    assert fake.compose == "Hi po, " and fake.sent == []
+
+
+def test_search_query_typed_into_the_search_box_leaves_the_message_box_alone(monkeypatch):
+    import viber_send
+    fake = SearchFocusBackend(draft="draft")
+    _use_search(monkeypatch, fake)
+    viber_send.type_search_query("Hazel")
+    assert fake.search == "Hazel" and fake.compose == "draft"
+
+
+def test_search_and_open_refuses_when_the_result_click_leaves_the_old_chat_open(monkeypatch):
+    # 2026-10-28: search_and_open("Hazel- Franchise") clicked the right row, but "Sir Mark/Sean"
+    # stayed open and was reported as opened after the 4 s settle. The header must change.
+    import viber_send
+    import pytest
+    fake = SearchFocusBackend(header="Sir Mark/Sean")
+    _use_search(monkeypatch, fake)
+    with pytest.raises(viber_send.SendError, match="didn't open"):
+        viber_send.search_and_open("Hazel- Franchise")
+    assert fake.clicks and fake.sent == [] and fake.keys == []
+
+
+def test_search_and_open_accepts_the_chat_its_header_names(monkeypatch):
+    import viber_send
+    fake = SearchFocusBackend(header="Sir Mark/Sean", opens="Hazel- Franchise Supp...")
+    _use_search(monkeypatch, fake)
+    out = viber_send.search_and_open("Hazel- Franchise")
+    assert out["opened"] and out["matched"].startswith("Hazel- Franchise")
+
+
+def test_tests_cannot_reach_the_real_backend():
+    # conftest's guard: a test that forgot to patch viber_send.backend typed a GC name into the
+    # live Viber search box on a dev Mac (2026-10-28).
+    import viber_send
+    import pytest
+    with pytest.raises(AssertionError, match="real Viber backend"):
+        viber_send.backend.click_search()
+
+
+def test_picker_clicks_its_search_again_when_typing_is_refused_for_lost_focus(monkeypatch):
+    # macOS refuses to post characters while the keyboard focus isn't on the clicked field
+    # (it bounced back to the message box); the picker clicks its box again instead of failing.
+    import viber_ui
+    from backends import OCRError
+
+    class LosesFocusOnce(PickerBackend):
+        refused = False
+
+        def type_into_focus(self, text):
+            if not self.refused:
+                self.refused = True
+                self.focus = "compose"
+                raise OCRError("Viber's keyboard focus is on the message box; nothing was typed.")
+            super().type_into_focus(text)
+
+    fake = LosesFocusOnce()
+    _use(monkeypatch, fake, fast_clock=True)
+    viber_ui._tick_participant("Arjee Alpha")
+    assert fake.search_text == "Arjee Alpha" and fake.counter == 1
+    assert len([c for c in fake.clicks if c == (930, 75)]) == 2  # the search box, clicked twice
 
 
 class WrongRowBackend:
