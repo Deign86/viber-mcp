@@ -22,7 +22,7 @@ uv run client.py send  "<to>" "<text>" [--dry-run]
 uv run client.py reply "<text>"            # into the currently-open chat
 uv run client.py draft "<text>"            # paste into open chat, do NOT send
 uv run client.py note  "<text>"            # save to My Notes
-uv run client.py call  <tool> '<json>'     # any tool (images saved as tool_image_N.png)
+uv run client.py call  <tool> '<json>'     # any tool (images go to <temp>/viber-mcp-images, kept a day)
 uv run client.py chats | read | contacts
 
 # Register with Claude Code (user scope):
@@ -326,7 +326,7 @@ Status:
   token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads go to
   `%LOCALAPPDATA%\viber-mcp\drive-cache` (fetched in parallel, `DOWNLOAD_THREADS`, each thread
   with its own Drive service — httplib2 isn't thread-safe; written as `.part` then renamed, so a
-  file under its final name is whole and is reused without a metadata call) and are kept ~3 days, then pruned by `prune_downloads`
+  file under its final name is whole and is reused without a metadata call) and are kept ~3 days, then pruned by `prune_downloads` (after every download, every send_listing and at server start; a reused cached file counts as fresh)
   (`VIBER_MCP_KEEP_DOWNLOADS_DAYS`; never delete right after sending — that raced Viber's upload and
   left photos "not sent"). `remove_downloads` /
   `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`

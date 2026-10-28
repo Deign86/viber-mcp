@@ -9,6 +9,7 @@ viber_ui's structure matching works unchanged.
 from __future__ import annotations
 
 import re
+import threading
 
 _QML_SUFFIX = re.compile(r"(_QMLTYPE_\d+|_QML_\d+)+$")
 
@@ -28,6 +29,28 @@ KEYCODES = {
     "tab": 48, "space": 49, "left": 123, "right": 124, "down": 125, "up": 126,
     "pageup": 116, "pagedown": 121, "home": 115, "end": 119,
 }
+
+
+def call_with_timeout(fn, seconds: float):
+    """(True, fn()) — or (False, None) when fn hasn't returned within `seconds`. fn runs in a
+    daemon thread; one that never returns keeps that thread, so stop calling it after a False.
+    fn's exceptions are re-raised here."""
+    box: dict = {}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — handed to the caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    if worker.is_alive():
+        return False, None
+    if "error" in box:
+        raise box["error"]
+    return True, box.get("value")
 
 
 def short_class(identifier: str | None) -> str:

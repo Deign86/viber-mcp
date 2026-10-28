@@ -49,7 +49,7 @@ from ApplicationServices import (  # type: ignore
     kAXValueCGSizeType,
 )
 from CoreFoundation import CFEqual, CFGetTypeID, CFHash  # type: ignore
-from Foundation import NSMakeRange, NSURL  # type: ignore
+from Foundation import NSData, NSMakeRange  # type: ignore
 from PIL import Image
 
 from . import _maclogic as ml
@@ -60,6 +60,7 @@ _BUNDLE_ID = "com.viber.osx"
 _ATTRS = ["AXRole", "AXIdentifier", "AXTitle", "AXDescription", "AXValue", "AXPosition",
           "AXSize", "AXChildren"]
 _MAX_NODES = 4000
+_CAPTURE_TIMEOUT = 3.0  # an in-process window capture normally takes ~0.3 s
 
 
 def _get(el, attr):
@@ -109,6 +110,7 @@ class MacBackend(Backend):
         self._staged: str | None = None
         self._trusted = False
         self._asked_ax = self._asked_screen = False
+        self._cg_hangs = False         # CGWindowListCreateImage never returned: screencapture
         self._sb_cache: tuple = (None, 0)
         self._handoff = threading.Lock()  # held while real input needs Viber in front
 
@@ -221,11 +223,19 @@ class MacBackend(Backend):
                 "Privacy & Security → Screen Recording, turn on \"Viber MCP\" (or the app that "
                 "started the server), then restart Claude.")
         create = getattr(Quartz, "CGWindowListCreateImage", None)
-        if create is not None:
-            img = create(Quartz.CGRectNull, Quartz.kCGWindowListOptionIncludingWindow, window_id,
-                         Quartz.kCGWindowImageBoundsIgnoreFraming)
+        if create is not None and not self._cg_hangs:
+            done, img = ml.call_with_timeout(
+                lambda: create(Quartz.CGRectNull, Quartz.kCGWindowListOptionIncludingWindow,
+                               window_id, Quartz.kCGWindowImageBoundsIgnoreFraming),
+                _CAPTURE_TIMEOUT)
+            if not done:
+                # Measured 2026-10-28: started from Claude Code's shell (client.py), the call
+                # waits forever inside ScreenCaptureKit although access is granted, while
+                # `screencapture -l` works. Use that for the rest of the run (each hung call
+                # keeps a thread).
+                self._cg_hangs = True
             # While the window is being re-shown the image can come back without pixel data.
-            if img is not None and Quartz.CGImageGetWidth(img) > 1 \
+            elif img is not None and Quartz.CGImageGetWidth(img) > 1 \
                     and Quartz.CGImageGetDataProvider(img) is not None:
                 return img
         with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp:
@@ -233,13 +243,28 @@ class MacBackend(Backend):
             proc = subprocess.run(
                 ["screencapture", "-x", "-o", "-l", str(window_id), tmp.name],
                 capture_output=True, text=True, timeout=15)
-            src = Quartz.CGImageSourceCreateWithURL(NSURL.fileURLWithPath_(tmp.name), None)
+            # From the bytes, not the URL: the image decodes lazily, after the temp file is gone,
+            # and then came back all black (2026-10-28).
+            data = NSData.dataWithContentsOfFile_(tmp.name)
+            src = Quartz.CGImageSourceCreateWithData(data, None) if data is not None else None
             img = Quartz.CGImageSourceCreateImageAtIndex(src, 0, None) if src is not None else None
         if proc.returncode != 0 or img is None:
             raise OCRError(
                 "Failed to capture the Viber window. Grant Screen Recording permission to the "
                 f"app running the server in System Settings. Detail: {proc.stderr.strip()}")
-        return img
+        # The PNG decodes as RGBA; everything here reads BGRA (purple came out red, so the
+        # unread badges weren't found).
+        return self._bgra(img)
+
+    @staticmethod
+    def _bgra(img):
+        """`img` redrawn as a BGRA (premultiplied-first, 32-bit little-endian) bitmap."""
+        w, h = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img)
+        ctx = Quartz.CGBitmapContextCreate(
+            None, w, h, 8, w * 4, Quartz.CGColorSpaceCreateDeviceRGB(),
+            Quartz.kCGImageAlphaPremultipliedFirst | Quartz.kCGBitmapByteOrder32Little)
+        Quartz.CGContextDrawImage(ctx, Quartz.CGRectMake(0, 0, w, h), img)
+        return Quartz.CGBitmapContextCreateImage(ctx)
 
     @staticmethod
     def _pixels(img, whole_window: bool = False) -> tuple[bytes, int]:
@@ -249,13 +274,8 @@ class MacBackend(Backend):
         data = Quartz.CGDataProviderCopyData(provider) if provider is not None else None
         if data is not None:
             return bytes(data), Quartz.CGImageGetBytesPerRow(img)
-        w, h = Quartz.CGImageGetWidth(img), Quartz.CGImageGetHeight(img)
-        ctx = Quartz.CGBitmapContextCreate(
-            None, w, h, 8, w * 4, Quartz.CGColorSpaceCreateDeviceRGB(),
-            Quartz.kCGImageAlphaPremultipliedFirst | Quartz.kCGBitmapByteOrder32Little)
-        Quartz.CGContextDrawImage(ctx, Quartz.CGRectMake(0, 0, w, h), img)
-        redrawn = Quartz.CGBitmapContextCreateImage(ctx)
-        data = Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(redrawn))
+        redrawn = MacBackend._bgra(img)
+        data =Quartz.CGDataProviderCopyData(Quartz.CGImageGetDataProvider(redrawn))
         if data is None:
             raise OCRError("Couldn't read the Viber window's pixels; try again.")
         if whole_window and not bytes(data).strip(b"\0"):

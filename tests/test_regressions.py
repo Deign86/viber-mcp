@@ -2876,3 +2876,89 @@ def test_picker_clicks_its_search_again_when_typing_is_refused_for_lost_focus(mo
     viber_ui._tick_participant("Arjee Alpha")
     assert fake.search_text == "Arjee Alpha" and fake.counter == 1
     assert len([c for c in fake.clicks if c == (930, 75)]) == 2  # the search box, clicked twice
+
+
+class WrongRowBackend:
+    """The clicked search row opens `opens[i]` on the i-th click (the stale-row case)."""
+    input_confirmed = True
+    def __init__(self, opens):
+        self.opens, self.clicks = opens, 0
+    def click_search(self): pass
+    def select_all(self): pass
+    def delete(self): pass
+    def type_text(self, text): pass
+    def click_result(self, norm_y): self.clicks += 1
+    def observe(self, region=None):
+        title = self.opens[min(self.clicks, len(self.opens)) - 1] if self.clicks else "Sir Mark/Sean"
+        return [{"text": title, "x": 0.35, "y": 0.104}]
+
+
+def test_search_open_refuses_when_another_chat_opened(monkeypatch):
+    # 2026-10-28 (macOS): search_and_open("Anne") clicked a stale row position, opened
+    # "kristine joy andes" and still reported matched "Anne".
+    import pytest
+    import viber_send
+    fake = WrongRowBackend(["kristine joy andes", "kristine joy andes"])
+    monkeypatch.setattr(viber_send, "backend", fake)
+    monkeypatch.setattr(viber_send, "_await_results", lambda name: ([], ("Anne", 0.38, 3)))
+    monkeypatch.setattr(viber_send, "_poll", lambda fn, **kw: fn())
+    with pytest.raises(viber_send.SendError, match="didn't open"):
+        viber_send._search_open("Anne")
+    assert fake.clicks == 2  # searched once more before giving up
+
+
+def test_search_open_succeeds_when_the_second_search_opens_the_chat(monkeypatch):
+    import viber_send
+    fake = WrongRowBackend(["kristine joy andes", "Anne"])
+    monkeypatch.setattr(viber_send, "backend", fake)
+    monkeypatch.setattr(viber_send, "_await_results", lambda name: ([], ("Anne", 0.38, 3)))
+    monkeypatch.setattr(viber_send, "_poll", lambda fn, **kw: fn())
+    assert viber_send._search_open("Anne") == ("Anne", 3)
+
+
+def test_header_match_accepts_short_names_exactly():
+    import viber_send
+    assert viber_send._header_matches.__doc__  # exists
+    class B:
+        def observe(self, region=None):
+            return [{"text": "Ivy", "x": 0.35, "y": 0.104}]
+    old = viber_send.backend
+    viber_send.backend = B()
+    try:
+        assert viber_send._header_matches("Ivy") and not viber_send._header_matches("Ivan")
+    finally:
+        viber_send.backend = old
+
+
+def test_header_match_finds_a_title_with_no_subtitle():
+    # macOS 2026-10-28: My Notes' title (no "last seen" line) is OCR'd at y 0.125, below the old
+    # 0.12 cut-off, so the new post-click check refused every open_my_notes.
+    import viber_send
+    class B:
+        def observe(self, region=None):
+            return [{"text": "My Notes", "x": 0.075, "y": 0.062},   # the sidebar row
+                    {"text": "My Notes", "x": 0.343, "y": 0.125}]
+    old = viber_send.backend
+    viber_send.backend = B()
+    try:
+        assert viber_send._header_matches("My Notes")
+    finally:
+        viber_send.backend = old
+
+
+def test_download_prunes_stale_photos_but_keeps_a_reused_old_one(tmp_path, monkeypatch):
+    # 2026-10-28: view_listing_photos / drive_download never pruned, so listing photos piled up
+    # in the cache until the next send_listing. Every download now prunes, and a cached photo
+    # that's reused counts as fresh (it's about to be sent).
+    import os
+    import time
+    import viber_drive
+    cache = tmp_path / "drive-cache"
+    cache.mkdir()
+    reused, stale = cache / "keep_1.jpg", cache / "old_2.jpg"
+    for p in (reused, stale):
+        p.write_bytes(b"jpg")
+        os.utime(p, (time.time() - 10 * 86400,) * 2)
+    monkeypatch.setattr(viber_drive, "CACHE_DIR", cache)
+    assert viber_drive.download(["keep"]) == [str(reused)]
+    assert reused.exists() and not stale.exists()
