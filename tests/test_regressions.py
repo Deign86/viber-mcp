@@ -2126,6 +2126,27 @@ def test_rename_retries_a_lost_tick_click(monkeypatch):
     assert fake.group_name == "JHAZEL-CS-(30-35SQM, MAKATI)" and not fake.renaming
 
 
+def test_rename_saves_a_long_name_that_wraps_the_box_to_two_lines(monkeypatch):
+    # HAZEL-CS-(45-50SQM, SAN JUAN), NA-WH-(800-1000SQM, MALABON), MACROE-...: the typed name
+    # wrapped, the box grew (Hazel's: [809, 227, 1013, 265]) and the rect match read "" — the GC
+    # stayed "Group" with the name typed and ✓ unclicked.
+    import viber_ui
+    fake = GroupFlowBackend()
+    fake.page = "group"
+    _use(monkeypatch, fake, fast_clock=True)
+    elements = fake.elements
+
+    def wrapping():
+        els = elements()
+        for e in els:
+            if e["type"] == "Edit" and fake.renaming and len(e["text"]) > 20:
+                e["rect"] = [e["rect"][0], e["rect"][1] - 9, e["rect"][2], e["rect"][3] + 9]
+        return els
+    fake.elements = wrapping
+    viber_ui._rename_open_chat("HAZEL-CS-(45-50SQM, SAN JUAN)")
+    assert fake.group_name == "HAZEL-CS-(45-50SQM, SAN JUAN)" and not fake.renaming
+
+
 def test_rename_reports_when_the_name_box_never_opens(monkeypatch):
     import pytest
     import viber_ui
