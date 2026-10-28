@@ -631,7 +631,7 @@ class MacBackend(Backend):
         self._target = predicate
         self._target_el = el if el is not None else self._find(predicate, what)[1]
         AXUIElementSetAttributeValue(self._target_el, "AXFocused", True)
-        self._focus_el = self._target_el
+        self._focus_el = self._target_el  # type_into_focus types here (the mention flow)
         time.sleep(0.1)
 
     def click_compose(self) -> None:
@@ -695,7 +695,7 @@ class MacBackend(Backend):
                                             "AXRadioButton") and "AXPress" in _actions(hit):
                 if AXUIElementPerformAction(hit, "AXPress") == 0:
                     return
-        self._focus_el = None
+        # _focus_el stays: picking a mention row or a picker circle leaves typing in that field.
         self._with_viber_front(lambda: self._hid_click(sx, sy, button, double))
 
     def _hid_click(self, sx: float, sy: float, button: str, double: bool) -> None:
@@ -859,41 +859,58 @@ class MacBackend(Backend):
     def _focused(self):
         return _get(self._app(), "AXFocusedUIElement")
 
-    def _check_focus(self) -> None:
-        """Refuse to post characters unless the field we focused (click_at on a text field,
-        click_compose / click_search) still has Viber's keyboard focus: they go to whatever has
-        it, and that can be the message box of a client's chat. One retry re-focuses the field."""
-        wanted = self._focus_el
-        if wanted is None:
+    def _check_focus(self, field) -> None:
+        """Refuse to post characters unless `field` (focused by click_at on a text field or
+        click_compose / click_search) really has Viber's keyboard focus: they go to whatever has
+        it, and that can be the message box of a client's chat (AXFocused doesn't always take;
+        Viber hands the focus back to the message box when a search closes)."""
+        focused = self._focused()
+        focused_id = _get(focused, "AXIdentifier") if focused is not None else None
+        if ml.typing_target_ok(focused_id, _get(field, "AXIdentifier") or ""):
             return
-        want_id = _get(wanted, "AXIdentifier")
-        for attempt in range(2):
-            focused = self._focused()
-            if ml.typing_target_ok(_get(focused, "AXIdentifier") if focused is not None else None,
-                                   want_id or ""):
-                return
-            if attempt == 0:
-                AXUIElementSetAttributeValue(wanted, "AXFocused", True)
-                time.sleep(0.15)
-        cls = ml.short_class(_get(focused, "AXIdentifier")) if focused is not None else ""
-        raise OCRError(f"Viber's keyboard focus is on {ml.field_kind(cls)}, not on the field that "
-                       "was clicked; nothing was typed. Click the field again, then type.")
+        raise OCRError(f"Viber's keyboard focus is on {ml.field_kind(ml.short_class(focused_id))}, "
+                       "not on the field that was clicked; nothing was typed. Click the field "
+                       "again, then type.")
 
     def type_into_focus(self, text: str) -> None:
         """Type into whatever field has Viber's focus — click it first. Newlines (Enter would
         send) are appended through AXValue on the focused field instead. Nothing is typed unless
         the clicked field really has the focus (`_check_focus`)."""
+        field = self._focus_el
+        if field is not None and _get(field, "AXRole") in ("AXTextField", "AXTextArea"):
+            # After real keys (press_key's hand-off to the front and back) Qt's focus had left the
+            # field and posted characters vanished: the GC rename typed nothing and the mention's
+            # closing text was lost (2026-10-28). Focus it again first.
+            AXUIElementSetAttributeValue(field, "AXFocused", True)
+            time.sleep(0.05)
+        else:
+            field = None
         if "\n" not in text and "\r" not in text:
-            self._check_focus()
+            if field is not None:
+                self._check_focus(field)
+            before = _get(field, "AXValue") if field is not None else None
             for ch in text:
                 self._post_key(0, 0, ch)
             time.sleep(0.2 + len(text) / 400)
+            if before is not None and not self._changed(field, before, timeout=1.0):
+                raise OCRError(f"The typed text didn't reach Viber's field ({text!r}); click the "
+                               "field and try again.")
             return
-        field = self._focus_el or _get(self._app(), "AXFocusedUIElement")
+        field = field or _get(self._app(), "AXFocusedUIElement")
         if field is None or _get(field, "AXRole") not in ("AXTextField", "AXTextArea"):
             raise OCRError("Click the text field first, then type (needed for newlines).")
         current = _get(field, "AXValue") or ""
         AXUIElementSetAttributeValue(field, "AXValue", str(current) + text)
+
+    @staticmethod
+    def _changed(field, before, timeout: float) -> bool:
+        deadline = time.time() + timeout
+        while True:
+            if _get(field, "AXValue") != before:
+                return True
+            if time.time() >= deadline:
+                return False
+            time.sleep(0.05)
 
     # --- focus protection ------------------------------------------------------------
     def foreground(self) -> int:
