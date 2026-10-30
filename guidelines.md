@@ -77,7 +77,10 @@ GC to see every listing already offered (never re-offer one) and their full requ
    confirm availability with the owner first, e.g. "May warehouse po kami sa Silang, 1,890 sqm,
    ₱200/sqm. Confirm lang po namin sa owner kung available pa, update po namin kayo agad."
 2. Actually ask the owner right away ("available pa po ba?"); see "Owners and follow-ups". An owner
-   who isn't on Viber goes to the call staff with a script.
+   who isn't on Viber goes to the call staff with a script. **First read the doc's internal part:
+   if another employee is named as the owner's contact** ("Contacted via viber Ma'am Tel", "Owner's
+   contact at APR: Ma'am Bea", their name/initials as the doc's last line), don't contact the owner
+   yourself — ask that employee to check with the owner, and wait for their answer.
 3. Only after the owner confirms, send the full listing (`send_listing`). If it's taken, tell the
    client, move the folder to SOLD (`move_listing_to_sold`), and offer the next option the same way.
 
