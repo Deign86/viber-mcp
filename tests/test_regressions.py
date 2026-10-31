@@ -2962,3 +2962,40 @@ def test_download_prunes_stale_photos_but_keeps_a_reused_old_one(tmp_path, monke
     monkeypatch.setattr(viber_drive, "CACHE_DIR", cache)
     assert viber_drive.download(["keep"]) == [str(reused)]
     assert reused.exists() and not stale.exists()
+
+
+def test_require_open_chat_accepts_a_number_from_the_unsaved_banner(monkeypatch):
+    # 2026-10-31 (macOS): reply(expect_chat="+639178899815") was refused — "The open chat is
+    # 'Erwin' (Last seen yesterday at 7:20 PM)" — with that very chat open. A contact with a
+    # Viber name shows "Last seen" under it, not the number; the number is only in the banner
+    # under the header, which the header-band read (_HEADER_REGION) cut off.
+    import pytest
+    import viber_send
+    from viber_send import SendError
+
+    class B:
+        def __init__(self, banner):
+            self.banner, self.regions = banner, []
+        def screenshot(self): return _Img()
+        def elements(self): return [{"class": "StackView", "rect": [308, 71, 792, 959]}]
+        def observe(self, region=None):
+            self.regions.append(region)
+            obs = [_obs("Erwin", 0.35, 0.094), _obs("Last seen yesterday at 7:20 PM", 0.35, 0.119),
+                   _obs(self.banner, 0.31, 0.165),
+                   _obs("Erwin +639178899815 is not in your contact list", 0.05, 0.2),  # sidebar
+                   _obs("Viber: 09178899815 is not in your contact list", 0.4, 0.5)]   # a message
+            bottom = (region or (0, 0, 1, 1))[3]
+            return [o for o in obs if o["y"] + o["h"] / 2 <= bottom]
+
+    fake = B("Erwin +639178899815 is not in your contact list - save it")
+    monkeypatch.setattr(viber_send, "backend", fake)
+    assert viber_send.require_open_chat("+639178899815")["title"] == "Erwin"
+    assert viber_send.require_open_chat("09178899815")["title"] == "Erwin"
+    assert viber_send.require_open_chat("Erwin")["title"] == "Erwin"
+    fake.regions.clear()
+    viber_send.require_open_chat("Erwin")
+    assert viber_send._BANNER_REGION not in fake.regions        # a name match needs no extra read
+
+    monkeypatch.setattr(viber_send, "backend", B("Erwin +639171234567 is not in your contact list"))
+    with pytest.raises(SendError, match="open chat is 'Erwin'.*not '\\+639178899815'"):
+        viber_send.require_open_chat("+639178899815")             # the sidebar/message don't count
