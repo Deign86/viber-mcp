@@ -134,7 +134,9 @@ def search_messages(query: str, pages: int = 2) -> dict:
 def list_chats(unread_only: bool = False) -> dict:
     """List the chats in the sidebar (OCR): raw lines plus `chats` rows with name, time, preview,
     unread badge count and last_from ("me"/"them" — who sent the last message, best-effort from
-    the "Me:" prefix / read tick; a client chat should never end on "them").
+    the "Me:" prefix / read tick; a client chat should never end on "them"). A row whose time is
+    hidden (Viber's floating "back to top" button covers the bottom row's) has time and
+    last_from null: open it to see who wrote last.
 
     Reads only the left-hand chat list of what is currently on screen; scroll_chat_list for
     more. unread_only=True switches the list to Viber's "Unread" filter for the read (and back
