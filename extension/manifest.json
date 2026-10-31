@@ -1,0 +1,95 @@
+{
+  "manifest_version": "0.4",
+  "name": "viber-mcp",
+  "display_name": "Viber MCP",
+  "version": "0.1.0",
+  "description": "Read your Viber inbox, open chats, draft replies and send messages through the Viber Desktop app you're signed in to.",
+  "long_description": "Lets Claude work in **Viber Desktop** like admin staff would: check unread chats, read and search conversations, draft or send replies, send files, build client group chats, and send property listings (text and photos) from Google Drive.\n\nViber has no API, so this drives the running, signed-in Viber app. On Windows it works in the background: no cursor movement, no keyboard input, and Viber is never pulled to the front. Keep Viber open (behind other windows is fine).\n\nThe staff operating rules ship inside the server, so Claude follows them automatically.\n\n**Unofficial.** Not affiliated with or endorsed by Viber / Rakuten. A Viber update can break it.",
+  "author": {
+    "name": "Deign Lazaro, Wawi del Mundo"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Deign86/viber-mcp.git"
+  },
+  "homepage": "https://github.com/Deign86/viber-mcp",
+  "documentation": "https://github.com/Deign86/viber-mcp#readme",
+  "support": "https://github.com/Deign86/viber-mcp/issues",
+  "icon": "icon.png",
+  "server": {
+    "type": "uv",
+    "entry_point": "server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--frozen", "--directory", "${__dirname}", "server.py"],
+      "env": {
+        "VIBER_MCP_CONTACTS": "${user_config.contacts_file}",
+        "VIBER_MCP_GC_MEMBERS": "${user_config.gc_members_file}",
+        "VIBER_MCP_GOOGLE_SERVICE_ACCOUNT": "${user_config.google_service_account}",
+        "VIBER_MCP_GOOGLE_CLIENT": "${user_config.google_oauth_client}",
+        "VIBER_MCP_LISTINGS_FOLDER": "${user_config.listings_folder}",
+        "VIBER_MCP_LISTINGS_GC": "${user_config.listings_gc}",
+        "VIBER_MCP_KEEP_DOWNLOADS_DAYS": "${user_config.keep_downloads_days}"
+      }
+    }
+  },
+  "prompts_generated": true,
+  "keywords": ["viber", "messaging", "chat", "inbox", "automation", "google drive"],
+  "license": "MIT",
+  "privacy_policies": ["https://policies.google.com/privacy"],
+  "compatibility": {
+    "platforms": ["win32", "darwin"],
+    "runtimes": {
+      "python": ">=3.14"
+    }
+  },
+  "user_config": {
+    "contacts_file": {
+      "type": "file",
+      "title": "Contacts file",
+      "description": "Optional. contacts.json mapping names to Viber numbers ({\"Mitch\": \"+639171234567\"}), so you can say \"message Mitch\". Without it, use numbers or search by name.",
+      "required": false
+    },
+    "gc_members_file": {
+      "type": "file",
+      "title": "GC members file",
+      "description": "gc_members.json: the staff to add to client group chats and the intro message (copy gc_members.example.json). Only needed for client GCs.",
+      "required": false
+    },
+    "google_service_account": {
+      "type": "file",
+      "title": "Google Drive key",
+      "description": "The read-only Drive service account key (google_service_account.json) from your admin, for property listings. Treat it like a password.",
+      "required": false
+    },
+    "google_oauth_client": {
+      "type": "file",
+      "title": "Google OAuth client",
+      "description": "google_oauth_client.json, for uploading new listings to Drive (or for signing in with your own Google account when there's no Drive key).",
+      "required": false
+    },
+    "listings_folder": {
+      "type": "string",
+      "title": "Listings folder",
+      "description": "Name of the Google Drive folder holding the property listings.",
+      "default": "APR LISTING",
+      "required": false
+    },
+    "listings_gc": {
+      "type": "string",
+      "title": "Listings group chat",
+      "description": "The staff Viber group where new listings are posted.",
+      "default": "APR LISTING ONLY",
+      "required": false
+    },
+    "keep_downloads_days": {
+      "type": "number",
+      "title": "Keep downloaded photos (days)",
+      "description": "Listing photos downloaded from Drive are kept this long, then deleted.",
+      "default": 3,
+      "min": 1,
+      "max": 30,
+      "required": false
+    }
+  }
+}

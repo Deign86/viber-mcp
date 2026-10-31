@@ -16,14 +16,14 @@ from __future__ import annotations
 import json
 import re
 import time
-from pathlib import Path
 
+import viber_config as config
 import viber_ocr
 from backends import get_backend
 
 backend = get_backend()
 
-CONTACTS_PATH = Path(__file__).with_name("contacts.json")
+CONTACTS_PATH = config.user_file("VIBER_MCP_CONTACTS", "contacts.json")
 
 # E.164: leading +, then 8–15 digits. We also accept bare digit strings and normalize them.
 _E164_RE = re.compile(r"^\+\d{8,15}$")

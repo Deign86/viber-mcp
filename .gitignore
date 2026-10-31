@@ -17,6 +17,7 @@ contacts.json
 
 # Scratch / captures
 *.png
+!extension/icon.png
 scratchpad/
 
 # Windows layout overrides

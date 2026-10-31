@@ -12,15 +12,15 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
+import viber_config as config
 import viber_drive
 import viber_gc_logic as logic
 import viber_ocr
 import viber_send
 import viber_ui
 
-CONFIG = Path(__file__).with_name("gc_members.json")
+CONFIG = config.user_file("VIBER_MCP_GC_MEMBERS", "gc_members.json")
 
 
 class GCError(Exception):
@@ -29,8 +29,9 @@ class GCError(Exception):
 
 def _config() -> dict:
     if not CONFIG.exists():
-        raise GCError("gc_members.json is missing — copy gc_members.example.json and fill in the "
-                      "staff members to add to client GCs.")
+        raise GCError(f"{CONFIG} is missing — copy gc_members.example.json there and fill in the "
+                      "staff members to add to client GCs (or pick the file in the Claude "
+                      "extension's settings: GC members file).")
     return json.loads(CONFIG.read_text(encoding="utf-8"))
 
 
