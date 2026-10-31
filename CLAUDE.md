@@ -252,6 +252,15 @@ Status:
     and the screen hit test returns the other app's menu bar. So `_stop_if_away` raises (`_AWAY`,
     nothing done) from `_window`, `open_url` (Viber activates itself on a link) and
     `_with_viber_front`; `focus()` leaves such a window where it is.
+  - **Text-editing keys are posted** (`_EDIT_KEYS`: End/Home/Left/Right/Backspace/Delete into the
+    field clicked last, after `_check_focus`), so the GC rename and the picker/mention clean-up
+    stay in the background. Other keys still need the hand-off: posted Return/Down didn't open a
+    search result (2026-11-01), posted Escape doesn't reach the image viewer.
+  - **Don't post mouse events to Viber** (2026-11-01): an NSEvent with the window number, posted
+    to the pid, did reach Qt but not where it was aimed — a click on the Unread pill left the My
+    Notes row swiped open with its delete (trash) button showing. Search results, chat rows and
+    the filter pills have no AX element (the hit test returns the window), so they still need
+    the real click.
   - The reaction hearts aren't in the macOS AX tree, so `like_message` can't find them there.
   - **Posted characters go to Viber's keyboard focus, which is often still the message box**:
     AXFocused on another field doesn't always take, and Viber hands focus back to the message

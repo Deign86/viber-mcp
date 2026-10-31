@@ -8,9 +8,9 @@ Like the Windows backend it runs in the background where macOS allows it:
 | See | In-process window capture (CGWindowListCreateImage) + Vision OCR | Works while Viber is covered (not minimized/closed). |
 | Find controls | Qt's accessibility tree via AX; each AXIdentifier is the QML object path, so the classes match the Windows UIA ones (StackView, FeedDelegate, SendToolbarButton, …). | No pixel offsets. |
 | Type / send | AXValue on the message/search box, AXPress on buttons. | Cursor, keyboard and front app untouched. |
-| Typing | Characters posted to Viber's process (CGEventPostToPid). | Untouched. |
+| Typing | Characters and text-editing keys (End, Backspace, …) posted to Viber's process (CGEventPostToPid). | Untouched. |
 | Files | Pasted: file URLs on the clipboard, Cmd+V posted to Viber's process. | Clipboard put back. |
-| Clicks with no AX element under them (chat rows, search results, right-click menus), scrolling and named keys (Escape, arrows, Enter) | Real HID events: Viber is brought to the front, then the user's front app and cursor are put back. | Brief hand-off. |
+| Clicks with no AX element under them (chat rows, search results, right-click menus), scrolling and other named keys (Escape, Up/Down, Enter, Tab) | Real HID events: Viber is brought to the front, then the user's front app and cursor are put back. | Brief hand-off. |
 
 Measured on Viber 29.1 (macOS 15): posted mouse/scroll events are ignored by a background Qt
 window, and posted Escape doesn't reach the image viewer, while posted characters do land in the
@@ -64,6 +64,11 @@ _ATTRS = ["AXRole", "AXIdentifier", "AXTitle", "AXDescription", "AXValue", "AXPo
 _MAX_NODES = 4000
 _CAPTURE_TIMEOUT = 3.0  # an in-process window capture normally takes ~0.3 s
 _KEY_V = 9  # key code; Cmd+V pastes files into the message box
+# Keys a text field takes when posted to Viber's process (measured 2026-11-01: End, Home, Left,
+# Backspace and Delete edited the message box with Viber behind another app). Return didn't
+# open a search result that way, and posted Escape doesn't reach the image viewer, so other
+# keys still go through the front hand-off.
+_EDIT_KEYS = frozenset({"end", "home", "left", "right", "backspace", "delete"})
 # Measured 2026-11-01 with Safari full screen: Viber's window on another Space isn't drawn, so a
 # capture shows an old frame (the chat header too, which isn't in AX), and the screen hit test
 # finds the other app. Bringing Viber forward switches the user out of full screen. So: stop.
@@ -912,6 +917,16 @@ class MacBackend(Backend):
             raise ValueError(f"Unknown key {key!r}. Supported: {', '.join(sorted(ml.KEYCODES))}. "
                              "Modifier shortcuts (Cmd+...) aren't offered.")
         self._target_el = None  # Escape/Enter may close or change the page
+        field = self._focus_el
+        if key.strip().lower() in _EDIT_KEYS and field is not None \
+                and _get(field, "AXRole") in ("AXTextField", "AXTextArea"):
+            # Text editing in the field clicked last: posted to Viber, in the background.
+            AXUIElementSetAttributeValue(field, "AXFocused", True)
+            self._check_focus(field)
+            for _ in range(max(1, min(int(repeat), 100))):
+                self._post_key(code)
+            time.sleep(0.05)
+            return
         shown = self._onscreen_window() is not None
 
         def keys():
