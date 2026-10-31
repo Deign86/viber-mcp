@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import time
+from itertools import pairwise
 
 from backends import OCRError, get_backend
 
@@ -131,14 +132,48 @@ _LIST_TOP_Y = 0.18   # below the search box, folder icons and the All/Unread fil
 _BADGE_RE = re.compile(r"^\d{1,3}$")
 
 
+def _row(name: str, stamp: dict | None, line: list[dict], under: list[dict], y: float,
+         sidebar_right: float) -> dict:
+    """One chat row from its name line's OCR pieces and the lines under it (see chat_rows)."""
+    badge = next((o for o in under if o["x"] > sidebar_right * 0.75
+                  and _BADGE_RE.match(o["text"].strip())), None)
+    preview = " ".join(o["text"].strip() for o in under
+                       if o is not badge and o["x"] < sidebar_right * 0.85)
+    if preview.lower().startswith("me:"):
+        last_from = "me"
+    elif stamp is not None:
+        last_from = "me" if _ticked(stamp, line) else "them"
+    else:  # the tick sits by the hidden time: only a lone tick OCR'd on its own says it's ours
+        last_from = "me" if any(o["text"].strip().lower() in _TICK_WORDS for o in line) else None
+    return {"name": name, "time": row_stamp(stamp["text"]) if stamp else None, "preview": preview,
+            "unread": int(badge["text"]) if badge else 0, "last_from": last_from, "y": y}
+
+
+def _split_rows(below: list[dict], top: float, pitch: float | None) -> list[list[dict]]:
+    """Split the lines under a row's name line (top to bottom) wherever the next row height
+    starts: [this row's own lines, then each unstamped row's lines]. One part without a pitch."""
+    parts = [[]]
+    for o in below:
+        if pitch and o["y"] - top >= 0.75 * pitch:
+            top = o["y"]
+            parts.append([])
+        parts[-1].append(o)
+    return parts
+
+
 def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[dict]:
     """Group the sidebar's OCR lines into chat rows: {name, time, preview, unread, last_from, y}.
 
     A row starts at a line that ends with a time/day stamp near the sidebar's right edge; the
     name is the leftmost text on that line and the preview is the lines under it until the next
-    stamp. `unread` is the badge count (a bare number at the right edge, 0 if none). `last_from`
-    is "me" when the preview starts with "Me:" or the stamp carries our sent/read tick, else
-    "them" — best-effort from OCR. `y` is the name line's normalized top, for clicks. Pure."""
+    stamp. Rows are all one height (the smallest gap between stamps), so text a row height or
+    more under a name line is the next row even when OCR saw no stamp there: Viber's floating
+    "back to top" button covers the bottom row's time (live, 2026-10-31: that row merged into
+    the preview above). Such a row has `time` None. `unread` is the badge count (a bare number
+    at the right edge, 0 if none). `last_from` is "me" when the preview starts with "Me:" or
+    the stamp carries our sent/read tick, else "them" — None for a row whose time is hidden
+    (its tick is too) — best-effort from OCR. `y` is the name line's normalized top, for
+    clicks. Pure."""
     # Viber's "Sponsored" ad box covers the bottom of the list (the Windows backend closes it,
     # macOS shows it): nothing from its label down belongs to a chat.
     ad = min((o["y"] for o in obs if o["text"].strip().lower() == "sponsored"
@@ -148,6 +183,8 @@ def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[di
                    and (ad is None or o["y"] < ad - 0.005)),
                   key=lambda o: o["y"])
     stamps = [o for o in left if o["x"] > sidebar_right * 0.55 and row_stamp(o["text"])]
+    gaps = [b["y"] - a["y"] for a, b in pairwise(stamps) if b["y"] - a["y"] > 0.024]
+    pitch = min(gaps) if gaps else None
     rows = []
     for i, stamp in enumerate(stamps):
         end = stamps[i + 1]["y"] - 0.012 if i + 1 < len(stamps) else 1.0
@@ -155,14 +192,17 @@ def chat_rows(obs: list[dict], sidebar_right: float = _SIDEBAR_MAX_X) -> list[di
         names = [o for o in line if o["x"] < stamp["x"] and len(o["text"].strip()) > 3]
         first = min(names, key=lambda o: o["x"]) if names else stamp
         below = [o for o in left if stamp["y"] + 0.012 <= o["y"] < end]
-        badge = next((o for o in below if o["x"] > sidebar_right * 0.75
-                      and _BADGE_RE.match(o["text"].strip())), None)
-        preview = " ".join(o["text"].strip() for o in below
-                           if o is not badge and o["x"] < sidebar_right * 0.85)
-        mine = preview.lower().startswith("me:") or _ticked(stamp, line)
-        rows.append({"name": first["text"].strip() if names else "", "time": row_stamp(stamp["text"]),
-                     "preview": preview, "unread": int(badge["text"]) if badge else 0,
-                     "last_from": "me" if mine else "them", "y": first["y"]})
+        own, *unstamped = _split_rows(below, first["y"], pitch)
+        rows.append(_row(first["text"].strip() if names else "", stamp, line, own, first["y"],
+                         sidebar_right))
+        for part in unstamped:
+            top = part[0]["y"]
+            line = [o for o in part if o["y"] - top < 0.012]
+            name = min((o for o in line if o["x"] < sidebar_right * 0.55),
+                       key=lambda o: o["x"], default=None)
+            if name is not None:  # nothing at the name's place: the floating button, not a row
+                rows.append(_row(name["text"].strip(), None, line,
+                                 [o for o in part if o["y"] - top >= 0.012], name["y"], sidebar_right))
     if ad is not None:
         # A row the ad cuts off may have its unread badge or preview hidden: leave it out
         # (scroll_chat_list brings it into view whole).

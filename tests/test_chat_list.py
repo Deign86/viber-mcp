@@ -65,6 +65,43 @@ def test_chat_rows_carry_the_name_lines_position_for_clicks():
     assert rows[0]["y"] == pytest.approx(0.206) and rows[3]["y"] == pytest.approx(0.407)
 
 
+# macOS sidebar as read live on 2026-10-31 (1085 x 790 window, sidebar edge at 0.2762; names
+# changed): Viber's floating "back to top" button covered the bottom row's time, so OCR read
+# no stamp there and that row ("Unknown") was merged into the preview of the row above it.
+HIDDEN_STAMP = [
+    _obs("All", 0.040, 0.224), _obs("Unread", 0.083, 0.224),
+    _obs("Staff GC", 0.066, 0.461), _obs("9:23 PM", 0.222, 0.462), _obs("Hahaha", 0.066, 0.485),
+    _obs("CLIENT-CS-(25-...", 0.066, 0.738), _obs("V/ 9:01PM", 0.198, 0.739),
+    _obs("Me: sir wala pa pong sagot si", 0.066, 0.761), _obs("owner sa pin, update po namin...", 0.066, 0.785),
+    _obs("OWNER-OS-(50...", 0.066, 0.830), _obs("V1 6:38PM", 0.198, 0.831),
+    _obs("Me: wala pa pong sagot si owner,", 0.066, 0.856), _obs("update po namin kayo ulit sa T...", 0.066, 0.880),
+    _obs("Unknown", 0.066, 0.923),
+    _obs("Good day po, Alpha Premier", 0.066, 0.947), _obs("Realty po ito. available pa po ba...", 0.066, 0.971),
+]
+
+
+def test_a_row_whose_time_is_hidden_is_its_own_row():
+    rows = chat_rows(HIDDEN_STAMP, 0.2762)
+    assert [r["name"] for r in rows] == ["Staff GC", "CLIENT-CS-(25-...", "OWNER-OS-(50...", "Unknown"]
+    owner, unknown = rows[2], rows[3]
+    assert owner["preview"] == "Me: wala pa pong sagot si owner, update po namin kayo ulit sa T..."
+    assert unknown["preview"] == "Good day po, Alpha Premier Realty po ito. available pa po ba..."
+    assert unknown["time"] is None and unknown["y"] == pytest.approx(0.923)
+    assert unknown["last_from"] is None   # its tick sits by the hidden time: can't tell
+    assert owner["last_from"] == "me" and rows[0]["last_from"] == "them"
+
+
+def test_a_hidden_time_row_under_a_one_line_preview_and_the_button_alone():
+    one_line = [o for o in HIDDEN_STAMP if not o["text"].startswith("update po namin kayo")]
+    rows = chat_rows(one_line, 0.2762)
+    assert [r["name"] for r in rows][-2:] == ["OWNER-OS-(50...", "Unknown"]
+    assert rows[-2]["preview"] == "Me: wala pa pong sagot si owner,"
+    # With no row under it, the button's arrow OCR'd at its left edge is no row and no preview.
+    button = [o for o in HIDDEN_STAMP if o["y"] < 0.9] + [_obs("T", 0.226, 0.935, 0.01)]
+    rows = chat_rows(button, 0.2762)
+    assert rows[-1]["name"] == "OWNER-OS-(50..." and "T" not in rows[-1]["preview"].split()
+
+
 class SidebarBackend:
     """A chat list with a right-click menu per row; `read` rows offer "Mark as unread"."""
     def __init__(self, read=("Patrick",)):

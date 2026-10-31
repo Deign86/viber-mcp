@@ -276,7 +276,8 @@ each GC created and each template skipped or failed (with the reason).
 
 ## How to work
 - **Inbox:** `list_chats` returns `chats` rows (name, time, preview, unread badge, `last_from` =
-  "me"/"them"); `list_chats(unread_only=True)` lists exactly the chats with unread messages
+  "me"/"them", or null when the row's time is hidden — open that chat to check);
+  `list_chats(unread_only=True)` lists exactly the chats with unread messages
   (Viber's Unread filter); `scroll_chat_list` for more. Opening a chat from here doesn't clear its
   badge — when the staff member wants the inbox cleared, `mark_as_read(name)` after handling it.
 - **Find a message across chats** ("who sent an LOI today?", a street name, a number):
