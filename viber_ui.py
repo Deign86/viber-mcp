@@ -384,14 +384,17 @@ def send_files(paths: list[str], caption: str = "", dry_run: bool = False, expec
     if _preview(b.elements()):
         raise UIError("A file preview is already open in Viber — send or close it first (close_viewer).")
 
-    _open_picker(_attach_button(b.elements()))
-    _pick_file(str(files[0]))
-    for f in files[1:]:
-        preview = _wait_preview()
-        if preview[2] is None:
-            raise UIError("Couldn't find the preview's add-more (+) button.")
-        _open_picker(preview[2])
-        _pick_file(str(f))
+    # macOS pastes them all at once in the background; the picker there needed Viber in front
+    # (real keys) for every file, which took over the user's screen.
+    if not b.paste_files([str(f) for f in files], lambda: _preview(b.elements()) is not None):
+        _open_picker(_attach_button(b.elements()))
+        _pick_file(str(files[0]))
+        for f in files[1:]:
+            preview = _wait_preview()
+            if preview[2] is None:
+                raise UIError("Couldn't find the preview's add-more (+) button.")
+            _open_picker(preview[2])
+            _pick_file(str(f))
 
     caption_box, send, _, _ = _wait_preview()
     if caption:

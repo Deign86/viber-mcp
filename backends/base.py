@@ -153,6 +153,12 @@ class Backend(ABC):
     def hold_foreground(self, prev: int, seconds: float) -> None:
         """Keep the user's window in front for `seconds` (no-op where not needed)."""
 
+    def paste_files(self, paths: list[str], taken) -> bool:
+        """Paste `paths` into the open chat's message box, all in one send preview, without the
+        file picker. `taken()` says whether Viber shows them yet. False where the backend can't
+        (the caller then attaches them through the picker)."""
+        return False
+
     def file_dialog_open(self) -> bool:
         self._unsupported("Sending files")
 
