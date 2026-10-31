@@ -18,6 +18,41 @@ Claude:  (search_and_open → put_draft) The draft is in Mitch's chat. Review it
 
 ---
 
+## Claude Desktop extension (easiest)
+
+The server also comes as a one-click [Claude Desktop extension](https://github.com/modelcontextprotocol/mcpb)
+(`.mcpb`): no clone, no setup script, no config file to edit. You need Windows 10/11 or macOS and
+[Viber Desktop](https://www.viber.com/download/) signed in.
+
+1. Get `viber-mcp-<version>.mcpb`: from the latest [tests run](https://github.com/Deign86/viber-mcp/actions/workflows/tests.yml)
+   → **Artifacts** → `viber-mcp-extension` (a zip with the `.mcpb` inside), or build it yourself
+   with `uv run extension/build.py` (it lands in `dist/`).
+2. Double-click it, or in Claude Desktop open **Settings → Extensions → Advanced settings →
+   Install Extension…**, and confirm.
+3. In the extension's settings, pick the files you have. All are optional:
+
+   | Setting | File | Needed for |
+   |---------|------|------------|
+   | Contacts file | `contacts.json` (copy `contacts.example.json`) | "message Mitch" by alias |
+   | GC members file | `gc_members.json` (copy `gc_members.example.json`) | client group chats |
+   | Google Drive key | `google_service_account.json` | property listings |
+   | Google OAuth client | `google_oauth_client.json` | uploading new listings |
+
+   A file without a setting is also looked for in `%LOCALAPPDATA%\viber-mcp\` (`~/viber-mcp/` on
+   macOS), where `setup.ps1 -ServiceAccountKey` already puts the Drive key. Keep your files outside
+   the extension's own folder: Claude Desktop replaces it on every update.
+
+The first start takes a minute or two: Claude Desktop installs Python and the dependencies with
+[`uv`](https://docs.astral.sh/uv/). If it times out, turn the extension off and on again. If
+Claude Desktop says `uv` can't be found, install it (`winget install --id astral-sh.uv`) and
+restart Claude.
+
+On **macOS**, the Accessibility and Screen Recording permissions then go to the program Claude
+Desktop starts (`uv`), which also covers anything else run through that `uv`. If you'd rather
+grant them to this server only, use [`setup_macos.sh`](#macos) instead.
+
+The extension serves Claude Desktop only. For Claude Code, use the setup below.
+
 ## Quick start (Windows)
 
 You need Windows 10/11, [Viber Desktop](https://www.viber.com/download/) signed in, and
@@ -380,6 +415,8 @@ names the Windows backend uses, so the tools find controls by identity there too
 | `client.py` | Standalone test client |
 | `setup.ps1` | One-shot Windows setup and Claude registration |
 | `setup_macos.sh`, `macos/launcher.c` | One-shot macOS setup; the "Viber MCP" launcher app the permissions are granted to |
+| `extension/` | Claude Desktop extension: `manifest.json` (settings → `VIBER_MCP_*` variables), icon, `build.py` |
+| `viber_config.py` | Reads the `VIBER_MCP_*` settings and finds the per-user files |
 | `contacts.example.json` | Template for `contacts.json` (git-ignored; holds real numbers) |
 
 ## Privacy

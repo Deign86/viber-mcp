@@ -22,3 +22,19 @@ jobs:
       - name: Build the macOS launcher (setup_macos.sh compiles it)
         if: runner.os == 'macOS'
         run: cc -Wall -Werror -O2 -o "$RUNNER_TEMP/viber-mcp" macos/launcher.c
+
+  extension:
+    # Builds the Claude Desktop extension (download it from the run's Artifacts) and checks the
+    # manifest with the official MCPB CLI. build.py needs only the standard library.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build dist/viber-mcp-<version>.mcpb
+        run: python3 extension/build.py
+      - name: Validate the manifest
+        run: npx --yes @anthropic-ai/mcpb@2.1.2 validate dist/viber-mcp/manifest.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: viber-mcp-extension
+          path: dist/*.mcpb
+          if-no-files-found: error

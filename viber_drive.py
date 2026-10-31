@@ -6,7 +6,8 @@ Auth (read-only Drive), first match wins:
    (or VIBER_MCP_GOOGLE_SERVICE_ACCOUNT); the listings folder must be shared with its email.
    (gcloud's own application-default login can't be used: Google blocks it for Drive.)
 2. OAuth "desktop app" sign-in, once per Windows user, using `google_oauth_client.json` next to
-   this file (git-ignored) or VIBER_MCP_GOOGLE_CLIENT; token kept in google_token.json there.
+   this file (git-ignored) or in %LOCALAPPDATA%\\viber-mcp, or VIBER_MCP_GOOGLE_CLIENT; token kept
+   in %LOCALAPPDATA%\\viber-mcp\\google_token.json.
 
 Listing layout (APR LISTING): <root> / <CATEGORY> / <FOR LEASE/RENT | FOR SALE> / <property
 folder>, where a property folder holds one listing doc (Google Doc or .docx) plus its photos.
@@ -24,25 +25,26 @@ import time
 from datetime import date
 from pathlib import Path
 
+import viber_config as config
+
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 # Uploads (new listing folders, docs, photos) use the company account through the OAuth client,
 # never the service account (it has 0 bytes of storage). Full "drive" is needed: drive.file can't
 # put files into the existing APR LISTING folders.
 WRITE_SCOPES = ["https://www.googleapis.com/auth/drive"]
-_HERE = Path(__file__).resolve().parent
-_DATA = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "viber-mcp"
-CLIENT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_CLIENT", _HERE / "google_oauth_client.json"))
+_DATA = config.DATA_DIR
+CLIENT_FILE = config.user_file("VIBER_MCP_GOOGLE_CLIENT", "google_oauth_client.json")
 TOKEN_FILE = _DATA / "google_token.json"
 WRITE_TOKEN_FILE = _DATA / "google_token_write.json"
-SERVICE_ACCOUNT_FILE = Path(os.environ.get("VIBER_MCP_GOOGLE_SERVICE_ACCOUNT",
-                                           _DATA / "google_service_account.json"))
+SERVICE_ACCOUNT_FILE = Path(config.env("VIBER_MCP_GOOGLE_SERVICE_ACCOUNT",
+                                       str(_DATA / "google_service_account.json"))).expanduser()
 CACHE_DIR = _DATA / "drive-cache"
 # Downloads are kept this long before being pruned. Deleting right after send_files raced
 # Viber's own upload (it reads the file after the click) and left photos "not sent".
-KEEP_DOWNLOADS_DAYS = float(os.environ.get("VIBER_MCP_KEEP_DOWNLOADS_DAYS", "3"))
-LISTINGS_ROOT_NAME = os.environ.get("VIBER_MCP_LISTINGS_FOLDER", "APR LISTING")
+KEEP_DOWNLOADS_DAYS = float(config.env("VIBER_MCP_KEEP_DOWNLOADS_DAYS", "3"))
+LISTINGS_ROOT_NAME = config.env("VIBER_MCP_LISTINGS_FOLDER", "APR LISTING")
 # The staff GC where new listings are posted (text, photos, separator, "Added to Drive" reply).
-LISTINGS_GC = os.environ.get("VIBER_MCP_LISTINGS_GC", "APR LISTING ONLY")
+LISTINGS_GC = config.env("VIBER_MCP_LISTINGS_GC", "APR LISTING ONLY")
 GC_SEPARATOR = "-" * 39
 # Drive calls retry this many times (with backoff) on 5xx/429 and dropped connections; both
 # happen often enough to break a listing lookup.
@@ -93,8 +95,9 @@ def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
         if not CLIENT_FILE.exists():
             raise DriveError(
                 "Google Drive isn't set up on this PC. Ask the admin for the service account key "
-                f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>), "
-                f"or add the OAuth client file as {CLIENT_FILE} (see README → Google Drive)."
+                f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>, "
+                "or pick it in the Claude extension's settings), or add the OAuth client file as "
+                f"{CLIENT_FILE} (see README → Google Drive)."
             )
         flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_FILE), scopes)
         # Opens the browser once; the staff member signs in with their company Google account.

@@ -27,6 +27,10 @@ uv run client.py chats | read | contacts
 
 # Register with Claude Code (user scope):
 claude mcp add --transport stdio --scope user viber -- uv --directory "$(pwd)" run server.py
+
+# Claude Desktop extension -> dist/viber-mcp-<version>.mcpb (stdlib only; CI's `extension` job
+# builds it, validates it with `npx @anthropic-ai/mcpb validate`, and uploads it as an artifact):
+uv run extension/build.py
 ```
 
 **Tests:** `uv run --with pytest pytest tests -q` (no Viber needed; CI runs it on windows-latest via
@@ -87,6 +91,18 @@ port-ready for Windows/Linux — see "Porting" below):
   - `__init__.py` — `get_backend()` picks the backend by `sys.platform`.
 - `client.py` — standalone MCP stdio client for testing.
 - `contacts.json` — name→E.164 map, **git-ignored (real numbers)**; ship `contacts.example.json`.
+- `viber_config.py` — `VIBER_MCP_*` settings. `env()` treats blank and the literal
+  `${user_config.<key>}` as unset (Claude Desktop passes an empty optional extension setting that
+  way); `user_file()` finds contacts.json / gc_members.json / google_oauth_client.json: the env
+  var, else next to server.py, else `DATA_DIR` (`%LOCALAPPDATA%\viber-mcp`, `~/viber-mcp` on macOS).
+- `extension/` — the Claude Desktop extension (MCPB, manifest 0.4, `server.type = "uv"`: Claude
+  Desktop runs `uv run --frozen --directory ${__dirname} server.py` from the bundled
+  pyproject.toml + uv.lock). Each `user_config` setting maps to one `VIBER_MCP_*` env var
+  (`test_extension.py` checks each is read somewhere). `build.py` ships only its `BUNDLE`
+  allow-list — never `mcpb pack` the repo root: it would zip contacts.json and the OAuth client
+  (that's why the manifest isn't at the root). It fills `tools` from server.py's `@mcp.tool()`s.
+  Its `version` must equal pyproject's — bump both. On macOS the TCC grant goes to `uv`, not
+  "Viber MCP" (README says so; `setup_macos.sh` stays the scoped route).
 
 Data flow for a send: resolve recipient → `backend.open_url("viber://chat?number=…")` → poll
 `backend.observe()` until the chat is confirmed → `click_compose` → `select_all`+`delete` → `paste`
