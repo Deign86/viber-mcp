@@ -49,7 +49,8 @@ restart Claude.
 
 On **macOS**, the Accessibility and Screen Recording permissions then go to the program Claude
 Desktop starts (`uv`), which also covers anything else run through that `uv`. If you'd rather
-grant them to this server only, use [`setup_macos.sh`](#macos) instead.
+grant them to this server only, use [`setup_macos.sh`](#macos) instead. Switching from
+`setup_macos.sh` to the extension: quit Claude Desktop and run `bash macos/uninstall.sh` first.
 
 **Updates.** Every merge to `main` is published as a new release once the tests pass (version
 `0.1.<number of commits>`). When Claude Desktop starts the extension, it checks for a newer
@@ -383,6 +384,14 @@ has a new signature and must be allowed again).
 The Drive key goes in `~/viber-mcp/google_service_account.json` (or point
 `VIBER_MCP_GOOGLE_SERVICE_ACCOUNT` at it); tokens and the download cache live in `~/viber-mcp/` too.
 
+**Switching to the Claude Desktop extension.** Quit Claude Desktop, then run
+`bash macos/uninstall.sh`. It copies `contacts.json`, `gc_members.json` and
+`google_oauth_client.json` to `~/viber-mcp/` (where the extension finds them), removes the
+`viber` server from Claude Code and Claude Desktop, deletes `Viber MCP.app` and resets its
+permissions, and moves the checkout to the Trash, but only if it has no uncommitted, unpushed or
+stashed work (`--keep-checkout` keeps it). `~/viber-mcp/` is kept. Claude Code can't use the
+extension, so it has no Viber tools afterwards.
+
 **How it stays out of your way.** Viber's Qt accessibility tree reaches macOS with the same class
 names the Windows backend uses, so the tools find controls by identity there too:
 
@@ -421,6 +430,7 @@ names the Windows backend uses, so the tools find controls by identity there too
 | `client.py` | Standalone test client |
 | `setup.ps1` | One-shot Windows setup and Claude registration |
 | `setup_macos.sh`, `macos/launcher.c` | One-shot macOS setup; the "Viber MCP" launcher app the permissions are granted to |
+| `macos/uninstall.sh` | Undoes `setup_macos.sh` when switching to the extension (keeps your files) |
 | `extension/` | Claude Desktop extension: `manifest.json` (settings → `VIBER_MCP_*` variables), icon, `build.py` |
 | `viber_config.py` | Reads the `VIBER_MCP_*` settings and finds the per-user files |
 | `viber_update.py` | The extension's update check against the latest GitHub release |

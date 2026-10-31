@@ -113,7 +113,11 @@ port-ready for Windows/Linux — see "Porting" below):
   2 s timeout; system CAs, then certifi) and appends an "Update available" note to the
   instructions; `check_for_update` asks live. conftest makes `_fetch` fail any test that reaches
   GitHub. On macOS the TCC grant goes to `uv`, not "Viber MCP" (README says so;
-  `setup_macos.sh` stays the scoped route).
+  `setup_macos.sh` stays the scoped route). `macos/uninstall.sh` undoes setup_macos.sh to switch
+  to the extension: copies the per-user files to `~/viber-mcp`, removes both registrations, the
+  app and its TCC grants, and trashes the checkout only when clean, pushed and stash-free (it
+  finds the checkout from the app's `command` file, else its own path — don't run it from a
+  checkout you want to keep without `--keep-checkout`). Refuses while Claude Desktop runs.
 
 Data flow for a send: resolve recipient → `backend.open_url("viber://chat?number=…")` → poll
 `backend.observe()` until the chat is confirmed → `click_compose` → `select_all`+`delete` → `paste`
