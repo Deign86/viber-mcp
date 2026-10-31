@@ -206,6 +206,12 @@ each GC created and each template skipped or failed (with the reason).
   a listing was sent. A listing with several unit sizes gives the range: "Taytay Rizal, 500, 710,
   1,420" → `CE-WH-(500-1420SQM, TAYTAY)`. `create_client_gc` does this; if you name the GC
   yourself, do it too.
+- **Always fill the template itself too.** When a client has a preferred listing (the one they
+  inquired about or picked), edit the template in APG CLIENTS (`edit_message`, your own post) so
+  every blank or `~` the listing can answer is filled from it: type, SQM, location, and budget =
+  the listing's rent/price (e.g. `💰 Preferred Budget: ₱55,000/month`). Do it before making the GC
+  so the GC gets the filled template. Fields the listing can't answer (company name, line of
+  business) stay `~` until the client says.
 - **Filling in a `~` later:** once a listing is suggested in a `~` GC and the client likes it,
   rename the GC with that listing's SQM (and its city if the location was vague), e.g.
   `JANE-WH-(~, LAS PINAS)` → `JANE-WH-(240SQM, LAS PINAS)`. Find the listing by backreading the GC
@@ -226,6 +232,14 @@ each GC created and each template skipped or failed (with the reason).
 - **Members:** the client's Viber number first, then the staff list in gc_members.json (in order).
   If the number isn't in Viber's group picker yet, the client is first messaged 1:1 (introducing you
   as the admin who'll create their GC; wording in gc_members.json), then added.
+- **Sir Mark is added by his number, never his name** (`09275555803`): Deign renames his
+  contact often ("Mark Anthony Santos", "Sir Mark/Sean", …), so a name search finds nobody or
+  another Mark. Type the number in the picker's search and tick the row with that number.
+- **Client on a Viber business account** (header shows a business name with a shop icon, an
+  18+ prompt, no number or banner, no Add participants): `create_client_gc` can't confirm the
+  chat and refuses. Build it by hand from a staff member's 1:1 chat (header Add participants):
+  type the client's number in the picker search, tick "Add +63…", tick the staff, Save, rename,
+  then post the template, the listing, and "Hello po, @<client>", and reply DONE to the template.
 - **In the new GC only:** the client's template with ONLY the client fields (never the
   listing/intern/date lines), then the listing (text above the dashed line + photos + videos), then
   "Hello @client" so the client is notified. A template without a listing gets a GC without one.
