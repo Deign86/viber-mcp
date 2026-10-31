@@ -107,12 +107,27 @@ port-ready for Windows/Linux — see "Porting" below):
   `build.py --release` stamps `<major>.<minor>.<git rev-list --count HEAD>` (refuses a shallow
   clone) and `gh release create v<version>` attaches it as `viber-mcp.mcpb`, so
   `releases/latest/download/viber-mcp.mcpb` is always the newest. Only the commit still at the tip
-  of main publishes (two quick merges: the newer run releases both). `viber_update.py`: a
-  `manifest.json` next to server.py means "running as the extension"; at start it compares that
-  version with GitHub's latest release (cached 6 h in `DATA_DIR/update_check.json`, failures too;
-  2 s timeout; system CAs, then certifi) and appends an "Update available" note to the
-  instructions; `check_for_update` asks live. conftest makes `_fetch` fail any test that reaches
-  GitHub. On macOS the TCC grant goes to `uv`, not "Viber MCP" (README says so;
+  of main publishes (two quick merges: the newer run releases both). **Auto-update**
+  (`viber_update.py`): a `manifest.json` next to server.py means "running as the extension".
+  server.py runs `update_and_restart()` under `__main__` before its heavy imports: it compares that
+  version with GitHub's latest release (cached 1 h in `DATA_DIR/update_check.json`, failures too;
+  2 s timeout; system CAs, then certifi), downloads that tag's asset, checks it (`_bundle`: name,
+  version, required files, no unsafe paths), `install`s it over `config.HERE` (temp file +
+  `os.replace` each, manifest.json last so a cut-short install is redone; deletes only the .py
+  files the release dropped; `.venv` stays), then runs the new server as a child on the same stdio
+  via `$UV run --frozen` (installs new deps; `VIBER_MCP_UPDATED` stops a second check), forwarding
+  SIGTERM/SIGINT. Not `os.execv`: on Windows that ends the process and Claude Desktop sees the
+  server exit. Any failure → the old version runs and `notice()` gives Claude the link. Setting
+  "Update automatically" = `VIBER_MCP_AUTO_UPDATE`. conftest makes `_fetch`/`_download`/`_restart`
+  fail any test that reaches them. **Access** (`viber_setup.py`, like flow-mcp's session check): at
+  start a thread runs `request_access()`: `backend.access(ask=True)` (base `{}`; macOS: the AX and
+  Screen Recording prompts, once per run), then `viber_drive.sign_in_at_start()`: Google's sign-in
+  page when the OAuth client is here and no upload sign-in works (at most every 12 h,
+  `SIGN_IN_ASKED_FILE`). One sign-in: reads without the service account key use the upload token.
+  `_browser_sign_in` holds `_SIGN_IN` and re-checks the token (start-up and a tool can race), and
+  passes `authorization_prompt_message=None`: the library prints it to stdout, which is the MCP
+  stream. `check_setup` = `viber_setup.status()` with `to_fix`.
+  On macOS the TCC grant goes to `uv`, not "Viber MCP" (README says so;
   `setup_macos.sh` stays the scoped route). `macos/uninstall.sh` undoes setup_macos.sh to switch
   to the extension: copies the per-user files to `~/viber-mcp`, removes both registrations, the
   app and its TCC grants, and trashes the checkout only when clean, pushed and stash-free (it

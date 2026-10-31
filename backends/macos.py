@@ -124,6 +124,22 @@ class MacBackend(Backend):
     def app_running(self) -> bool:
         return self._viber_pid() is not None
 
+    def access(self, ask: bool = False) -> dict[str, bool]:
+        """Accessibility (find, read, type, press) and Screen Recording (see the window). With
+        ask=True, macOS's prompt for each missing one, which also lists the app in Settings."""
+        accessibility = bool(AXIsProcessTrusted())
+        if accessibility:
+            self._trusted = True
+        elif ask and not self._asked_ax:
+            self._asked_ax = True
+            AXIsProcessTrustedWithOptions({"AXTrustedCheckOptionPrompt": True})
+        preflight = getattr(Quartz, "CGPreflightScreenCaptureAccess", None)
+        screen = True if preflight is None else bool(preflight())
+        if not screen and ask and not self._asked_screen:
+            self._asked_screen = True
+            Quartz.CGRequestScreenCaptureAccess()
+        return {"accessibility": accessibility, "screen_recording": screen}
+
     def _app(self):
         if not self._trusted:
             self._trusted = bool(AXIsProcessTrusted())

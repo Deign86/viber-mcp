@@ -5,22 +5,30 @@ Transport: stdio. Register with Claude Code via `claude mcp add` (see README).
 
 from __future__ import annotations
 
-import threading
-from pathlib import Path
-
-from mcp.server.fastmcp import FastMCP, Image
-
-import viber_drive
-import viber_gc
-import viber_ocr
-import viber_send
-import viber_ui
 import viber_update
+
+if __name__ == "__main__":
+    # As the Claude Desktop extension: a newer release is installed and run in this one's place
+    # before anything else loads (it doesn't return then).
+    viber_update.update_and_restart()
+
+import threading  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from mcp.server.fastmcp import FastMCP, Image  # noqa: E402
+
+import viber_drive  # noqa: E402
+import viber_gc  # noqa: E402
+import viber_ocr  # noqa: E402
+import viber_send  # noqa: E402
+import viber_setup  # noqa: E402
+import viber_ui  # noqa: E402
 
 # The staff operating rules ship with the server: MCP clients add them to Claude's context.
 GUIDELINES = Path(__file__).with_name("guidelines.md").read_text(encoding="utf-8")
 
-# As the Claude Desktop extension, a newer release adds a line telling Claude to pass the link on.
+# As the Claude Desktop extension, still being behind (it couldn't update itself) adds a line
+# telling Claude to pass the download link on.
 mcp = FastMCP("viber", instructions=GUIDELINES + viber_update.notice())
 
 
@@ -659,10 +667,21 @@ def scroll(x: int, y: int, direction: str = "down", amount: int = 5) -> dict:
 
 
 @mcp.tool()
+def check_setup() -> dict:
+    """Is everything Viber MCP needs in place? Viber running, the OS permissions (macOS:
+    Accessibility, Screen Recording), Google Drive access (read: listings; upload: posting new
+    ones) and the version. Call it when a tool fails for access or the user asks whether it's set
+    up, and pass `to_fix` on: it says exactly what the user has to do. Opens nothing; it's the
+    server's start that asks for permissions and opens Google's sign-in."""
+    return viber_setup.status()
+
+
+@mcp.tool()
 def check_for_update() -> dict:
     """Is a newer Viber MCP (the Claude Desktop extension) out? Asks GitHub for the latest
-    release. Returns installed, latest, update_available and, when there is one, the download
-    link to give the user: they double-click the file and confirm in Claude Desktop."""
+    release. Returns installed, latest, update_available, auto_update and `how` to get it: with
+    automatic updates on, it installs itself when Claude Desktop next starts; otherwise the
+    download link to give the user."""
     return viber_update.status(force=True)
 
 
@@ -734,4 +753,6 @@ def client_gc(client: str = "") -> str:
 if __name__ == "__main__":
     # Drop listing photos older than the keep window even on days nothing is downloaded or sent.
     threading.Thread(target=viber_drive.prune_downloads, daemon=True).start()
+    # Ask for everything up front: macOS's permission prompts, Google's sign-in page if needed.
+    threading.Thread(target=viber_setup.request_access, daemon=True).start()
     mcp.run(transport="stdio")

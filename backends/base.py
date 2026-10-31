@@ -40,6 +40,12 @@ class Backend(ABC):
     avoid_spare_escape: bool = False
 
     # --- app / process ---------------------------------------------------------------
+    def access(self, ask: bool = False) -> dict[str, bool]:
+        """The OS permissions this backend needs, {name: granted}; ask=True shows the OS's own
+        prompts for the missing ones (at server start, so the first request doesn't fail on
+        them). None are needed by default."""
+        return {}
+
     @abstractmethod
     def app_running(self) -> bool:
         """True if the Viber desktop app process is alive."""

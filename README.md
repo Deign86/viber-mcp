@@ -52,11 +52,26 @@ Desktop starts (`uv`), which also covers anything else run through that `uv`. If
 grant them to this server only, use [`setup_macos.sh`](#macos) instead. Switching from
 `setup_macos.sh` to the extension: quit Claude Desktop and run `bash macos/uninstall.sh` first.
 
-**Updates.** Every merge to `main` is published as a new release once the tests pass (version
-`0.1.<number of commits>`). When Claude Desktop starts the extension, it checks for a newer
-release (at most every 6 hours; skipped when offline) and Claude then tells you, with the link.
-Ask Claude to `check_for_update` any time. To update, download the file again and double-click it.
-Your own files stay where they are, outside the extension.
+**Sign-in and permissions.** When Claude Desktop starts the extension, it asks for everything it
+needs at once, so the first request doesn't fail on it:
+
+- on macOS, the Accessibility and Screen Recording prompts;
+- Google's sign-in page in your browser, when Drive uploads are set up (the OAuth client is found)
+  and nobody is signed in. Sign in with the company Google account. It's remembered in
+  `%LOCALAPPDATA%\viber-mcp\` (`~/viber-mcp/` on macOS), and when there's no Drive key it covers
+  reading listings too. Closed the page? It asks again after 12 hours, or ask Claude to run
+  `drive_sign_in` any time.
+
+Ask Claude to **check the Viber setup** (`check_setup`) to see what's in place and exactly what to
+fix: Viber running, the permissions, Drive access, the version.
+
+**Updates happen by themselves.** Every merge to `main` is published as a new release once the tests
+pass (version `0.1.<number of commits>`). When Claude Desktop starts the extension, it installs a
+newer release over itself first and runs that, so Claude is on the newest version from the first
+message (checked at most once an hour; skipped when offline). Turn off **Update automatically** in
+the extension's settings to update by hand instead: Claude then tells you about a new version, with
+the link. `check_for_update` says which version you have. Your own files stay where they are,
+outside the extension.
 
 The extension serves Claude Desktop only. For Claude Code, use the setup below.
 
