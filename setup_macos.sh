@@ -28,6 +28,8 @@ STAMP="$APP/Contents/Resources/launcher.sha256"
 SUM="$(shasum -a 256 "$REPO/macos/launcher.c" | cut -d' ' -f1)"
 if [ ! -x "$EXE" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$SUM" ]; then
     mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+    rm -f "$APP/Icon"$'\r' && xattr -c "$APP"  # a Finder custom icon (below) breaks codesign
+    cp "$REPO/macos/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
     cc -O2 -o "$EXE" "$REPO/macos/launcher.c"
     cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -37,6 +39,7 @@ if [ ! -x "$EXE" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$SUM" ]; then
     <key>CFBundleIdentifier</key><string>com.alphapremier.viber-mcp</string>
     <key>CFBundleName</key><string>Viber MCP</string>
     <key>CFBundleDisplayName</key><string>Viber MCP</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundleExecutable</key><string>viber-mcp</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleVersion</key><string>1</string>
@@ -55,6 +58,19 @@ if [ "$REBUILT" = 1 ]; then
     echo "   built and signed (a rebuild needs the permissions granted again)"
 else
     echo "   up to date (permissions kept)"
+    if [ ! -f "$APP/Contents/Resources/AppIcon.icns" ] && [ ! -f "$APP/Icon"$'\r' ]; then
+        # Built before it had an icon: set it as a Finder custom icon, which leaves the signed
+        # files (and with them the granted permissions) untouched.
+        osascript -l JavaScript - "$REPO/macos/AppIcon.icns" "$APP" >/dev/null <<'JS'
+ObjC.import("AppKit")
+function run(argv) {
+    const img = $.NSImage.alloc.initWithContentsOfFile(argv[0])
+    return $.NSWorkspace.sharedWorkspace.setIconForFileOptions(img, argv[1], 0)
+}
+JS
+        killall Dock 2>/dev/null || true  # Launchpad picks the icon up on restart
+        echo "   icon set"
+    fi
 fi
 
 echo "== Claude Code"
