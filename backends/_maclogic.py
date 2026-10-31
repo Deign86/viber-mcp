@@ -98,6 +98,21 @@ def visible_center(frame, window) -> tuple[float, float] | None:
     return (l + r) / 2, (t + b) / 2
 
 
+def window_with_frame(windows: list[dict], frame) -> dict | None:
+    """Viber's normal (layer 0) window whose bounds are `frame` (x, y, w, h), from a
+    CGWindowListCopyWindowInfo list of all windows, on screen or not. The list also holds
+    Viber's hidden "Send a file" panel and menu-bar strips, so the AX main window's frame picks."""
+    x, y, w, h = frame
+    for win in windows:
+        b = win.get("kCGWindowBounds") or {}
+        if "viber" in (win.get("kCGWindowOwnerName") or "").lower() and win.get("kCGWindowLayer") == 0 \
+                and win.get("kCGWindowNumber") \
+                and abs(float(b.get("X", 0)) - x) < 2 and abs(float(b.get("Y", 0)) - y) < 2 \
+                and abs(float(b.get("Width", 0)) - w) < 2 and abs(float(b.get("Height", 0)) - h) < 2:
+            return win
+    return None
+
+
 def utf16_units(ch: str) -> int:
     """Length of `ch` in UTF-16 code units (CGEventKeyboardSetUnicodeString counts those)."""
     return len(ch.encode("utf-16-le")) // 2

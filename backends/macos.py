@@ -8,8 +8,9 @@ Like the Windows backend it runs in the background where macOS allows it:
 | See | In-process window capture (CGWindowListCreateImage) + Vision OCR | Works while Viber is covered (not minimized/closed). |
 | Find controls | Qt's accessibility tree via AX; each AXIdentifier is the QML object path, so the classes match the Windows UIA ones (StackView, FeedDelegate, SendToolbarButton, …). | No pixel offsets. |
 | Type / send | AXValue on the message/search box, AXPress on buttons. | Cursor, keyboard and front app untouched. |
-| Typing | Characters posted to Viber's process (CGEventPostToPid). | Untouched. |
-| Clicks with no AX element under them (chat rows, search results, right-click menus), scrolling and named keys (Escape, arrows, Enter) | Real HID events: Viber is brought to the front, then the user's front app and cursor are put back. | Brief hand-off. |
+| Typing | Characters and text-editing keys (End, Backspace, …) posted to Viber's process (CGEventPostToPid). | Untouched. |
+| Files | Pasted: file URLs on the clipboard, Cmd+V posted to Viber's process. | Clipboard put back. |
+| Clicks with no AX element under them (chat rows, search results, right-click menus), scrolling and other named keys (Escape, Up/Down, Enter, Tab) | Real HID events: Viber is brought to the front, then the user's front app and cursor are put back. | Brief hand-off. |
 
 Measured on Viber 29.1 (macOS 15): posted mouse/scroll events are ignored by a background Qt
 window, and posted Escape doesn't reach the image viewer, while posted characters do land in the
@@ -48,8 +49,9 @@ from ApplicationServices import (  # type: ignore
     kAXValueCGPointType,
     kAXValueCGSizeType,
 )
+from AppKit import NSPasteboard, NSPasteboardItem  # type: ignore
 from CoreFoundation import CFEqual, CFGetTypeID, CFHash  # type: ignore
-from Foundation import NSData, NSMakeRange  # type: ignore
+from Foundation import NSURL, NSData, NSMakeRange  # type: ignore
 from PIL import Image
 
 from . import _maclogic as ml
@@ -61,6 +63,19 @@ _ATTRS = ["AXRole", "AXIdentifier", "AXTitle", "AXDescription", "AXValue", "AXPo
           "AXSize", "AXChildren"]
 _MAX_NODES = 4000
 _CAPTURE_TIMEOUT = 3.0  # an in-process window capture normally takes ~0.3 s
+_KEY_V = 9  # key code; Cmd+V pastes files into the message box
+# Keys a text field takes when posted to Viber's process (measured 2026-11-01: End, Home, Left,
+# Backspace and Delete edited the message box with Viber behind another app). Return didn't
+# open a search result that way, and posted Escape doesn't reach the image viewer, so other
+# keys still go through the front hand-off.
+_EDIT_KEYS = frozenset({"end", "home", "left", "right", "backspace", "delete"})
+# Measured 2026-11-01 with Safari full screen: Viber's window on another Space isn't drawn, so a
+# capture shows an old frame (the chat header too, which isn't in AX), and the screen hit test
+# finds the other app. Bringing Viber forward switches the user out of full screen. So: stop.
+_AWAY = ("Viber's window is on another Space (an app is full screen), where Viber doesn't draw "
+         "it, so it can't be read or used safely, and bringing it forward would switch the user "
+         "out of full screen. Nothing was done. Ask them to leave full screen (or switch to "
+         "Viber's desktop), then try again.")
 
 
 def _get(el, attr):
@@ -172,10 +187,33 @@ class MacBackend(Backend):
         return max(viber, key=lambda w: (
             float(w["kCGWindowBounds"]["Width"]) * float(w["kCGWindowBounds"]["Height"])))
 
+    def _offspace_window(self) -> dict | None:
+        """Viber's main window while it's open on another Space (another app full screen, or
+        another desktop): AX still has it as the main window, not minimized, though AXWindows
+        is empty and CG lists it off screen. None when it's minimized, hidden or closed."""
+        try:
+            app = self._app()
+        except OCRError:
+            return None
+        win = _get(app, "AXMainWindow")
+        if win is None or _get(app, "AXHidden") or _get(win, "AXMinimized"):
+            return None
+        frame = _frame(_get(win, "AXPosition"), _get(win, "AXSize"))
+        if not frame:
+            return None
+        windows = Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionAll, Quartz.kCGNullWindowID)
+        return ml.window_with_frame(list(windows or []), frame)
+
+    def _stop_if_away(self) -> None:
+        """Raise (nothing done) while Viber's window is open on another Space."""
+        if self._onscreen_window() is None and self._offspace_window() is not None:
+            raise OCRError(_AWAY)
+
     def focus(self) -> None:
         """Make sure Viber's window is on screen (un-minimize, or reopen it after the red ✕
-        closed it) without bringing it to the front when it already is."""
-        if self._onscreen_window() is not None:
+        closed it) without bringing it to the front when it already is. A window open on another
+        Space is left there: reopening it switched the user out of their full-screen app."""
+        if self._onscreen_window() is not None or self._offspace_window() is not None:
             return
         try:
             win = _get(self._app(), "AXMainWindow")
@@ -195,6 +233,7 @@ class MacBackend(Backend):
         so the user's front app is handed back for a few seconds (in a thread: chat polling
         starts at once), as the Windows backend does."""
         self._target_el = None  # opening a chat rebuilds the page
+        self._stop_if_away()  # Viber's activation would switch Spaces
         prev = self.foreground()
         subprocess.run(["open", "-g", url], check=True)
         if prev and prev != self._pid:
@@ -204,6 +243,7 @@ class MacBackend(Backend):
     def _window(self) -> dict:
         window = self._onscreen_window()
         if window is None:
+            self._stop_if_away()
             self.focus()
             window = self._onscreen_window()
         if window is None:
@@ -754,7 +794,10 @@ class MacBackend(Backend):
     def _with_viber_front(self, action) -> None:
         """Run `action` (real HID input) with Viber in front, then give the front app and the
         cursor back. macOS delivers mouse and wheel input by position, so Viber must be on top;
-        if it can't be brought there nothing is sent (the input would land in the user's app)."""
+        if it can't be brought there nothing is sent (the input would land in the user's app).
+        Never while Viber is on another Space: bringing it forward switches the user out of
+        their full-screen app."""
+        self._stop_if_away()
         with self._handoff:  # hold_foreground pauses meanwhile
             prev_pid = self.foreground() or None
             cursor = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
@@ -874,6 +917,16 @@ class MacBackend(Backend):
             raise ValueError(f"Unknown key {key!r}. Supported: {', '.join(sorted(ml.KEYCODES))}. "
                              "Modifier shortcuts (Cmd+...) aren't offered.")
         self._target_el = None  # Escape/Enter may close or change the page
+        field = self._focus_el
+        if key.strip().lower() in _EDIT_KEYS and field is not None \
+                and _get(field, "AXRole") in ("AXTextField", "AXTextArea"):
+            # Text editing in the field clicked last: posted to Viber, in the background.
+            AXUIElementSetAttributeValue(field, "AXFocused", True)
+            self._check_focus(field)
+            for _ in range(max(1, min(int(repeat), 100))):
+                self._post_key(code)
+            time.sleep(0.05)
+            return
         shown = self._onscreen_window() is not None
 
         def keys():
@@ -975,86 +1028,40 @@ class MacBackend(Backend):
                     self._handoff.release()
             time.sleep(0.05)
 
-    # --- Viber's "send a file" picker (a standard macOS open panel, as a sheet) -------
-    def _file_sheet(self):
+    # --- files: pasted into the message box ------------------------------------------
+    def paste_files(self, paths: list[str], taken) -> bool:
+        """Paste `paths` as files: their URLs on the general pasteboard, the message box focused
+        through AX and Cmd+V posted to Viber's process. Viber opens one preview with all of
+        them, in the background. (The "send a file" picker needed Cmd+Shift+G and Return as
+        real keys, so Viber came to the front for every file.) The user's clipboard is put back
+        once Viber shows the files."""
+        self.click_compose()
+        self._check_focus(self._focus_el)  # Cmd+V goes to Viber's keyboard focus
+        before = self._value()
+        board = NSPasteboard.generalPasteboard()
+        saved = [{t: item.dataForType_(t) for t in item.types()}
+                 for item in board.pasteboardItems() or []]
         try:
-            _, win = self._ax_window()
-        except OCRError:
-            return None
-        return next((c for c in _get(win, "AXChildren") or [] if _get(c, "AXRole") == "AXSheet"), None)
-
-    @staticmethod
-    def _child(el, role: str, title: str | None = None):
-        return next((c for c in _get(el, "AXChildren") or [] if _get(c, "AXRole") == role
-                     and (title is None or _get(c, "AXTitle") == title)), None)
-
-    def file_dialog_open(self) -> bool:
-        return self._file_sheet() is not None
-
-    def file_dialog_choose(self, path: str) -> bool:
-        """Choose `path` in the open panel: Go to Folder (Cmd+Shift+G) with the full path, then
-        Open. Returns whether the panel closed (file accepted). The shortcut and Return need
-        real key events, so Viber is in front for about a second; the rest is AX."""
-        sheet = self._file_sheet()
-        if sheet is None:
-            raise OCRError("Viber's file picker isn't open.")
-        entered = {"ok": False}
-
-        def go_to():
-            flags = Quartz.kCGEventFlagMaskCommand | Quartz.kCGEventFlagMaskShift
-            for down in (True, False):  # Cmd+Shift+G (G = key code 5)
-                e = Quartz.CGEventCreateKeyboardEvent(self._src, 5, down)
-                Quartz.CGEventSetFlags(e, flags)
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
-                time.sleep(0.03)
-            field = None
-            for _ in range(30):
-                goto = self._child(sheet, "AXSheet")
-                field = self._child(goto, "AXTextField") if goto is not None else None
-                if field is not None:
-                    break
-                time.sleep(0.1)
-            if field is None:
-                return
-            AXUIElementSetAttributeValue(field, "AXValue", path)
-            AXUIElementSetAttributeValue(field, "AXFocused", True)  # Return goes to the focused field
-            time.sleep(0.2)
-            for down in (True, False):
-                e = Quartz.CGEventCreateKeyboardEvent(self._src, ml.KEYCODES["return"], down)
-                Quartz.CGEventSetFlags(e, 0)
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, e)
-                time.sleep(0.03)
-            entered["ok"] = True
-
-        self._with_viber_front(go_to)
-        if not entered["ok"]:
-            raise OCRError("Couldn't open Go to Folder in Viber's file picker.")
-        open_btn = None
-        for _ in range(30):  # the go-to field closes and Open enables once the file is selected
-            open_btn = self._child(sheet, "AXButton", "Open")
-            if open_btn is not None and _get(open_btn, "AXEnabled") and self._child(sheet, "AXSheet") is None:
-                break
-            time.sleep(0.1)
-        else:
-            return False
-        AXUIElementPerformAction(open_btn, "AXPress")
-        for _ in range(40):
-            time.sleep(0.1)
-            if self._file_sheet() is None:
-                return True
-        return False
-
-    def file_dialog_cancel(self) -> None:
-        sheet = self._file_sheet()
-        if sheet is None:
-            return
-        goto = self._child(sheet, "AXSheet")
-        if goto is not None:  # an open Go to Folder field first
-            cancel = next((c for c in _get(goto, "AXChildren") or [] if _get(c, "AXRole") == "AXButton"
-                           and _get(c, "AXTitle") in ("Cancel",)), None)
-            if cancel is not None:
-                AXUIElementPerformAction(cancel, "AXPress")
-                time.sleep(0.3)
-        cancel = self._child(sheet, "AXButton", "Cancel")
-        if cancel is not None:
-            AXUIElementPerformAction(cancel, "AXPress")
+            board.clearContents()
+            if not board.writeObjects_([NSURL.fileURLWithPath_(p) for p in paths]):
+                raise OCRError("Couldn't put the files on the clipboard; nothing was sent.")
+            self._post_key(_KEY_V, Quartz.kCGEventFlagMaskCommand)
+            deadline = time.time() + 10
+            while not taken():
+                if time.time() > deadline:
+                    if self._value() != before:  # a late paste could land as text
+                        self._set_value(before)
+                    raise OCRError("Viber didn't take the pasted files; nothing was sent.")
+                time.sleep(0.2)
+        finally:
+            board.clearContents()
+            items = []
+            for types in saved:
+                item = NSPasteboardItem.alloc().init()
+                for t, data in types.items():
+                    if data is not None:
+                        item.setData_forType_(data, t)
+                items.append(item)
+            if items:
+                board.writeObjects_(items)
+        return True

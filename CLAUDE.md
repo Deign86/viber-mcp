@@ -148,7 +148,7 @@ Status:
 
 | Platform | Backend | State |
 |----------|---------|-------|
-| macOS | `backends/macos.py` (`MacBackend`) | ✅ implemented, mostly background (AX to locate/read/type/press, Vision OCR, posted characters; real input with a brief front hand-off for clicks on non-controls, scrolling and named keys) |
+| macOS | `backends/macos.py` (`MacBackend`) | ✅ implemented, mostly background (AX to locate/read/type/press, Vision OCR, posted characters, files pasted; real input with a brief front hand-off for clicks on non-controls, scrolling and named keys; stops while another app is full screen) |
 | Windows | `backends/windows.py` (`WindowsBackend`) | ✅ implemented, background (PrintWindow + Windows.Media.Ocr, UIA to locate, posted messages for input; `windows_selftest.py`) |
 | Linux | — | ❌ not started |
 
@@ -238,9 +238,32 @@ Status:
   - The red ✕ hides Viber's window without quitting; `focus()` reopens it with `open -g -b`.
     Viber activates itself on a `viber://` link even with `open -g`, so `open_url` hands the
     front back for 4 s in a thread (like the Windows backend).
-  - The file picker is an `AXSheet` ("send a file"). Cmd+Shift+G (real keys) opens a nested sheet
-    with the path field; set `AXValue` AND `AXFocused` before Return, or Return goes nowhere and
-    Open stays disabled. Then `AXPress` Open.
+  - **Files are pasted, not picked** (`paste_files`): file URLs on the general pasteboard, the
+    message box focused through AX, Cmd+V posted to Viber's pid → one preview with all of them,
+    fully in the background; the user's clipboard is restored once the preview shows. The
+    "send a file" picker (an `AXSheet`) needed Cmd+Shift+G and Return as real keys, so Viber came
+    to the front for every file (a 12-photo listing took over the screen 12 times and timed out).
+    Viber's Edit menu has no Paste item, so it's the posted shortcut.
+  - **Another app full screen** (2026-11-01, Safari): Viber's window is on another Space —
+    `AXWindows` is empty and CG lists it off screen, but `AXMainWindow` still has it.
+    `focus()` used to `open -b` it, which switched the user into Viber. Off its Space Viber
+    doesn't draw: the in-process capture returns nothing, `screencapture -l` returns an old frame
+    (the chat header too, which isn't in AX, so `require_open_chat` could pass on a stale name),
+    and the screen hit test returns the other app's menu bar. So `_stop_if_away` raises (`_AWAY`,
+    nothing done) from `_window`, `open_url` (Viber activates itself on a link) and
+    `_with_viber_front`; `focus()` leaves such a window where it is.
+  - **Text-editing keys are posted** (`_EDIT_KEYS`: End/Home/Left/Right/Backspace/Delete into the
+    field clicked last, after `_check_focus`), so the GC rename and the picker/mention clean-up
+    stay in the background. Other keys still need the hand-off: posted Return/Down didn't open a
+    search result (2026-11-01), posted Escape doesn't reach the image viewer.
+  - **Don't post mouse events to Viber** (2026-11-01, reproduced): an NSEvent with the window
+    number, posted to the pid, reaches Qt but not where it was aimed — a press on the Unread pill
+    swiped the *open chat's* row in the list open on its delete (trash) button, wherever the
+    real cursor was. A CGEvent with the window-under-pointer fields does nothing; neither moved
+    the message box's caret, and posted mouse-moved events don't hover. Search results, chat
+    rows and the filter pills have no AX element (the hit test returns the window), and posted
+    Return, Down+Return and Tab+Return in a search don't open a result, so those still need the
+    real click (`_with_viber_front`).
   - The reaction hearts aren't in the macOS AX tree, so `like_message` can't find them there.
   - **Posted characters go to Viber's keyboard focus, which is often still the message box**:
     AXFocused on another field doesn't always take, and Viber hands focus back to the message
@@ -295,7 +318,8 @@ Status:
 
 - Viber running, signed in, and in a **normal window on the main desktop — not macOS fullscreen**
   (fullscreen puts it on a separate Space, causing window-ID churn and blank captures). Don't resize
-  it mid-operation.
+  it mid-operation. The same goes for another app being full screen: Viber is then on another
+  Space and tools stop with "an app is full screen" until the user leaves it.
 - macOS **Accessibility** (AX tree and input) and **Screen Recording** (capture) granted to the
   server's *responsible app*. Claude spawns MCP servers with responsibility disclaimed, so the
   first binary of the command is what macOS asks about: register `~/Applications/Viber MCP.app`
@@ -358,7 +382,8 @@ Status:
   pane's (`StackView`) centre. The context menu, image viewer and dialogs render inside the main
   window. Never click a generic "Delete" *button* — the info panel's "Delete" deletes the chat;
   unsend only uses the context-menu `MenuItem` "Delete".
-- `send_files` (viber_ui.py, Windows) drives Viber's attach flow with window messages only. The
+- `send_files` (viber_ui.py) first asks the backend to `paste_files` (macOS; base returns False);
+  otherwise (Windows) it drives Viber's attach flow with window messages only. The
   attach button is the leftmost `IconButton` on the message-box row; the first click on it is
   sometimes swallowed, so it retries. The picker is a `#32770` dialog: fill the filename via
   `WM_SETTEXT` on `ComboBoxEx32 > ComboBox > Edit`, then `WM_COMMAND` `IDOK`. After it closes Windows

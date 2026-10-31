@@ -71,3 +71,28 @@ def test_a_hid_click_keeps_the_field_typing_goes_to(monkeypatch):
     monkeypatch.setattr(b, "_with_viber_front", lambda action: None)
     b.click_at(380, 714)
     assert b._focus_el is field
+
+
+def test_text_editing_keys_are_posted_without_bringing_viber_forward(monkeypatch):
+    # 2026-11-01: the GC rename's End + Backspace brought Viber to the front (real keys); posted
+    # to Viber's process they edit the clicked field in the background.
+    field = Field("Group")
+    b = _backend(monkeypatch, field)
+    posted = []
+    monkeypatch.setattr(b, "_post_key", lambda code, flags=0, text=None: posted.append(code))
+    monkeypatch.setattr(b, "_with_viber_front", lambda action: pytest.fail("Viber was brought forward"))
+    b.press_key("end")
+    b.press_key("backspace", 7)
+    assert posted == [macos.ml.KEYCODES["end"]] + [macos.ml.KEYCODES["backspace"]] * 7
+    assert field.focused == 2
+
+
+def test_other_keys_still_use_the_front_hand_off(monkeypatch):
+    # Posted Escape doesn't reach the image viewer, and Return doesn't open a search result.
+    b = _backend(monkeypatch, Field())
+    handed = []
+    monkeypatch.setattr(b, "_post_key", lambda *a, **k: pytest.fail("posted"))
+    monkeypatch.setattr(b, "_with_viber_front", lambda action: handed.append(action))
+    monkeypatch.setattr(b, "_onscreen_window", lambda: None)
+    b.press_key("escape")
+    assert len(handed) == 1

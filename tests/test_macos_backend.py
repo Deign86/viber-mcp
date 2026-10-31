@@ -464,3 +464,56 @@ def test_call_with_timeout_reraises_errors():
         raise ValueError("x")
     with pytest.raises(ValueError):
         ml.call_with_timeout(boom, 1.0)
+
+
+def test_off_space_window_is_the_main_window_not_the_hidden_file_panel():
+    # 2026-11-01, Safari full screen: Viber's windows were all off screen; the list also holds
+    # the hidden "Send a file" panel and menu-bar strips. The AX main window's frame picks.
+    def win(num, name, x, y, w, h, owner="Rakuten Viber", layer=0):
+        return {"kCGWindowNumber": num, "kCGWindowName": name, "kCGWindowOwnerName": owner,
+                "kCGWindowLayer": layer, "kCGWindowBounds": {"X": x, "Y": y, "Width": w, "Height": h}}
+    windows = [win(6501, "Send a file", 151, 197, 800, 448), win(6392, "", 0, 0, 1440, 24),
+               win(9, "", 8, 33, 1085, 775, owner="Safari"), win(6397, "Rakuten Viber", 8, 33, 1085, 775)]
+    assert ml.window_with_frame(windows, (8.0, 33.0, 1085.0, 775.0))["kCGWindowNumber"] == 6397
+    assert ml.window_with_frame(windows[:3], (8.0, 33.0, 1085.0, 775.0)) is None
+
+
+class _PasteBackend:
+    """macOS: the files are pasted into the message box and show in one preview."""
+
+    def __init__(self):
+        self.pasted, self.clicks, self.previewing = [], [], False
+
+    def elements(self):
+        if self.previewing:
+            return ml.nest_popups(*_preview_elements())[0]
+        return [_el("Window", "", (0, 0, 1085, 788))]
+
+    def paste_files(self, paths, taken):
+        self.pasted.append(paths)
+        self.previewing = True
+        return taken()
+
+    def click_at(self, x, y, button="left", double=False):
+        self.clicks.append((x, y))
+        self.previewing = False  # the preview's send button
+
+    def file_dialog_open(self):
+        pytest.fail("the file picker was opened")
+
+
+def test_files_are_pasted_in_one_go_without_the_picker(monkeypatch, tmp_path):
+    # 2026-10-31: the picker needed Cmd+Shift+G and Return as real keys, so Viber came to the
+    # front for each of a listing's 12 photos, over the user's work, and the call timed out.
+    photos = [tmp_path / f"{i}.jpg" for i in range(3)]
+    for p in photos:
+        p.write_bytes(b"x")
+    fake = _PasteBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_ui, "require_open_chat", lambda expect: {})
+    monkeypatch.setattr(viber_ui, "_settle_and_resend",
+                        lambda n: {"attempts": 0, "still_unsent": False, "uploading": False})
+    monkeypatch.setattr(viber_ui, "_messages", lambda els: [{"mine": True}])
+    out = viber_ui.send_files([str(p) for p in photos], expect_chat="My Notes")
+    assert fake.pasted == [[str(p.resolve()) for p in photos]]
+    assert len(fake.clicks) == 1 and out["sent"] and out["verified"]
