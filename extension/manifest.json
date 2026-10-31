@@ -29,7 +29,8 @@
         "VIBER_MCP_GOOGLE_CLIENT": "${user_config.google_oauth_client}",
         "VIBER_MCP_LISTINGS_FOLDER": "${user_config.listings_folder}",
         "VIBER_MCP_LISTINGS_GC": "${user_config.listings_gc}",
-        "VIBER_MCP_KEEP_DOWNLOADS_DAYS": "${user_config.keep_downloads_days}"
+        "VIBER_MCP_KEEP_DOWNLOADS_DAYS": "${user_config.keep_downloads_days}",
+        "VIBER_MCP_AUTO_UPDATE": "${user_config.auto_update}"
       }
     }
   },
@@ -89,6 +90,13 @@
       "default": 3,
       "min": 1,
       "max": 30,
+      "required": false
+    },
+    "auto_update": {
+      "type": "boolean",
+      "title": "Update automatically",
+      "description": "When Claude Desktop starts the extension, install the newest release from GitHub first. Off: Claude tells you when there's a new version to download.",
+      "default": true,
       "required": false
     }
   }

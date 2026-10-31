@@ -20,6 +20,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import sys
 import threading
 import time
 from datetime import date
@@ -58,6 +59,10 @@ _SEPARATOR = re.compile(r"^\s*[-_—–=─━]{3,}\s*$")  # a lone "—" (signa
 _ALL = {"supportsAllDrives": True, "includeItemsFromAllDrives": True, "corpora": "allDrives"}
 
 _local = threading.local()  # one Drive service per thread: httplib2 isn't thread-safe
+_SIGN_IN = threading.Lock()  # one browser sign-in at a time
+SIGN_IN_TIMEOUT = 300  # seconds the sign-in page waits for the user
+SIGN_IN_ASK_HOURS = 12  # the automatic sign-in at start asks at most this often
+SIGN_IN_ASKED_FILE = _DATA / "sign_in_asked"
 _tree_cache: tuple[float, list[dict]] | None = None
 
 
@@ -68,43 +73,75 @@ class DriveError(Exception):
 # ------------------------------------------------------------------------------ auth
 
 
-def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
-           service_account_ok: bool = True):
+def _save(creds, token_file: Path) -> None:
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(creds.to_json(), encoding="utf-8")
+
+
+def _saved_creds(scopes: list[str], token_file: Path):
+    """The remembered sign-in in `token_file`, refreshed when it has expired; None when there is
+    none or it can't be refreshed (never opens the browser)."""
+    if not token_file.exists():
+        return None
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
-    from google_auth_oauthlib.flow import InstalledAppFlow
 
+    try:
+        creds = Credentials.from_authorized_user_file(str(token_file), scopes)
+    except (OSError, ValueError):
+        return None
+    if creds.valid:
+        return creds
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh(Request())
+        except Exception:  # noqa: BLE001 — revoked or expired (7 days while the app is "Testing")
+            return None
+        _save(creds, token_file)
+        return creds
+    return None
+
+
+def _browser_sign_in(scopes: list[str], token_file: Path):
+    """Google's sign-in page in the browser (one at a time: the start-up sign-in and a tool can
+    both want one); the sign-in is remembered in `token_file`."""
+    if not CLIENT_FILE.exists():
+        raise DriveError(
+            "Google Drive isn't set up on this PC. Ask the admin for the service account key "
+            f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>, "
+            "or pick it in the Claude extension's settings), or add the OAuth client file as "
+            f"{CLIENT_FILE} (see README → Google Drive)."
+        )
+    with _SIGN_IN:
+        creds = _saved_creds(scopes, token_file)  # signed in while this one waited
+        if creds:
+            return creds
+        from google_auth_oauthlib.flow import InstalledAppFlow
+
+        flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_FILE), scopes)
+        print("viber-mcp: Google sign-in opened in the browser", file=sys.stderr, flush=True)
+        # No prompt message: the library prints it to stdout, which is the MCP connection.
+        creds = flow.run_local_server(port=0, open_browser=True, timeout_seconds=SIGN_IN_TIMEOUT,
+                                      authorization_prompt_message=None)
+        _save(creds, token_file)
+        return creds
+
+
+def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
+           service_account_ok: bool = True):
     if service_account_ok and SERVICE_ACCOUNT_FILE.exists():
         # Service account (created with gcloud); the listing folder is shared with it (as an
         # editor if listings are to be added).
         from google.oauth2 import service_account
         return service_account.Credentials.from_service_account_file(
             str(SERVICE_ACCOUNT_FILE), scopes=scopes)
-
-    creds = None
-    if token_file.exists():
-        creds = Credentials.from_authorized_user_file(str(token_file), scopes)
-    if creds and creds.valid:
-        return creds
-    if creds and creds.expired and creds.refresh_token:
-        try:
-            creds.refresh(Request())
-        except Exception:
-            creds = None
-    if not creds or not creds.valid:
-        if not CLIENT_FILE.exists():
-            raise DriveError(
-                "Google Drive isn't set up on this PC. Ask the admin for the service account key "
-                f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>, "
-                "or pick it in the Claude extension's settings), or add the OAuth client file as "
-                f"{CLIENT_FILE} (see README → Google Drive)."
-            )
-        flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_FILE), scopes)
-        # Opens the browser once; the staff member signs in with their company Google account.
-        creds = flow.run_local_server(port=0, open_browser=True, timeout_seconds=300)
-    token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(creds.to_json(), encoding="utf-8")
-    return creds
+    if service_account_ok:
+        # Reads without the key: the upload sign-in (full Drive access) covers them too, so one
+        # Google sign-in is enough.
+        creds = _saved_creds(WRITE_SCOPES, WRITE_TOKEN_FILE)
+        if creds:
+            return creds
+    return _saved_creds(scopes, token_file) or _browser_sign_in(scopes, token_file)
 
 
 def _drive():
@@ -148,6 +185,48 @@ def _docs():
 
 def can_upload() -> bool:
     return CLIENT_FILE.exists() or WRITE_TOKEN_FILE.exists()
+
+
+def sign_in_at_start() -> str:
+    """At server start: open Google's sign-in when uploads are set up (the OAuth client is here)
+    but nobody is signed in, so it's done before a tool needs it. It asks at most once per
+    SIGN_IN_ASK_HOURS, so a page the user closed doesn't come back at every start; drive_sign_in
+    asks any time. Returns what happened, for the log."""
+    if not CLIENT_FILE.exists():
+        return "no OAuth client, nothing to sign in to"
+    if _saved_creds(WRITE_SCOPES, WRITE_TOKEN_FILE):
+        return "already signed in"
+    try:
+        asked = float(SIGN_IN_ASKED_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        asked = 0.0
+    if 0 <= time.time() - asked < SIGN_IN_ASK_HOURS * 3600:
+        return "asked recently; drive_sign_in(write=True) asks again"
+    try:
+        SIGN_IN_ASKED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        SIGN_IN_ASKED_FILE.write_text(str(time.time()), encoding="utf-8")
+        _browser_sign_in(WRITE_SCOPES, WRITE_TOKEN_FILE)
+    except Exception as exc:  # noqa: BLE001 — closed page, timeout, no browser: never stop the server
+        return f"sign-in not completed ({type(exc).__name__}: {exc})"
+    return "signed in"
+
+
+def access_status() -> dict:
+    """What Drive access this PC has, without opening anything: `read` and `upload`, each
+    "service account", "signed in" or what's missing."""
+    if SERVICE_ACCOUNT_FILE.exists():
+        read = "service account"
+    elif _saved_creds(WRITE_SCOPES, WRITE_TOKEN_FILE) or _saved_creds(SCOPES, TOKEN_FILE):
+        read = "signed in"
+    elif CLIENT_FILE.exists():
+        read = "not signed in"
+    else:
+        read = "not set up"
+    if _saved_creds(WRITE_SCOPES, WRITE_TOKEN_FILE):
+        upload = "signed in"
+    else:
+        upload = "not signed in" if CLIENT_FILE.exists() else "not set up"
+    return {"read": read, "upload": upload}
 
 
 def sign_in(write: bool = False) -> dict:

@@ -36,6 +36,9 @@ go-ahead, don't show plans for approval, don't leave drafts. Only stop and ask w
   when you're just continuing a conversation that's already on screen.
 
 ## When to stop and ask (fails loudly)
+When a tool fails because of access (Viber not running, a macOS permission, Google not signed in
+or not set up), call `check_setup` and give the user its `to_fix` steps word for word.
+
 Ask the staff member only when:
 - a tool returns an error, `GC NOT CREATED`, `NOT ON VIBER`, `GC ALREADY EXISTS`, a `failed` list or
   a `STOP` note — report exactly what failed and **don't retry the same thing on your own**;

@@ -33,6 +33,9 @@ def no_real_drive_uploads(monkeypatch, tmp_path):
 
     monkeypatch.setattr(viber_drive, "CLIENT_FILE", tmp_path / "no_client.json")
     monkeypatch.setattr(viber_drive, "WRITE_TOKEN_FILE", tmp_path / "no_token.json")
+    monkeypatch.setattr(viber_drive, "TOKEN_FILE", tmp_path / "no_read_token.json")
+    monkeypatch.setattr(viber_drive, "SERVICE_ACCOUNT_FILE", tmp_path / "no_key.json")
+    monkeypatch.setattr(viber_drive, "SIGN_IN_ASKED_FILE", tmp_path / "sign_in_asked")
     monkeypatch.setattr(viber_drive, "_writer_service", None)
 
 
@@ -61,8 +64,13 @@ def no_real_update_check(monkeypatch, tmp_path):
     fetch that fails the test, and a cache file of their own."""
     import viber_update
 
-    def _no_fetch():
-        raise AssertionError("A test reached GitHub: patch viber_update._fetch.")
+    def _no_fetch(*_args):
+        raise AssertionError("A test reached GitHub: patch viber_update._fetch / _download.")
+
+    def _no_restart():
+        raise AssertionError("A test started a new server: patch viber_update._restart.")
 
     monkeypatch.setattr(viber_update, "_fetch", _no_fetch)
+    monkeypatch.setattr(viber_update, "_download", _no_fetch)
+    monkeypatch.setattr(viber_update, "_restart", _no_restart)
     monkeypatch.setattr(viber_update, "CACHE_FILE", tmp_path / "update_check.json")
