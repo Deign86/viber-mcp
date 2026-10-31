@@ -10,6 +10,8 @@ import tomllib
 import zipfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 import server  # noqa: E402
@@ -109,3 +111,45 @@ def test_user_file_prefers_the_setting_then_code_folder_then_data_folder(monkeyp
     picked = tmp_path / "picked" / "my contacts.json"
     monkeypatch.setenv("VIBER_MCP_TEST", str(picked))
     assert viber_config.user_file("VIBER_MCP_TEST", "contacts.json") == picked
+
+
+def _git_repo(path, commits):
+    import subprocess
+
+    path.mkdir()
+    (path / "pyproject.toml").write_text('[project]\nname = "x"\nversion = "0.1.0"\n')
+
+    def git(*args):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                       cwd=path, check=True, capture_output=True)
+    git("init", "-q")
+    for n in range(commits):
+        (path / "f.txt").write_text(str(n))
+        git("add", "-A")
+        git("commit", "-q", "-m", f"c{n}")
+    return path
+
+
+def test_release_version_counts_commits(tmp_path):
+    # Every merge to main adds a commit, so each release is newer than the last.
+    repo = _git_repo(tmp_path / "repo", 3)
+    assert build.release_version(repo) == "0.1.3"
+
+
+def test_release_version_refuses_a_shallow_clone(tmp_path):
+    import subprocess
+
+    repo = _git_repo(tmp_path / "repo", 3)
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", repo.as_uri(), str(shallow)],
+                   check=True, capture_output=True)
+    with pytest.raises(SystemExit, match="shallow"):
+        build.release_version(shallow)
+
+
+def test_release_build_stamps_its_version(tmp_path):
+    target = build.build(tmp_path, version="0.1.123")
+    assert target.name == "viber-mcp-0.1.123.mcpb"
+    with zipfile.ZipFile(target) as zf:
+        assert json.loads(zf.read("manifest.json"))["version"] == "0.1.123"
+        assert "viber_update.py" in zf.namelist()

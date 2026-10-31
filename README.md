@@ -24,9 +24,9 @@ The server also comes as a one-click [Claude Desktop extension](https://github.c
 (`.mcpb`): no clone, no setup script, no config file to edit. You need Windows 10/11 or macOS and
 [Viber Desktop](https://www.viber.com/download/) signed in.
 
-1. Get `viber-mcp-<version>.mcpb`: from the latest [tests run](https://github.com/Deign86/viber-mcp/actions/workflows/tests.yml)
-   → **Artifacts** → `viber-mcp-extension` (a zip with the `.mcpb` inside), or build it yourself
-   with `uv run extension/build.py` (it lands in `dist/`).
+1. Download [`viber-mcp.mcpb`](https://github.com/Deign86/viber-mcp/releases/latest/download/viber-mcp.mcpb)
+   (always the newest [release](https://github.com/Deign86/viber-mcp/releases)), or build it
+   yourself with `uv run extension/build.py` (it lands in `dist/`).
 2. Double-click it, or in Claude Desktop open **Settings → Extensions → Advanced settings →
    Install Extension…**, and confirm.
 3. In the extension's settings, pick the files you have. All are optional:
@@ -50,6 +50,12 @@ restart Claude.
 On **macOS**, the Accessibility and Screen Recording permissions then go to the program Claude
 Desktop starts (`uv`), which also covers anything else run through that `uv`. If you'd rather
 grant them to this server only, use [`setup_macos.sh`](#macos) instead.
+
+**Updates.** Every merge to `main` is published as a new release once the tests pass (version
+`0.1.<number of commits>`). When Claude Desktop starts the extension, it checks for a newer
+release (at most every 6 hours; skipped when offline) and Claude then tells you, with the link.
+Ask Claude to `check_for_update` any time. To update, download the file again and double-click it.
+Your own files stay where they are, outside the extension.
 
 The extension serves Claude Desktop only. For Claude Code, use the setup below.
 
@@ -417,6 +423,7 @@ names the Windows backend uses, so the tools find controls by identity there too
 | `setup_macos.sh`, `macos/launcher.c` | One-shot macOS setup; the "Viber MCP" launcher app the permissions are granted to |
 | `extension/` | Claude Desktop extension: `manifest.json` (settings → `VIBER_MCP_*` variables), icon, `build.py` |
 | `viber_config.py` | Reads the `VIBER_MCP_*` settings and finds the per-user files |
+| `viber_update.py` | The extension's update check against the latest GitHub release |
 | `contacts.example.json` | Template for `contacts.json` (git-ignored; holds real numbers) |
 
 ## Privacy

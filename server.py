@@ -15,11 +15,13 @@ import viber_gc
 import viber_ocr
 import viber_send
 import viber_ui
+import viber_update
 
 # The staff operating rules ship with the server: MCP clients add them to Claude's context.
 GUIDELINES = Path(__file__).with_name("guidelines.md").read_text(encoding="utf-8")
 
-mcp = FastMCP("viber", instructions=GUIDELINES)
+# As the Claude Desktop extension, a newer release adds a line telling Claude to pass the link on.
+mcp = FastMCP("viber", instructions=GUIDELINES + viber_update.notice())
 
 
 @mcp.tool()
@@ -654,6 +656,14 @@ def scroll(x: int, y: int, direction: str = "down", amount: int = 5) -> dict:
     """Scroll whatever is under (x, y) in the latest screenshot. direction "up"/"down",
     amount = wheel notches (1-50)."""
     return viber_ui.scroll(x, y, direction, amount)
+
+
+@mcp.tool()
+def check_for_update() -> dict:
+    """Is a newer Viber MCP (the Claude Desktop extension) out? Asks GitHub for the latest
+    release. Returns installed, latest, update_available and, when there is one, the download
+    link to give the user: they double-click the file and confirm in Claude Desktop."""
+    return viber_update.status(force=True)
 
 
 # ---------------------------------------------------------------------------- prompts

@@ -12,6 +12,10 @@ lives in extension/ and not at the repo root, where `mcpb pack` would zip the wh
 The bundle is staged in dist/viber-mcp/ first, so the official CLI can check it:
     npx @anthropic-ai/mcpb validate dist/viber-mcp/manifest.json
 The manifest's `tools` list is filled in here from server.py's @mcp.tool() functions.
+
+`--release` (CI, on every merge to main) stamps the version <major>.<minor>.<commits on main>, so
+each release is newer than the last without anyone bumping it; viber_update compares that with
+the latest GitHub Release. Without it the version is pyproject's (0.1.0: older than any release).
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ import argparse
 import ast
 import json
 import shutil
+import subprocess
 import tomllib
 import zipfile
 from pathlib import Path
@@ -72,20 +77,39 @@ def declared(source: str, kind: str = "tool") -> list[dict]:
     return found
 
 
-def manifest(root: Path = ROOT) -> dict:
-    """extension/manifest.json with the tool list filled in; its version must be pyproject's."""
+def project_version(root: Path = ROOT) -> str:
+    return tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+
+
+def release_version(root: Path = ROOT) -> str:
+    """<major>.<minor> from pyproject.toml, then the number of commits up to HEAD."""
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
+                              check=True).stdout.strip()
+
+    if git("rev-parse", "--is-shallow-repository") == "true":
+        raise SystemExit("build: shallow clone, the commit count would be wrong; fetch the whole "
+                         "history (actions/checkout: fetch-depth: 0).")
+    major, minor, _ = project_version(root).split(".")
+    return f"{major}.{minor}.{git('rev-list', '--count', 'HEAD')}"
+
+
+def manifest(root: Path = ROOT, version: str | None = None) -> dict:
+    """extension/manifest.json with the tool list filled in; its version must be pyproject's,
+    which `version` (a release's) then replaces."""
     data = json.loads((HERE / "manifest.json").read_text(encoding="utf-8"))
-    project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    if data["version"] != project["version"]:
+    if data["version"] != project_version(root):
         raise SystemExit(f"build: extension/manifest.json version {data['version']} != "
-                         f"pyproject.toml version {project['version']}; bump both together.")
+                         f"pyproject.toml version {project_version(root)}; bump both together.")
+    if version:
+        data["version"] = version
     data["tools"] = declared((root / data["server"]["entry_point"]).read_text(encoding="utf-8"))
     return data
 
 
-def build(out_dir: Path = ROOT / "dist") -> Path:
+def build(out_dir: Path = ROOT / "dist", version: str | None = None) -> Path:
     """Stage the bundle in <out_dir>/viber-mcp/ and zip it to <out_dir>/viber-mcp-<version>.mcpb."""
-    info = manifest()
+    info = manifest(version=version)
     stage = out_dir / "viber-mcp"
     if stage.exists():
         shutil.rmtree(stage)
@@ -108,7 +132,10 @@ def build(out_dir: Path = ROOT / "dist") -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, default=ROOT / "dist", help="output folder (default: dist/)")
-    target = build(parser.parse_args().out.resolve())
+    parser.add_argument("--release", action="store_true",
+                        help="version <major>.<minor>.<commit count> (needs the full git history)")
+    args = parser.parse_args()
+    target = build(args.out.resolve(), release_version() if args.release else None)
     with zipfile.ZipFile(target) as zf:
         names = zf.namelist()
     tools = len(json.loads((target.parent / "viber-mcp" / "manifest.json").read_text(encoding="utf-8"))["tools"])

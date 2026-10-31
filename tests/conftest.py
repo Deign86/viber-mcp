@@ -53,3 +53,16 @@ def no_real_backend(monkeypatch):
     guard = _NoRealBackend()
     monkeypatch.setattr(backends, "_backend", guard)
     monkeypatch.setattr(viber_send, "backend", guard)
+
+
+@pytest.fixture(autouse=True)
+def no_real_update_check(monkeypatch, tmp_path):
+    """The extension's update check asks GitHub and caches in the real data folder: tests get a
+    fetch that fails the test, and a cache file of their own."""
+    import viber_update
+
+    def _no_fetch():
+        raise AssertionError("A test reached GitHub: patch viber_update._fetch.")
+
+    monkeypatch.setattr(viber_update, "_fetch", _no_fetch)
+    monkeypatch.setattr(viber_update, "CACHE_FILE", tmp_path / "update_check.json")

@@ -29,8 +29,9 @@ uv run client.py chats | read | contacts
 claude mcp add --transport stdio --scope user viber -- uv --directory "$(pwd)" run server.py
 
 # Claude Desktop extension -> dist/viber-mcp-<version>.mcpb (stdlib only; CI's `extension` job
-# builds it, validates it with `npx @anthropic-ai/mcpb validate`, and uploads it as an artifact):
-uv run extension/build.py
+# builds it, validates it with `npx @anthropic-ai/mcpb validate`, and uploads it as an artifact;
+# the `release` job publishes every merge to main as a GitHub Release):
+uv run extension/build.py            # --release: version <major>.<minor>.<commit count>
 ```
 
 **Tests:** `uv run --with pytest pytest tests -q` (no Viber needed; CI runs it on windows-latest via
@@ -101,8 +102,18 @@ port-ready for Windows/Linux — see "Porting" below):
   (`test_extension.py` checks each is read somewhere). `build.py` ships only its `BUNDLE`
   allow-list — never `mcpb pack` the repo root: it would zip contacts.json and the OAuth client
   (that's why the manifest isn't at the root). It fills `tools` from server.py's `@mcp.tool()`s.
-  Its `version` must equal pyproject's — bump both. On macOS the TCC grant goes to `uv`, not
-  "Viber MCP" (README says so; `setup_macos.sh` stays the scoped route).
+  Its `version` must equal pyproject's (bump both) and is what local builds get.
+  **Releases:** every push to main that passes `pytest` + `extension` runs the `release` job:
+  `build.py --release` stamps `<major>.<minor>.<git rev-list --count HEAD>` (refuses a shallow
+  clone) and `gh release create v<version>` attaches it as `viber-mcp.mcpb`, so
+  `releases/latest/download/viber-mcp.mcpb` is always the newest. Only the commit still at the tip
+  of main publishes (two quick merges: the newer run releases both). `viber_update.py`: a
+  `manifest.json` next to server.py means "running as the extension"; at start it compares that
+  version with GitHub's latest release (cached 6 h in `DATA_DIR/update_check.json`, failures too;
+  2 s timeout; system CAs, then certifi) and appends an "Update available" note to the
+  instructions; `check_for_update` asks live. conftest makes `_fetch` fail any test that reaches
+  GitHub. On macOS the TCC grant goes to `uv`, not "Viber MCP" (README says so;
+  `setup_macos.sh` stays the scoped route).
 
 Data flow for a send: resolve recipient → `backend.open_url("viber://chat?number=…")` → poll
 `backend.observe()` until the chat is confirmed → `click_compose` → `select_all`+`delete` → `paste`

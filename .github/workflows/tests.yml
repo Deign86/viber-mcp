@@ -38,3 +38,46 @@ jobs:
           name: viber-mcp-extension
           path: dist/*.mcpb
           if-no-files-found: error
+
+  release:
+    # Every merge to main becomes a GitHub Release once both test runs and the extension build
+    # pass: version <major>.<minor>.<commits> (extension/build.py --release), the bundle attached
+    # as viber-mcp.mcpb so .../releases/latest/download/viber-mcp.mcpb is always the newest.
+    # The installed extension checks that release and tells Claude to pass the link on.
+    needs: [pytest, extension]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # the version counts commits
+      - name: Build the release bundle
+        id: build
+        run: |
+          python3 extension/build.py --release
+          echo "version=$(python3 -c 'import json; print(json.load(open("dist/viber-mcp/manifest.json"))["version"])')" >> "$GITHUB_OUTPUT"
+      - name: Validate the manifest
+        run: npx --yes @anthropic-ai/mcpb@2.1.2 validate dist/viber-mcp/manifest.json
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          # Two quick merges: only the newer one publishes (it holds both), so "latest" never
+          # goes back to an older build when the runs finish out of order.
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "main has moved past $GITHUB_SHA; the newer commit's run publishes."
+            exit 0
+          fi
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION is already released."
+            exit 0
+          fi
+          cp "dist/viber-mcp-$VERSION.mcpb" dist/viber-mcp.mcpb
+          gh release create "v$VERSION" dist/viber-mcp.mcpb --target "$GITHUB_SHA" \
+            --title "Viber MCP $VERSION" --generate-notes --latest
