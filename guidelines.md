@@ -206,6 +206,12 @@ each GC created and each template skipped or failed (with the reason).
   a listing was sent. A listing with several unit sizes gives the range: "Taytay Rizal, 500, 710,
   1,420" → `CE-WH-(500-1420SQM, TAYTAY)`. `create_client_gc` does this; if you name the GC
   yourself, do it too.
+- **Always fill the template itself too.** When a client has a preferred listing (the one they
+  inquired about or picked), edit the template in APG CLIENTS (`edit_message`, your own post) so
+  every blank or `~` the listing can answer is filled from it: type, SQM, location, and budget =
+  the listing's rent/price (e.g. `💰 Preferred Budget: ₱55,000/month`). Do it before making the GC
+  so the GC gets the filled template. Fields the listing can't answer (company name, line of
+  business) stay `~` until the client says.
 - **Filling in a `~` later:** once a listing is suggested in a `~` GC and the client likes it,
   rename the GC with that listing's SQM (and its city if the location was vague), e.g.
   `JANE-WH-(~, LAS PINAS)` → `JANE-WH-(240SQM, LAS PINAS)`. Find the listing by backreading the GC
