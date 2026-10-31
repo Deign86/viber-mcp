@@ -157,9 +157,18 @@ def require_open_chat(expect: str) -> dict:
     if not expect:
         return {}
     info = current_chat()
+    top, bottom = _header_band()
     obs = backend.observe(region=_HEADER_REGION)
-    if chat_confirmed(obs, expect, expect, _header_bottom()):
+    if chat_confirmed(obs, expect, expect, bottom):
         return info
+    # A contact with a Viber name shows "Last seen …" under the name, not the number; an unsaved
+    # one's number is only in the "<Name> +63… is not in your contact list" banner under the
+    # header. Read down to it only when a number didn't match (one more OCR, not on every send).
+    if len(_digits(expect)) >= 7:
+        below = [o for o in backend.observe(region=_BANNER_REGION)
+                 if o["x"] >= _HEADER_X[0] and top <= o["y"] < _BANNER_REGION[3]]
+        if number_confirmed(below, expect):
+            return info
     shown = f"'{info['title']}'" + (f" ({info['subtitle']})" if info["subtitle"] else "") if info["open"] \
         else "no chat"
     raise SendError(f"The open chat is {shown}, not '{expect}'. Nothing was sent — open the right "
@@ -550,6 +559,9 @@ _RESULT_HEADERS = {"conversations", "contacts", "groups", "businesses", "channel
 # OCR regions (hints for the backend): the results/chat list column, and the chat header band.
 _RESULTS_REGION = (0, 0, 0.36, 1)
 _HEADER_REGION = (0, 0, 1, 0.16)
+# The header plus the unsaved-number banner right under it (y≈0.16; the first message starts
+# below it, and only a "contact list" line counts there anyway).
+_BANNER_REGION = (0, 0, 1, 0.26)
 
 
 def _await_results(name: str, timeout: float = 2.4):

@@ -223,6 +223,9 @@ Status:
   `viber_send.require_open_chat` reads the header band (`_HEADER_REGION`, ~20x cheaper than a full
   OCR) and raises `SendError` naming the chat that IS open before anything is staged or clicked.
   `chat_confirmed` does the matching (name prefix-tolerant and OCR-folded, or number digits).
+  A named contact's header shows "Last seen …", not the number: when a number doesn't match the
+  header, it reads down to `_BANNER_REGION` and accepts the unsaved-number banner (`number_confirmed`,
+  chat-pane x only).
   Guidelines tell the model to always pass it. On 2026-10-24 a test send with the wrong
   `expect_chat` reached a staff chat because My Notes hadn't actually been opened — the guard was
   right, the caller wasn't; `current_chat` first when unsure.
