@@ -2999,3 +2999,107 @@ def test_require_open_chat_accepts_a_number_from_the_unsaved_banner(monkeypatch)
     monkeypatch.setattr(viber_send, "backend", B("Erwin +639171234567 is not in your contact list"))
     with pytest.raises(SendError, match="open chat is 'Erwin'.*not '\\+639178899815'"):
         viber_send.require_open_chat("+639178899815")             # the sidebar/message don't count
+
+
+# --- 2026-11-01: Arceli's GC stalled in the Add participants picker (a tick didn't register);
+# every rerun started over and sent her "I'll be creating a Viber group chat" again. A rerun now
+# skips what an earlier run finished and resumes in the GC it made.
+
+ARCELI = {"ready": True, "problems": [], "gc_name": "ARCELI-CS-(21-33SQM, NORTH CALOOCAN)",
+          "done_reply": "DONE-ARCELI-CS-(21-33SQM, NORTH CALOOCAN)", "client_number": "+639059695863",
+          "client_viber_name": "Arceli", "client_message": "Name: Arceli",
+          "intro_message_first": "Hello po Arceli! I'm the admin of Alpha Premier Realty.",
+          "listing": {"folder_id": "F"}, "templates_chat": "APG CLIENTS",
+          "template_text": "Name: Arceli\nViber: 09059695863"}
+
+
+def _gc_flow(monkeypatch, plan=ARCELI, mine=(), create=None, listing=None):
+    """Fake the whole GC flow; returns the list of actions it took."""
+    import viber_drive
+    import viber_gc
+    import viber_send
+    import viber_ui
+
+    acts = []
+    monkeypatch.setattr(viber_gc.time, "sleep", lambda s: None)
+    monkeypatch.setattr(viber_gc, "plan_client_gc", lambda *a, **k: dict(plan, problems=list(plan["problems"])))
+    monkeypatch.setattr(viber_gc, "_config", lambda: {"members": ["Max Alpha"], "self": ""})
+    monkeypatch.setattr(viber_gc, "client_name_from_chat", lambda number: "")
+    monkeypatch.setattr(viber_gc, "_find_message", lambda text, screens=6: {"n": 1})
+    monkeypatch.setattr(viber_send, "open_chat", lambda number: {})
+    monkeypatch.setattr(viber_send, "own_message_texts", lambda b=None: list(mine))
+    monkeypatch.setattr(viber_send, "send_message", lambda to, text: acts.append("intro") or {"sent": True})
+    monkeypatch.setattr(viber_ui, "existing_group_with", lambda number: None)
+    monkeypatch.setattr(viber_ui, "create_group_from_chat", create or (lambda *a, **k: acts.append("group") or {
+        "created": True, "renamed": True, "client_display_name": "Arceli", "privacy_blocked": None}))
+    monkeypatch.setattr(viber_send, "search_and_open", lambda chat: acts.append(f"open {chat}") or {})
+    monkeypatch.setattr(viber_send, "_header_matches", lambda name: True)
+    monkeypatch.setattr(viber_send, "reply", lambda text: acts.append("template") or {"sent": True})
+    monkeypatch.setattr(viber_drive, "send_listing", listing or (lambda fid: acts.append("listing") or {"sent": True}))
+    monkeypatch.setattr(viber_ui, "mention", lambda *a, **k: acts.append("mention") or {"mentioned": "Arceli"})
+    monkeypatch.setattr(viber_ui, "reply_to_message", lambda n, text, send=True: acts.append("DONE") or {"sent": True})
+    monkeypatch.setattr(viber_ui, "_backend", lambda: type("B", (), {"wait_still": lambda self: 0})())
+    monkeypatch.setattr(viber_drive, "prune_downloads", lambda: {})
+    return acts
+
+
+def _picker_stall(*a, **k):
+    import viber_ui
+    raise viber_ui.UIError("Ticking 'Beatriz Alpha' didn't register (selected 4 → 4); nothing was saved.")
+
+
+def test_rerun_after_picker_stall_does_not_resend_the_intro(monkeypatch):
+    import pytest
+    import viber_gc
+
+    acts = _gc_flow(monkeypatch, create=_picker_stall)
+    with pytest.raises(viber_gc.GCError, match="GC NOT CREATED"):
+        viber_gc.create_client_gc(1)
+    assert acts == ["intro"]
+    acts = _gc_flow(monkeypatch)
+    out = viber_gc.create_client_gc(1)
+    assert "intro" not in acts and acts[0] == "group" and out["steps"]["intro"] == {"skipped": "already sent"}
+    assert out["done"] and acts[-1] == "DONE" and viber_gc.done_steps(ARCELI["template_text"]) == {}
+
+
+def test_intro_already_in_the_chat_is_not_sent_again(monkeypatch):
+    # The stall happened before the progress file existed: the 1:1 chat itself shows the intro.
+    import viber_gc
+
+    acts = _gc_flow(monkeypatch, mine=["wala rin po kasi kame pasok today", ARCELI["intro_message_first"]])
+    viber_gc.create_client_gc(1)
+    assert "intro" not in acts and "group" in acts
+
+
+def test_rerun_resumes_in_the_gc_an_earlier_run_made(monkeypatch):
+    # The listing upload failed after the group was made and the template posted. The rerun's
+    # plan sees the GC by name ("GC ALREADY EXISTS"); that must resume, not notify "existing client".
+    import pytest
+    import viber_gc
+
+    def upload_fails(fid):
+        raise RuntimeError("upload timed out")
+    acts = _gc_flow(monkeypatch, listing=upload_fails)
+    with pytest.raises(RuntimeError):
+        viber_gc.create_client_gc(1)
+    assert acts == ["intro", "group", "template"]
+    exists = dict(ARCELI, ready=False, problems=["GC ALREADY EXISTS: a chat named '...' is already in Viber"])
+    monkeypatch.setattr(viber_gc, "notify_existing", lambda *a: pytest.fail("treated as an existing client"))
+    acts = _gc_flow(monkeypatch, plan=exists)
+    out = viber_gc.create_client_gc(1)
+    assert acts == [f"open {ARCELI['gc_name']}", "listing", "mention", "open APG CLIENTS", "DONE"]
+    assert out["resumed"] == ["group", "intro", "template"]
+
+
+def test_a_second_run_while_one_is_still_going_is_refused(monkeypatch):
+    # An MCP call that times out keeps running in the server; a retry beside it drove the same picker.
+    import pytest
+    import viber_gc
+
+    _gc_flow(monkeypatch)
+    viber_gc._RUN_LOCK.acquire()
+    try:
+        with pytest.raises(viber_gc.GCError, match="still being made"):
+            viber_gc.create_client_gc(1)
+    finally:
+        viber_gc._RUN_LOCK.release()

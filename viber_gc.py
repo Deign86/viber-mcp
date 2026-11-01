@@ -10,7 +10,9 @@ template. dry_run (default) returns the plan without touching anything.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import threading
 import time
 
 import viber_config as config
@@ -21,10 +23,66 @@ import viber_send
 import viber_ui
 
 CONFIG = config.user_file("VIBER_MCP_GC_MEMBERS", "gc_members.json")
+# Steps a run finished, per template, so a run that stalled or timed out is resumed instead of
+# repeated (2026-11-01: a picker stall, then a rerun sent the client the intro a second time).
+PROGRESS_FILE = config.DATA_DIR / "gc_progress.json"
+PROGRESS_DAYS = 7
+# One run at a time: an MCP call that timed out keeps running in the server, and a retry
+# started next to it would drive the same picker.
+_RUN_LOCK = threading.Lock()
 
 
 class GCError(Exception):
     """Raised when a client GC can't be planned or created safely."""
+
+
+def _progress_key(template_text: str) -> str:
+    return hashlib.sha1(logic.norm(template_text).encode()).hexdigest()[:16]
+
+
+def _read_progress() -> dict:
+    try:
+        data = json.loads(PROGRESS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    cutoff = time.time() - PROGRESS_DAYS * 86400
+    return {k: v for k, v in data.items() if isinstance(v, dict) and v.get("at", 0) >= cutoff}
+
+
+def _write_progress(data: dict) -> None:
+    try:
+        PROGRESS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = PROGRESS_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        tmp.replace(PROGRESS_FILE)
+    except OSError:
+        pass  # resuming is a help; never fail a GC over it
+
+
+def done_steps(template_text: str) -> dict:
+    """The steps an earlier run finished for this template ({} when none)."""
+    return _read_progress().get(_progress_key(template_text), {}).get("steps", {})
+
+
+def _mark(template_text: str, step: str, value=True) -> None:
+    data = _read_progress()
+    entry = data.setdefault(_progress_key(template_text), {"steps": {}})
+    entry["steps"][step] = value
+    entry["at"] = time.time()
+    _write_progress(data)
+
+
+def _forget(template_text: str) -> None:
+    data = _read_progress()
+    if data.pop(_progress_key(template_text), None) is not None:
+        _write_progress(data)
+
+
+def _intro_already_sent(intro: str) -> bool:
+    """Is the intro already one of my messages in the open 1:1 chat? Catches runs that sent it
+    before stalling, including ones from before the progress file existed."""
+    mine = viber_send.own_message_texts() or []
+    return any(logic_norm(t) == logic_norm(intro) for t in mine)
 
 
 def _config() -> dict:
@@ -140,8 +198,31 @@ logic_norm = logic.norm
 def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
                      dry_run: bool = False, members: list[str] | None = None,
                      done_chat: str = "") -> dict:
-    """Plan (dry_run) or run the whole client-GC flow for template message n of the OPEN chat."""
+    """Plan (dry_run) or run the whole client-GC flow for template message n of the OPEN chat.
+
+    A run that stalled or timed out is resumed: the steps it finished (intro, group, template,
+    listing, mention) are kept in PROGRESS_FILE and skipped, and the GC it made is reopened by
+    name instead of counting as an existing client's."""
+    if dry_run:
+        return _create_client_gc(template_n, gc_name, listing_folder_id, True, members, done_chat)
+    if not _RUN_LOCK.acquire(blocking=False):
+        raise GCError("A client GC is still being made (an earlier call that timed out keeps "
+                      "running). Wait for it to finish, check Viber, then run again — finished "
+                      "steps are skipped.")
+    try:
+        return _create_client_gc(template_n, gc_name, listing_folder_id, False, members, done_chat)
+    finally:
+        _RUN_LOCK.release()
+
+
+def _create_client_gc(template_n, gc_name, listing_folder_id, dry_run, members, done_chat):
     plan = plan_client_gc(template_n, gc_name, listing_folder_id)
+    done = done_steps(plan["template_text"])
+    # The GC an earlier run made (it then stalled) isn't an existing client's: resume in it.
+    resume_gc = done.get("group") if done.get("group") == plan["gc_name"] else None
+    if resume_gc:
+        plan["problems"] = [p for p in plan["problems"] if not p.startswith("GC ALREADY EXISTS")]
+        plan["ready"] = not plan["problems"]
     exists_only = plan["problems"] and all(p.startswith("GC ALREADY EXISTS") for p in plan["problems"])
     if not dry_run and exists_only:
         return {"done": False, "existing_client": True, "gc_name": plan["gc_name"],
@@ -152,21 +233,27 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
                       " — Report this to the staff member and stop; do not retry.")
     if dry_run:
         plan.pop("template_text")
+        plan["already_done"] = sorted(done)
         plan["note"] = ("Preview only — nothing was done." if plan["ready"] else
                         "NOT READY — fix the problems listed (gc_name / listing_folder_id / the "
                         "template's number) before running; do not retry as-is.")
+        if done:
+            plan["note"] += (" An earlier run finished " + ", ".join(sorted(done)) +
+                             "; those steps will be skipped.")
         return plan
 
     cfg = _config()
     steps = {}
+    template_text = plan["template_text"]
     # One GC per client (hard rule): check "Groups in common" BEFORE the intro, so an existing
     # client isn't told "I'll be creating a GC for you" when no GC will be made. A number whose
     # 1:1 chat can't be checked yet (never messaged) falls through; create_group_from_chat
-    # checks again after the intro.
+    # checks again after the intro. Skipped when resuming: the GC we made is in common now.
     existing = None
     try:
         viber_send.open_chat(plan["client_number"])
-        existing = viber_ui.existing_group_with(plan["client_number"])
+        if not resume_gc:
+            existing = viber_ui.existing_group_with(plan["client_number"])
     except (viber_send.SendError, viber_ui.UIError):
         pass
     if existing:
@@ -176,83 +263,121 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
                       "'DONE-<NEW NAME> — existing client po, GC already created.' to the template. "
                       "Never make a second GC for this client. Do not retry.")
     if plan["intro_message_first"]:
-        try:
-            steps["intro"] = viber_send.send_message(plan["client_number"], plan["intro_message_first"])
-        except viber_send.SendError as exc:
-            raise GCError(f"GC NOT CREATED — couldn't message {plan['client_number']} first: {exc} "
-                          "— Report this to the staff member and stop; do not retry.") from exc
+        if done.get("intro") or _intro_already_sent(plan["intro_message_first"]):
+            steps["intro"] = {"skipped": "already sent"}
+        else:
+            try:
+                steps["intro"] = viber_send.send_message(plan["client_number"],
+                                                         plan["intro_message_first"])
+            except viber_send.SendError as exc:
+                raise GCError(f"GC NOT CREATED — couldn't message {plan['client_number']} first: "
+                              f"{exc} — Report this to the staff member and stop; do not "
+                              "retry.") from exc
+        _mark(template_text, "intro")
     # Unsaved numbers show as "Unknown"; the mention list uses their Viber name, which their 1:1
     # chat's "<Name> +63… is not in your contact list" banner shows.
     client_name = plan["client_viber_name"]
     if viber_ui.is_placeholder_name(client_name):
         client_name = client_name_from_chat(plan["client_number"])
-    # Build the group from the client's 1:1 chat (header "Add participants" → staff → Save →
-    # rename): the New group screen kept failing on its name box and picker.
-    viber_send.open_chat(plan["client_number"])
-    try:
-        created = viber_ui.create_group_from_chat(
-            plan["gc_name"], members if members is not None else cfg["members"],
-            plan["client_number"], self_name=cfg.get("self", ""))
-    except viber_ui.UIError as exc:
-        raise GCError(f"GC NOT CREATED — {exc} — Report this to the staff member and stop; "
-                      "do not retry.") from exc
-    if created.get("existing_group") is not None:
-        raise GCError(f"EXISTING CLIENT — GC NOT CREATED: {plan['client_number']} already shares a "
-                      f"group with us ('{created['existing_group']}'). Send the new listing there, "
-                      "rename that GC to the new inquiry, then quote-reply 'DONE-<NEW NAME> — "
-                      "existing client po, GC already created.' to the template. Do not retry.")
-    if not created["created"]:
-        raise GCError("The group didn't appear after Save in Add participants — check Viber before "
-                      "retrying (it may exist already, named 'Group').")
-    if not created.get("renamed", True):
-        raise GCError(f"The group was created but couldn't be renamed to '{plan['gc_name']}' — it's "
-                      "the open chat, probably named 'Group'. Rename it by hand; nothing was posted "
-                      "and DONE wasn't replied. Do not retry (that would make a second GC).")
-    if created.get("privacy_blocked") is not None:
-        who = created["privacy_blocked"] or plan["client_number"]
-        raise GCError(f"CLIENT NOT ADDED — GC '{plan['gc_name']}' was created with the staff only: "
-                      f"{who} ({plan['client_number']}) couldn't be added because of their Viber "
-                      "privacy settings. Nothing was posted in the GC and DONE wasn't replied. Ask the "
-                      "client in their 1:1 chat to allow group invites (More → Settings → Privacy → "
-                      "Groups and Communities), then add them to the GC and post the template, "
-                      "listing and mention. Do not retry (that would make a second GC).")
+    if resume_gc:
+        created = _reopen_gc(resume_gc)
+    else:
+        # Build the group from the client's 1:1 chat (header "Add participants" → staff → Save
+        # → rename): the New group screen kept failing on its name box and picker.
+        viber_send.open_chat(plan["client_number"])
+        try:
+            created = viber_ui.create_group_from_chat(
+                plan["gc_name"], members if members is not None else cfg["members"],
+                plan["client_number"], self_name=cfg.get("self", ""))
+        except viber_ui.UIError as exc:
+            raise GCError(f"GC NOT CREATED — {exc} — Report this to the staff member and stop; "
+                          "do not retry.") from exc
+        if created.get("existing_group") is not None:
+            raise GCError(f"EXISTING CLIENT — GC NOT CREATED: {plan['client_number']} already "
+                          f"shares a group with us ('{created['existing_group']}'). Send the new "
+                          "listing there, rename that GC to the new inquiry, then quote-reply "
+                          "'DONE-<NEW NAME> — existing client po, GC already created.' to the "
+                          "template. Do not retry.")
+        if not created["created"]:
+            raise GCError("The group didn't appear after Save in Add participants — check Viber "
+                          "before retrying (it may exist already, named 'Group').")
+        _mark(template_text, "group", plan["gc_name"])
+        if not created.get("renamed", True):
+            raise GCError(f"The group was created but couldn't be renamed to '{plan['gc_name']}' "
+                          "— it's the open chat, probably named 'Group'. Rename it by hand; "
+                          "nothing was posted and DONE wasn't replied. Then run again: it "
+                          "continues in that GC.")
+        if created.get("privacy_blocked") is not None:
+            who = created["privacy_blocked"] or plan["client_number"]
+            raise GCError(f"CLIENT NOT ADDED — GC '{plan['gc_name']}' was created with the staff "
+                          f"only: {who} ({plan['client_number']}) couldn't be added because of "
+                          "their Viber privacy settings. Nothing was posted in the GC and DONE "
+                          "wasn't replied. Ask the client in their 1:1 chat to allow group "
+                          "invites (More → Settings → Privacy → Groups and Communities), then add "
+                          "them to the GC and post the template, listing and mention. Do not "
+                          "retry (that would make a second GC).")
     steps["group"] = created
-    steps["template"] = viber_send.reply(plan["client_message"])
+    if done.get("template"):
+        steps["template"] = {"skipped": "already posted"}
+    else:
+        steps["template"] = viber_send.reply(plan["client_message"])
+        _mark(template_text, "template")
     if plan["listing"]:
-        steps["listing"] = viber_drive.send_listing(plan["listing"]["folder_id"])
+        if done.get("listing"):
+            steps["listing"] = {"skipped": "already sent"}
+        else:
+            steps["listing"] = viber_drive.send_listing(plan["listing"]["folder_id"])
+            _mark(template_text, "listing")
     if viber_ui.is_placeholder_name(client_name):
-        client_name = created["client_display_name"]
+        client_name = created.get("client_display_name", "")
     greeting, after = "Hello", ""
     if viber_ui.is_placeholder_name(client_name):
         # Brand-new numbers are "Unknown" in the picker and the mention list too; staff mention
         # them as @Unknown. send_with_mention refuses if more than one participant is "Unknown".
         client_name, greeting = "Unknown", "Hello po,"
         after = "! Please check the listing above po." if plan["listing"] else "!"
-    try:
-        steps["mention"] = viber_ui.mention(client_name, greeting, number=plan["client_number"],
-                                            after=after)
-    except viber_ui.UIError as exc:
-        raise GCError(f"GC '{plan['gc_name']}' was created and the template/listing posted, but the "
-                      f"client couldn't be mentioned as @{client_name} ({exc}), so DONE wasn't "
-                      "replied. Report this and stop; do not retry.") from exc
+    if done.get("mention"):
+        steps["mention"] = {"skipped": "already sent"}
+    else:
+        try:
+            steps["mention"] = viber_ui.mention(client_name, greeting,
+                                                number=plan["client_number"], after=after)
+        except viber_ui.UIError as exc:
+            raise GCError(f"GC '{plan['gc_name']}' was created and the template/listing posted, "
+                          f"but the client couldn't be mentioned as @{client_name} ({exc}), so "
+                          "DONE wasn't replied. Report this and stop; do not retry.") from exc
+        _mark(template_text, "mention")
 
     # Back to the templates chat: quote-reply DONE to the original template.
     chat = done_chat or plan["templates_chat"]
     viber_send.search_and_open(chat)
     viber_ui._backend().wait_still()
-    target = _find_message(plan["template_text"])
+    target = _find_message(template_text)
     if target is None:
         steps["done_reply"] = {"sent": False, "note": f"Template not found in '{chat}' — reply "
                                f"'{plan['done_reply']}' to it manually."}
     else:
         steps["done_reply"] = viber_ui.reply_to_message(target["n"], plan["done_reply"], send=True)
+    _forget(template_text)
     steps["cleanup"] = viber_drive.prune_downloads()  # only photos older than a few days
     out = {"done": True, "gc_name": plan["gc_name"], "steps": steps}
+    if done:
+        out["resumed"] = sorted(done)
     if steps["mention"].get("verified_number") is False:
         out["WARNING"] = (f"The @{client_name} mention didn't open {plan['client_number']}'s "
                           "profile — it may have mentioned someone else. Check the GC and tell the "
                           "staff member.")
     return out
+
+
+def _reopen_gc(name: str) -> dict:
+    """Open the GC an earlier run of this template made, confirmed by its header."""
+    viber_send.search_and_open(name)
+    if not viber_send._poll(lambda: viber_send._header_matches(name), timeout=3.0, first=0.3):
+        raise GCError(f"An earlier run created '{name}', but it isn't the open chat after "
+                      "searching for it (still named 'Group'?). Open and rename it by hand, then "
+                      "run again — finished steps are skipped.")
+    return {"created": True, "renamed": True, "resumed": True}
 
 
 def client_name_from_chat(number: str) -> str:
@@ -389,7 +514,10 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = F
         except Exception as exc:
             failed.append({"gc_name": name["gc_name"], "error": f"planning failed: {exc}"})
             continue
-        if not plan["ready"]:
+        # A GC an earlier run made and then stalled in: create_client_gc resumes it.
+        resumable = done_steps(text).get("group") == plan["gc_name"] and all(
+            p.startswith("GC ALREADY EXISTS") for p in plan["problems"])
+        if not plan["ready"] and not resumable:
             if any(p.startswith("GC ALREADY EXISTS") for p in plan["problems"]) and not preview:
                 existing.append({"gc_name": plan["gc_name"],
                                  "notice": notify_existing(text, plan["gc_name"])})

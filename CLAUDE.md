@@ -367,6 +367,12 @@ Status:
   the name ("@Unknown!") is typed after that space is backspaced away; if the backspace takes the
   mention with it, it starts over keeping the space. Clicking a sent mention
   opens that person's 1:1 chat (number under the name, or in the banner) — `mention_opens_number`.
+  **Runs resume, never repeat** (2026-11-01: a picker tick didn't register, and each rerun sent
+  the client the intro again): `create_client_gc` records each finished step (intro, group,
+  template, listing, mention) in `DATA_DIR/gc_progress.json` per template and skips them on the
+  next run; the intro is also skipped when it's already my message in the 1:1 chat; a GC an
+  earlier run made is reopened by name (`_reopen_gc`) instead of counting as an existing client;
+  `_RUN_LOCK` refuses a second run while one (e.g. an MCP call that timed out) still runs.
   A client whose privacy settings block group invites gets a "Couldn't be added … due to their
   privacy settings" dialog after Save; the GC exists with the staff only.
   `privacy_blocked_from_dialog` detects it, `_dismiss_privacy_dialog` closes it, and `create_client_gc`
