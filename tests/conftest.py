@@ -39,6 +39,14 @@ def no_real_drive_uploads(monkeypatch, tmp_path):
     monkeypatch.setattr(viber_drive, "_writer_service", None)
 
 
+@pytest.fixture(autouse=True)
+def gc_progress_in_tmp(monkeypatch, tmp_path):
+    """Client-GC resume state goes to a temp file, never the real DATA_DIR."""
+    import viber_gc
+
+    monkeypatch.setattr(viber_gc, "PROGRESS_FILE", tmp_path / "gc_progress.json")
+
+
 class _NoRealBackend:
     """Stands in for the platform backend a test didn't replace. The real one drives the live
     app on a dev Mac/PC: a test that reached it put "NOPE-WH-(1SQM, X)" in the signed-in Viber's
