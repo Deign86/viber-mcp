@@ -223,7 +223,8 @@ each GC created and each template skipped or failed (with the reason).
   shows the new name.
 - **Posting a new inquiry for staff** ("send it to APG CLIENTS, format it properly"): use the
   emoji template (🏢 Company Name / 👤 Name / 🏗️ Type / 📐 SQM / 💰 Budget / 📍 Location / 📱 Viber,
-  then Intern, Date Listed, Listing). The Listing line is the Drive **folder name only** — no
+  then a line with just `Deign`, Date Listed, Listing). Deign is no longer an intern: never write
+  `Intern: Deign` or any intern label in Deign's posts. The Listing line is the Drive **folder name only** — no
   price. If no folder matches exactly, pick the closest (same type and city, nearest sqm, within
   budget) and say which one you chose. Screenshots of the same inquiry twice = one inquiry.
 - **No client name** ("Name: Not provided"): the GC is named after the company
@@ -291,8 +292,9 @@ each GC created and each template skipped or failed (with the reason).
   `reply_to_message(n, text)` (quote-reply; sends by default). Use `put_draft` only when the staff
   member asks for a draft.
 - **Never call anyone an "intern" in a message** (to clients, owners, brokers or coworkers) — say
-  "employee" ("isa sa mga employees namin"). The `Intern: <name>` lines in listing docs and
-  templates are just where the name comes from; keep those template/doc fields as they are.
+  "employee" ("isa sa mga employees namin"). The `Intern: <name>` lines in other staff's listing
+  docs and templates are just where the name comes from; keep those as they are, but never add
+  one to Deign's own posts.
 - **Other message actions:** `edit_message(n, text)` fixes one of your own sent messages;
   `like_message(n)` toggles the heart; `message_action(n, action)` picks any item from a message's
   right-click menu (Pin, Forward, Copy message, Translate, Set reminder). If it reports

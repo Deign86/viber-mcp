@@ -116,7 +116,10 @@ def infer_fields(text: str, fields: dict) -> dict:
     a Viber number are required; the rest can come from the listing (fill_from_listing)."""
     lines = [l.strip() for l in clean(text).split("\n") if l.strip() and not _URL_ONLY.match(l)]
     free = [l for l in lines if not _label_of(l)]
-    if not fields.get("name"):
+    # A labelled template with a blank Name has no client name; its free lines (e.g. the bare
+    # "Deign" staff line) are never the client.
+    has_name_label = any((_label_of(l) or ("",))[0] == "name" for l in lines)
+    if not fields.get("name") and not has_name_label:
         fields["name"] = next((l for l in free if not re.search(r"\d", l)), "")
     if not fields.get("property_type"):
         fields["property_type"] = next((l for l in free if _type_code(l)), "")

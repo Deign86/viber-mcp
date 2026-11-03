@@ -3103,3 +3103,22 @@ def test_a_second_run_while_one_is_still_going_is_refused(monkeypatch):
             viber_gc.create_client_gc(1)
     finally:
         viber_gc._RUN_LOCK.release()
+
+
+def test_deigns_inquiries_end_with_just_the_name_not_an_intern_label():
+    # Deign is no longer an intern: inquiries formatted for Deign end with a bare "Deign" line
+    # instead of "Intern: Deign" (other staff's templates keep theirs). That line must never
+    # become the client's name or reach the client GC.
+    guidelines = (Path(__file__).resolve().parent.parent / "guidelines.md").read_text(encoding="utf-8")
+    rule = guidelines[guidelines.index("**Posting a new inquiry for staff**"):]
+    rule = rule[:rule.index("\n- **")]
+    assert "then Intern" not in rule and "a line with just `Deign`" in rule
+
+    inquiry = ("🏢 Company Name: TPEHcare\n👤 Name: \n🏗️ Type of Property: Warehouse\n"
+               "📐 Preferred SQM: 270 sqm\n💰 Preferred Budget: ~\n📍 Preferred Location: Quezon City\n"
+               "📱 Viber: ⁨09171234567⁩\n\nDeign\nDate Listed: November 3, 2026\n\n"
+               "Listing: Quezon City, 270 Banawe")
+    fields = logic.infer_fields(inquiry, logic.parse_template(inquiry))
+    assert fields["listing"] == "Quezon City, 270 Banawe"
+    assert logic.gc_name(fields)["gc_name"] == "TPEHCARE-WH-(270SQM, QC)"
+    assert "Deign" not in logic.client_message(inquiry)
