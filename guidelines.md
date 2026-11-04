@@ -383,6 +383,11 @@ each GC created and each template skipped or failed (with the reason).
   (Internal staff groups and broadcast notices don't need this.)
 - **No duplicates.** Before sending, check the newest messages: if we already asked the same thing
   and the client hasn't answered, don't ask again — tell the staff member it's pending.
+- **Edit, don't stack messages.** When something you sent becomes wrong or outdated (an owner
+  update, a correction, an added detail), `edit_message` your last relevant message so it reads
+  correctly on its own, instead of sending a new correction under it. If you already sent extra
+  correction messages, unsend them. A new message is only for genuinely new news the client hasn't
+  seen (e.g. the owner's confirmation after "we'll check").
 - **Don't push listings.** When offering an alternative, describe it in one line and ask if they
   want the details; send the listing only when the client (or staff member) asks for it.
 - **Match the client's use, not just sqm/location.** Check the client's line of business (ask them
