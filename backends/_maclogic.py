@@ -297,12 +297,13 @@ def vertical_shift(before, after, direction: int = 0, max_shift: int | None = No
 def app_executable(bundle: str) -> str | None:
     """The executable of the .app at `bundle` (Info.plist's CFBundleExecutable, else the
     bundle's name), or None when it isn't there — not installed, or an update is swapping it."""
+    bundle = os.path.normpath(bundle)  # "Viber.app/" too
     try:
         with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as fh:
             name = plistlib.load(fh).get("CFBundleExecutable")
     except (OSError, plistlib.InvalidFileException, ValueError):
         return None
-    name = name or os.path.splitext(os.path.basename(bundle.rstrip("/")))[0]
+    name = name or os.path.splitext(os.path.basename(bundle))[0]
     path = os.path.join(bundle, "Contents", "MacOS", name)
     return path if os.path.isfile(path) else None
 
