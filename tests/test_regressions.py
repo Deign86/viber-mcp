@@ -646,21 +646,34 @@ class _GC:
     """Fake viber_send + viber_ui for the listings GC: records what is sent and shows my sent
     texts back in list_messages (newest first), like Viber does."""
 
-    def __init__(self, matched="APR LISTING ONLY", echo=True, visible=()):
+    def __init__(self, matched="APR LISTING ONLY", echo=True, visible=(), switch_to=None):
         self.matched, self.echo, self.sent = matched, echo, []
         self.visible = [{"from": "me", "kind": "text", "text": t} for t in visible]
+        self.open, self.switch_to = matched, switch_to  # switch_to: opens after the first send
 
     def search_and_open(self, name):
         return {"matched": self.matched}
 
-    def reply(self, text):
+    def _guard(self, expect_chat):
+        if expect_chat and not self.open.startswith(expect_chat):
+            raise RuntimeError(f"The open chat is '{self.open}', not '{expect_chat}'. Nothing was sent")
+
+    def _after_send(self):
+        if self.switch_to:
+            self.open, self.switch_to = self.switch_to, None
+
+    def reply(self, text, expect_chat=""):
+        self._guard(expect_chat)
         self.sent.append(text)
         if self.echo:
             self.visible.insert(0, {"from": "me", "kind": "text", "text": text})
+        self._after_send()
         return {"verified": False}  # reply's own check gives false negatives on long texts
 
-    def send_files(self, paths):
+    def send_files(self, paths, expect_chat=""):
+        self._guard(expect_chat)
         self.sent.append(list(paths))
+        self._after_send()
         return {"verified": True}
 
     def jump_to_latest(self):
@@ -728,15 +741,17 @@ def test_new_listing_uploads_to_drive_and_confirms(monkeypatch):
 class _FakeWriter:
     """Records Drive create/list calls; `existing` maps (parent, name, mime) -> id."""
 
-    def __init__(self, existing=None, images=0):
+    def __init__(self, existing=None, images=0, md5s=()):
         self.existing, self.images, self.created = existing or {}, images, []
+        self.md5s = list(md5s)  # the md5Checksum of the first len(md5s) photos already there
 
     def files(self):
         return self
 
     def list(self, q="", **kw):
         if "mimeType contains 'image/'" in q:
-            return _Exec({"files": [{"id": f"img{i}"} for i in range(self.images)]})
+            return _Exec({"files": [{"id": f"img{i}", **({"md5Checksum": self.md5s[i]} if i < len(self.md5s) else {})}
+                                    for i in range(self.images)]})
         hit = [v for (p, n, m), v in self.existing.items() if f"'{p}' in parents" in q
                and f"name = '{n}'" in q and m in q]
         return _Exec({"files": [{"id": hit[0], "name": "x"}] if hit else []})
@@ -771,6 +786,33 @@ def test_upload_listing_reuses_folder_and_numbers_after_existing_photos(monkeypa
     assert w.created[0]["mimeType"] == viber_drive.GDOC and w.created[0]["parents"] == ["F1"]
 
 
+def test_rerun_upload_skips_the_photos_already_in_the_folder(monkeypatch, tmp_path):
+    # State-machine hunt 2026-11-06: post_new_listing's Drive STOP says "Re-run
+    # add_listing_to_drive (it reuses what's there)" — and the re-run uploaded every photo again,
+    # numbered after the ones already there (2 of 3 done → 5 photos; all done but the confirm
+    # failed → 6), which send_listing then sent to clients.
+    import hashlib
+
+    import viber_drive
+
+    paths = []
+    for name in ("a.jpg", "b.jpg", "c.jpg"):
+        paths.append(tmp_path / name)
+        paths[-1].write_bytes(name.encode())
+    md5 = [hashlib.md5(p.read_bytes()).hexdigest() for p in paths]
+    upload = {"parent_folder_id": "P", "folder_name": "*X, 1 Y", "doc_title": "*X, 1 Y", "doc_text": "a",
+              "photos": [{"path": str(p), "name": "ignored"} for p in paths]}
+    existing = {("P", "*X, 1 Y", viber_drive.FOLDER): "F1", ("F1", "*X, 1 Y", viber_drive.GDOC): "D1"}
+    w = _FakeWriter(existing=existing, images=2, md5s=md5[:2])  # the upload stopped after b
+    monkeypatch.setattr(viber_drive, "_writer", lambda: w)
+    out = viber_drive.upload_listing(upload)
+    assert [b["name"] for b in w.created] == ["AlphaPremier_Photo_03.jpg"]
+    assert out["photos_uploaded"] == 1 and out["photos_already_there"] == 2
+    w = _FakeWriter(existing=existing, images=3, md5s=md5)  # all there; only the confirm failed
+    monkeypatch.setattr(viber_drive, "_writer", lambda: w)
+    assert viber_drive.upload_listing(upload)["photos_uploaded"] == 0 and w.created == []
+
+
 def test_new_listing_accepts_ocr_junk_after_the_gc_name(monkeypatch):
     # search_and_open matched "APR LISTING ONLY w" (a stray tick); the exact check refused it.
     import viber_drive
@@ -791,6 +833,20 @@ def test_new_listing_refuses_wrong_chat(monkeypatch):
         with pytest.raises(viber_drive.DriveError, match="Nothing sent"):
             viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", [])
         assert gc.sent == []
+
+
+def test_new_listing_posts_nothing_more_once_another_chat_is_open(monkeypatch):
+    # State-machine hunt 2026-11-06: the listings GC was checked once, then the text (with the
+    # internal part: owner/agent numbers), the photos and the separator went to "the open chat".
+    # A new post can bring another chat to the front between them: a client's chat would have
+    # got the photos, the separator, or the whole internal text.
+    import viber_drive
+
+    monkeypatch.setattr(viber_drive, "_check_new_listing", _plan)
+    gc = _GC(switch_to="Juan Dela Cruz").install(monkeypatch)
+    out = viber_drive.post_new_listing("t\n---\ni", "w", "lease", "x", ["C:/p/a.JPG"])
+    assert gc.sent == ["t\n---\ni"]  # only the text, while the GC was open
+    assert out["posted"] is False and "Juan Dela Cruz" in out["STOP"]
 
 
 def test_new_listing_refuses_a_repost(monkeypatch):
@@ -1092,9 +1148,10 @@ def _run_gc_with_unknown_client(monkeypatch, fake):
         "privacy_blocked": None})
     monkeypatch.setattr(viber_ui, "reply_to_message",
                         lambda n, text, send=True: done.append((n, text)) or {"sent": True})
-    monkeypatch.setattr(viber_send, "reply", lambda text: {"sent": True})
+    monkeypatch.setattr(viber_send, "reply", lambda text, expect_chat="": {"sent": True})
+    monkeypatch.setattr(viber_send, "require_open_chat", lambda expect: {})
     monkeypatch.setattr(viber_send, "search_and_open", lambda chat: {})
-    monkeypatch.setattr(viber_drive, "send_listing", lambda folder_id: {"sent": True})
+    monkeypatch.setattr(viber_drive, "send_listing", lambda folder_id, expect_chat="": {"sent": True})
     monkeypatch.setattr(viber_drive, "prune_downloads", lambda: {})
     return viber_gc.create_client_gc(1, dry_run=False), done
 
@@ -2302,6 +2359,58 @@ def test_open_chat_settles_only_once_the_header_changed(monkeypatch):
     assert 4.0 <= clock[0] < 6.0
 
 
+def test_open_chat_needs_proof_when_the_chat_it_came_from_couldnt_be_read(monkeypatch):
+    # State-machine hunt 2026-11-06: an OCRError on the header read before navigating left the
+    # previous header unknown, and unknown counted as "changed" — so when the viber:// link
+    # didn't navigate, the chat still open was accepted after the 4 s settle and sent to.
+    import pytest
+    import viber_ocr
+    import viber_send
+    fake, clock = _open_chat_with(monkeypatch, [PREVIOUS_CHAT], "+639170000000")
+    page = fake.observe
+
+    def observe(region=None):
+        if not fake.urls:  # the read before open_url
+            raise viber_ocr.OCRError("capture failed")
+        return page(region)
+    fake.observe = observe
+    with pytest.raises(viber_send.SendError, match="Nothing was sent"):
+        viber_send.open_chat("+639170000000")
+    # A blank read (nothing in the header) is just as unknown as a failed one.
+    fake, clock = _open_chat_with(monkeypatch, [[], PREVIOUS_CHAT], "+639170000000")
+    with pytest.raises(viber_send.SendError, match="Nothing was sent"):
+        viber_send.open_chat("+639170000000")
+    # Strong proof still opens it: the number under the name.
+    opened = [_obs("shiso alpha", 0.349, 0.094), _obs("+639170000000", 0.35, 0.119)]
+    fake, clock = _open_chat_with(monkeypatch, [[], opened], "+639170000000")
+    assert viber_send.open_chat("+639170000000") == "+639170000000"
+
+
+def test_open_chat_refuses_the_same_chat_when_only_its_last_seen_line_changed(monkeypatch):
+    # The line under the title ("Active" / "Last seen today at 3:41 PM") changes on the same
+    # chat: counting it made a chat the viber:// link never left pass as a new one.
+    import pytest
+    import viber_send
+    before = [_obs("Max Alpha", 0.35, 0.094), _obs("Active", 0.35, 0.119),
+              _obs("Type a message...", 0.4, 0.96)]
+    after = [_obs("Max Alpha", 0.35, 0.094), _obs("Last seen today at 3:41 PM", 0.35, 0.119),
+             _obs("Type a message...", 0.4, 0.96)]
+    _open_chat_with(monkeypatch, [before, after], "+639170000000")
+    with pytest.raises(viber_send.SendError, match="didn't change"):
+        viber_send.open_chat("+639170000000")
+
+
+def test_header_title_key_is_the_title_row_only():
+    from viber_send import header_title_key
+    band = (0.0653, 0.124)   # the live 1101 x 1087 window's header band
+    beatriz = [_obs("Viber Out", 0.54, 0.043), _obs("Beatriz Alpha", 0.35, 0.083), _obs("00 0", 0.65, 0.089),
+               _obs("Last seen today at 12:55 PM", 0.35, 0.106), _obs("09178128999", 0.294, 0.144)]
+    assert header_title_key(beatriz, band) == header_title_key(
+        [_obs("Beatriz AIpha", 0.35, 0.084), _obs("Active", 0.35, 0.106)], band)
+    assert header_title_key(beatriz, band) != header_title_key([_obs("Max Alpha", 0.35, 0.083)], band)
+    assert header_title_key([_obs("Viber Out", 0.54, 0.043), _obs("00 0", 0.35, 0.08)], band) == frozenset()
+
+
 def test_open_chat_still_reports_non_viber_numbers(monkeypatch):
     import pytest
     import viber_send
@@ -3034,8 +3143,10 @@ def _gc_flow(monkeypatch, plan=ARCELI, mine=(), create=None, listing=None):
         "created": True, "renamed": True, "client_display_name": "Arceli", "privacy_blocked": None}))
     monkeypatch.setattr(viber_send, "search_and_open", lambda chat: acts.append(f"open {chat}") or {})
     monkeypatch.setattr(viber_send, "_header_matches", lambda name: True)
-    monkeypatch.setattr(viber_send, "reply", lambda text: acts.append("template") or {"sent": True})
-    monkeypatch.setattr(viber_drive, "send_listing", listing or (lambda fid: acts.append("listing") or {"sent": True}))
+    monkeypatch.setattr(viber_send, "reply", lambda text, expect_chat="": acts.append("template") or {"sent": True})
+    monkeypatch.setattr(viber_send, "require_open_chat", lambda expect: {})
+    monkeypatch.setattr(viber_drive, "send_listing", listing or (
+        lambda fid, expect_chat="": acts.append("listing") or {"sent": True}))
     monkeypatch.setattr(viber_ui, "mention", lambda *a, **k: acts.append("mention") or {"mentioned": "Arceli"})
     monkeypatch.setattr(viber_ui, "reply_to_message", lambda n, text, send=True: acts.append("DONE") or {"sent": True})
     monkeypatch.setattr(viber_ui, "_backend", lambda: type("B", (), {"wait_still": lambda self: 0})())
@@ -3077,7 +3188,7 @@ def test_rerun_resumes_in_the_gc_an_earlier_run_made(monkeypatch):
     import pytest
     import viber_gc
 
-    def upload_fails(fid):
+    def upload_fails(fid, expect_chat=""):
         raise RuntimeError("upload timed out")
     acts = _gc_flow(monkeypatch, listing=upload_fails)
     with pytest.raises(RuntimeError):
@@ -3089,6 +3200,106 @@ def test_rerun_resumes_in_the_gc_an_earlier_run_made(monkeypatch):
     out = viber_gc.create_client_gc(1)
     assert acts == [f"open {ARCELI['gc_name']}", "listing", "mention", "open APG CLIENTS", "DONE"]
     assert out["resumed"] == ["group", "intro", "template"]
+
+
+def test_gc_posts_go_only_into_the_gc_it_made(monkeypatch):
+    # State-machine hunt 2026-11-06: after Save + rename, the client's template, the listing and
+    # the @mention were posted into "the open chat" without checking it. A new post can switch
+    # the open chat (APR LISTING ONLY took over mid-rename on 2026-10-22): the client's details
+    # would have gone to that chat. Every post now names the GC (expect_chat).
+    import pytest
+    import viber_drive
+    import viber_gc
+    import viber_send
+    import viber_ui
+
+    world = {"open": "", "posts": []}
+
+    def create(*a, **k):
+        world["open"] = "APR LISTING ONLY"  # the GC was made, then another chat came to the front
+        return {"created": True, "renamed": True, "client_display_name": "Arceli", "privacy_blocked": None}
+    _gc_flow(monkeypatch, create=create)
+
+    def require(expect):
+        if expect and expect != world["open"]:
+            raise viber_send.SendError(f"The open chat is '{world['open']}', not '{expect}'. Nothing was sent")
+        return {"title": world["open"]}
+
+    def post(what):
+        def run(*a, expect_chat="", **k):
+            require(expect_chat)
+            world["posts"].append((world["open"], what))
+            return {"sent": True}
+        return run
+    monkeypatch.setattr(viber_send, "require_open_chat", require)
+    monkeypatch.setattr(viber_send, "reply", post("template"))
+    monkeypatch.setattr(viber_drive, "send_listing", post("listing"))
+    monkeypatch.setattr(viber_ui, "mention", lambda *a, **k: world["posts"].append((world["open"], "mention"))
+                        or {"mentioned": "Arceli"})
+    with pytest.raises(viber_gc.GCError, match="APR LISTING ONLY"):
+        viber_gc.create_client_gc(1)
+    assert world["posts"] == []
+    # Back in the GC (the rerun reopens it by name), each post goes there.
+    world["open"] = ARCELI["gc_name"]
+    out = viber_gc.create_client_gc(1)
+    assert out["done"]
+    assert world["posts"] == [(ARCELI["gc_name"], "template"), (ARCELI["gc_name"], "listing"),
+                              (ARCELI["gc_name"], "mention")]
+
+
+def test_a_placeholder_gc_name_matches_its_header_however_ocr_reads_the_tilde():
+    # "~" (a blank SQM) is OCR'd as "-", "e", "(-"…: the GC's own header must still confirm it.
+    from viber_send import chat_confirmed
+    hb = 0.14
+    for shown in ("CE-WH-(~, TAYTAY)", "CE-WH-(e, TAYTAY)", "CE-WH-((-, TAYTAY)", "CE-WH-(, TAYTAY)"):
+        assert chat_confirmed([_obs(shown, 0.35, 0.094)], "", "CE-WH-(~, TAYTAY)", hb), shown
+    assert not chat_confirmed([_obs("CE-WH-(500SQM, TAYTAY)", 0.35, 0.094)], "", "CE-WH-(~, TAYTAY)", hb)
+    assert not chat_confirmed([_obs("APR LISTING ONLY", 0.35, 0.094)], "", "CE-WH-(~, TAYTAY)", hb)
+
+
+def test_batch_run_makes_the_gc_for_the_template_it_found_not_whatever_is_at_n_now(monkeypatch):
+    # State-machine hunt 2026-11-06: process_client_templates found a template by its text (n=2
+    # on the scrolled-up screen), planned it, then called create_client_gc(n=2), which read
+    # message n=2 again. Planning's Viber search had opened a result and reopened the templates
+    # chat at its newest messages (a new post shifts n the same way), so n=2 was another
+    # template: that client got the intro and a GC, and DONE went to the wrong template.
+    import viber_gc
+    import viber_send
+    import viber_ui
+
+    arceli = ("Name: Arceli\nViber: 09059695863\nType of Property: Commercial Space\n"
+              "Preferred SQM: 21-33 sqm\nPreferred Location: North Caloocan")
+    bobby = ("Name: Bobby\nViber: 09171234567\nType of Property: Warehouse\n"
+             "Preferred SQM: 500 sqm\nPreferred Location: Pasig")
+    views = {"up": [arceli, "noted po"], "latest": [bobby, "thanks po"]}
+    world = {"view": "latest", "intro_to": [], "gcs": []}
+    real_plan = viber_gc.plan_client_gc
+    _gc_flow(monkeypatch)
+    monkeypatch.setattr(viber_gc, "plan_client_gc", real_plan)
+    monkeypatch.setattr(viber_gc, "_config", lambda: {"members": ["Max Alpha"], "self": "",
+                                                      "templates_chat": "APG CLIENTS"})
+
+    def messages(_els):
+        shown = views[world["view"]]
+        return [{"n": len(shown) - i, "kind": "text", "text": t, "mine": False} for i, t in enumerate(shown)]
+    monkeypatch.setattr(viber_ui, "_messages", messages)
+    monkeypatch.setattr(viber_ui, "_backend", lambda: type("B", (), {
+        "wait_still": lambda self: 0, "elements": lambda self: []})())
+    monkeypatch.setattr(viber_gc, "_collect_templates_chat", lambda screens: [arceli, bobby])
+
+    def find(text, screens=6):
+        world["view"] = "up" if text == arceli else "latest"
+        return next((m for m in messages([]) if m["text"] == text), None)
+    monkeypatch.setattr(viber_gc, "_find_message", find)
+    monkeypatch.setattr(viber_gc, "gc_exists", lambda name: (False, True))  # opened a search result
+    monkeypatch.setattr(viber_send, "search_and_open", lambda chat: world.update(view="latest") or {})
+    monkeypatch.setattr(viber_send, "send_message", lambda to, text: world["intro_to"].append(to) or {"sent": True})
+    monkeypatch.setattr(viber_ui, "create_group_from_chat", lambda name, *a, **k: world["gcs"].append(name) or {
+        "created": True, "renamed": True, "client_display_name": "Arceli", "privacy_blocked": None})
+
+    out = viber_gc.process_client_templates(limit=1)
+    assert world["intro_to"] == ["+639059695863"] and world["gcs"] == ["ARCELI-CS-(21-33SQM, NORTH CALOOCAN)"]
+    assert out["created"][0]["gc_name"] == "ARCELI-CS-(21-33SQM, NORTH CALOOCAN)"
 
 
 def test_a_second_run_while_one_is_still_going_is_refused(monkeypatch):

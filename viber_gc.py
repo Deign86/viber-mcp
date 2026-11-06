@@ -100,10 +100,13 @@ def _template(n: int) -> str:
     return msg["text"]
 
 
-def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "") -> dict:
-    """Work out everything create_client_gc would do, without changing anything."""
+def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
+                   template_text: str = "") -> dict:
+    """Work out everything create_client_gc would do, without changing anything. With
+    `template_text` (the template already located by its text), message n isn't read: n counts
+    from the newest message on screen, so it moves with every new post and every reopen."""
     cfg = _config()
-    text = _template(template_n)
+    text = template_text or _template(template_n)
     fields = logic.infer_fields(text, logic.parse_template(text))
     naming = logic.gc_name(fields)
     client_display = ""
@@ -197,26 +200,29 @@ logic_norm = logic.norm
 
 def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
                      dry_run: bool = False, members: list[str] | None = None,
-                     done_chat: str = "") -> dict:
+                     done_chat: str = "", template_text: str = "") -> dict:
     """Plan (dry_run) or run the whole client-GC flow for template message n of the OPEN chat.
 
     A run that stalled or timed out is resumed: the steps it finished (intro, group, template,
     listing, mention) are kept in PROGRESS_FILE and skipped, and the GC it made is reopened by
     name instead of counting as an existing client's."""
     if dry_run:
-        return _create_client_gc(template_n, gc_name, listing_folder_id, True, members, done_chat)
+        return _create_client_gc(template_n, gc_name, listing_folder_id, True, members, done_chat,
+                                 template_text)
     if not _RUN_LOCK.acquire(blocking=False):
         raise GCError("A client GC is still being made (an earlier call that timed out keeps "
                       "running). Wait for it to finish, check Viber, then run again — finished "
                       "steps are skipped.")
     try:
-        return _create_client_gc(template_n, gc_name, listing_folder_id, False, members, done_chat)
+        return _create_client_gc(template_n, gc_name, listing_folder_id, False, members, done_chat,
+                                 template_text)
     finally:
         _RUN_LOCK.release()
 
 
-def _create_client_gc(template_n, gc_name, listing_folder_id, dry_run, members, done_chat):
-    plan = plan_client_gc(template_n, gc_name, listing_folder_id)
+def _create_client_gc(template_n, gc_name, listing_folder_id, dry_run, members, done_chat,
+                      template_text=""):
+    plan = plan_client_gc(template_n, gc_name, listing_folder_id, template_text=template_text)
     done = done_steps(plan["template_text"])
     # The GC an earlier run made (it then stalled) isn't an existing client's: resume in it.
     resume_gc = done.get("group") if done.get("group") == plan["gc_name"] else None
@@ -317,16 +323,22 @@ def _create_client_gc(template_n, gc_name, listing_folder_id, dry_run, members, 
                           "them to the GC and post the template, listing and mention. Do not "
                           "retry (that would make a second GC).")
     steps["group"] = created
+    # Everything from here goes into the GC, and only there: a new post can bring another chat
+    # to the front at any time (APR LISTING ONLY did mid-rename on 2026-10-22), and the
+    # template holds the client's details. Each post names the GC (expect_chat).
+    gc = plan["gc_name"]
     if done.get("template"):
         steps["template"] = {"skipped": "already posted"}
     else:
-        steps["template"] = viber_send.reply(plan["client_message"])
+        steps["template"] = _in_gc(gc, "the template", lambda: viber_send.reply(
+            plan["client_message"], expect_chat=gc))
         _mark(template_text, "template")
     if plan["listing"]:
         if done.get("listing"):
             steps["listing"] = {"skipped": "already sent"}
         else:
-            steps["listing"] = viber_drive.send_listing(plan["listing"]["folder_id"])
+            steps["listing"] = _in_gc(gc, "the listing", lambda: viber_drive.send_listing(
+                plan["listing"]["folder_id"], expect_chat=gc))
             _mark(template_text, "listing")
     if viber_ui.is_placeholder_name(client_name):
         client_name = created.get("client_display_name", "")
@@ -339,6 +351,7 @@ def _create_client_gc(template_n, gc_name, listing_folder_id, dry_run, members, 
     if done.get("mention"):
         steps["mention"] = {"skipped": "already sent"}
     else:
+        _in_gc(gc, "the mention", lambda: viber_send.require_open_chat(gc))
         try:
             steps["mention"] = viber_ui.mention(client_name, greeting,
                                                 number=plan["client_number"], after=after)
@@ -368,6 +381,17 @@ def _create_client_gc(template_n, gc_name, listing_folder_id, dry_run, members, 
                           "profile — it may have mentioned someone else. Check the GC and tell the "
                           "staff member.")
     return out
+
+
+def _in_gc(gc_name: str, what: str, post):
+    """Run `post` (which passes expect_chat=gc_name); a SendError from that guard means another
+    chat is open: nothing was posted, and a rerun reopens the GC and carries on from this step."""
+    try:
+        return post()
+    except viber_send.SendError as exc:
+        raise GCError(f"GC '{gc_name}' exists, but {what} wasn't posted: {exc} Run create_client_gc "
+                      "again: it reopens the GC by name and continues from this step "
+                      "(finished steps are skipped).") from exc
 
 
 def _reopen_gc(name: str) -> dict:
@@ -510,7 +534,9 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = F
             skipped.append({"gc_name": name["gc_name"], "reason": "template scrolled out of reach"})
             continue
         try:
-            plan = plan_client_gc(target["n"])  # includes the Viber lookup of the client number
+            # By its text from here on: planning searches Viber and may reopen this chat at its
+            # newest messages, after which target["n"] is another message.
+            plan = plan_client_gc(target["n"], template_text=text)
         except Exception as exc:
             failed.append({"gc_name": name["gc_name"], "error": f"planning failed: {exc}"})
             continue
@@ -530,7 +556,7 @@ def process_client_templates(limit: int = 5, screens: int = 4, preview: bool = F
                             "listing": (plan["listing"] or {}).get("name"), "template": text})
             continue
         try:
-            results.append(create_client_gc(target["n"], dry_run=False))
+            results.append(create_client_gc(target["n"], dry_run=False, template_text=text))
         except Exception as exc:  # one template failing must not stop or loop the others
             failed.append({"gc_name": name["gc_name"], "error": str(exc)})
     out = {"would_create" if preview else "created": results, "skipped": skipped,

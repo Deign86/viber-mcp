@@ -1,0 +1,318 @@
+# State machines
+
+The explicit and implicit state machines of viber-mcp, what must always hold for each, and the
+invalid states the code could reach. Written by a state-machine bug hunt on 2026-11-06; keep it
+in step with the code: when a fix changes a transition, change its row here and the issue's status.
+
+**Concurrency, measured:** with mcp 1.28 every tool is a sync function that FastMCP calls on the
+event-loop thread (`func_metadata.py`: `return fn(**…)`), so **two tool calls never run at once**
+and a tool that blocks blocks the whole server. The only concurrency is the server's own threads:
+start-up `prune_downloads` and `request_access` (`server.py:797-799`), the download pool
+(`viber_drive.py` `download`), foreground guards (`hold_foreground`, `open_url`'s hand-back,
+`_keep_viber_behind`) and the Windows UIA worker (`backends/windows.py:109`).
+
+Impact scale: **1** data to the wrong person, data loss, internal info leaked · **2** stuck, or
+wrong data · **3** recoverable glitch · **4** cosmetic.
+
+---
+
+## 1. Which chat is open (navigation and confirmation)
+
+`viber_send.py`: `open_chat` 332, `_wait_for_sendable_chat` 252, `search_and_open` 816,
+`header_title_key` 197, `_chat_before_navigating` 212, `chat_confirmed` 221, `_title_is` 241.
+
+The open chat is state Viber owns; we only observe it through the header band OCR. Implicit
+variables per navigation: `previous` (title of the chat open before), strong proof (number in
+the header, unsaved-number banner, title = name), `changed` (title differs from `previous`),
+elapsed time.
+
+**Invariant:** a chat is accepted only on strong proof, or after the 4 s settle when the title
+*known* before navigating has changed to another readable title.
+
+| From | Event | Guard | To | Code |
+| --- | --- | --- | --- | --- |
+| any | `open_chat(to)` | | Navigating (`previous` = title row, or None if unreadable/blank) | 332-347 |
+| Navigating | OCR read | "isn't on Viber" / "cannot add yourself" | Error | 279-282 |
+| Navigating | OCR read | strong proof | Confirmed | 283-284 |
+| Navigating | OCR read, ≥4 s | `previous` known ∧ title readable ∧ ≠ `previous` | Confirmed (settle) | 285-288 |
+| Navigating | 12 s | `previous` None | Refused "couldn't confirm…" | 290-295 |
+| Navigating | 12 s | not changed | Refused "didn't change" | 296-301 |
+
+**Invalid states found:** *Confirmed while the link never navigated.* Fixed in issue I1.
+
+## 2. Open-chat writers (the `expect_chat` guard)
+
+Every writer that acts on "the open chat" (`reply`, `paste_into_open_chat`, `reply_to_message`,
+`send_files`, `send_listing`) takes `expect_chat`; `require_open_chat` (154) refuses unless the
+header is that chat. **Invariant:** a code path that knows which chat it means always passes it.
+Before I2, two code paths didn't: the client-GC flow and `post_new_listing`.
+
+## 3. Client GC run
+
+`viber_gc.py`: `create_client_gc` 201, `_create_client_gc` 223, `_mark` 67, `_in_gc` 386,
+`_reopen_gc` 397; `viber_ui.create_group_from_chat` 1243, `_rename_open_chat` 1001,
+`send_with_mention` 1358.
+
+Persisted per template (key = sha1 of the normalised text) in `DATA_DIR/gc_progress.json`:
+`steps ⊆ {intro, group=<name>, template, listing, mention}`, kept 7 days, deleted after DONE.
+In memory: `_RUN_LOCK` (one run at a time).
+
+**Invariants:** the intro is sent at most once; one GC per client; every post after Save goes
+into that GC and nowhere else; a rerun continues, never repeats.
+
+| From | Event | Guard | To | Side effects | Code |
+| --- | --- | --- | --- | --- | --- |
+| Planned | run | client shares a group ("Groups in common") | EXISTING CLIENT, nothing sent | | 258-270 |
+| Planned | run | intro not done ∧ not in the 1:1 chat | IntroSent | `send_message`, mark intro | 271-282 |
+| IntroSent | Save in Add participants | group appears | GroupMade | mark group=name | 293-310 |
+| GroupMade | rename fails / privacy blocked | | Stopped (GCError) | | 311-326 |
+| GroupMade | post template | header is the GC | TemplatePosted | mark template | 333-335 |
+| GroupMade… | post template / listing / mention | header is another chat | Stopped (GCError), nothing posted | | `_in_gc` 386 |
+| TemplatePosted | send_listing(expect_chat=GC) | | ListingSent | mark listing | 336-342 |
+| ListingSent | mention | header is the GC | Mentioned | mark mention | 351-362 |
+| Mentioned | DONE quote-reply | | Done | forget progress | 365-374 |
+| any Stopped | rerun | group marked | resumes in `_reopen_gc(name)` | skips marked steps | 228-231 |
+
+**Invalid states found:** *client details posted into another chat* (I2, fixed).
+
+## 4. Batch processing of templates
+
+`viber_gc.process_client_templates` 510. A template's identity is its **text**; `n` (1 = newest
+visible message) is only a screen position and moves with every new post and every reopen of the
+chat. **Invariant:** the GC made is the template's that was found. Broken before I3.
+
+## 5. New listing post (listings GC + Drive)
+
+`viber_drive.post_new_listing` 913, `upload_listing` 677, `confirm_listing_in_drive` 971,
+`add_listing_to_drive` 866, `_check_new_listing` 596. No progress file: the GC itself and the
+folder/doc/photo count in Drive are the record.
+
+| From | Event | Guard | To | Code |
+| --- | --- | --- | --- | --- |
+| Validated | open listings GC | header is the GC, not the latest post already | GCOpen | 933-936 |
+| GCOpen | post text (expect_chat=GC) | shows in the GC | TextPosted | 941-946 |
+| TextPosted | photos, separator (expect_chat=GC) | | Posted | 947-951 |
+| any of these | failure | | STOP "don't re-run" | 952-955 |
+| Posted | upload_listing | | Uploaded | 963 |
+| Uploaded | confirm (≥ N photos, doc, one folder) | | Confirmed + "Added to Drive" quote-reply | 964 |
+| Posted/Uploaded | failure | | STOP "re-run add_listing_to_drive" | 965-967 |
+| STOP (Drive) | `add_listing_to_drive` | folder `*<name>` exists in the parent | reuses folder/doc, uploads only photos not there (md5) | 701-709 |
+
+**Invariants:** a listing is posted once; the internal part reaches only the listings GC; a
+Drive re-run converges (no duplicate folder, doc or photo). Broken before I2 (internal text to
+another chat) and I5 (re-run duplicated photos); still open: D3 (a second folder).
+
+## 6. Extension auto-update
+
+`viber_update.py`: `update_and_restart` 278, `latest_version` 107, `install` 202, `_put_back`
+237, `_install_latest` 251, `_restart` 261. On disk: `manifest.json` version = the installed
+version; `DATA_DIR/update_check.json` caches the check for 1 h. In memory: modules imported
+*after* `update_and_restart` returns (`server.py:15-27`) are read from the folder then.
+
+| From | Event | Guard | To | Code |
+| --- | --- | --- | --- | --- |
+| Start | check | git checkout / off / `VIBER_MCP_UPDATED` | Run current | 281 |
+| Start | check | newer release | Downloading | 283-284 |
+| Downloading | bad bundle / network / CRC | | Run current, nothing changed | 251-258 |
+| Staging | every file written as `.updating` | | Swapping | 211-218 |
+| Swapping | rename fails | | rolled back, Run current | 219-226, 237 |
+| Swapping | all renamed, manifest last | | Installed → child server on the same stdio | 284-285, 261 |
+| Swapping | process killed | | old manifest: next start installs again | |
+
+**Invariant:** the folder the server imports from is one version, never a mix. Broken before I4.
+
+## 7. Viber app lifecycle
+
+`viber_app.py`: `ensure_running` 184, `_bring_up` 75, `_quit` 106, `start` 157, `restart` 175.
+States: NotRunning · Launching · Up (main screen) · NotUp (splash/sign-in/update) · Hung ·
+Updating (installer running, ≤ `UPDATER_GRACE`). `_LOCK` serialises start/quit with the
+before-tool check. No invalid reachable state found in the domain layer; the platform side has W2.
+
+## 8. Google sign-in and service caches
+
+`viber_drive.py`: `_saved_creds` 82, `_browser_sign_in` 106 (`_SIGN_IN` lock),
+`_still_signed_in` 148, `_drive` 171 (per thread), `_writer` 182, `_docs` 196,
+`sign_in_at_start` 209. Per token file: absent · valid · expired-refreshable · dead · corrupt.
+
+| From | Event | To | Code |
+| --- | --- | --- | --- |
+| cached service, token expired | next call | refreshed in place, same service | 148-161 |
+| cached service, refresh fails (dead) | next call | service rebuilt → `_creds` → browser sign-in | 171-200 |
+| no token | read tool, no service-account key | browser sign-in (readonly) | 141-145 |
+
+**Invariant:** a dead sign-in leads to a new sign-in, not a stuck error. Broken before I6.
+
+## 9. Listing photo cache
+
+`viber_drive._fetch` 301, `prune_downloads` 1020: per Drive file id, absent → in memory →
+`.part` → final name (whole, reused without a metadata call, mtime refreshed on reuse) → pruned
+after `VIBER_MCP_KEEP_DOWNLOADS_DAYS`. Checked: a file a send is using is never pruned (fresh
+mtime); a crash never leaves a half file under its final name.
+
+## 10. macOS backend: front hand-off and typing target
+
+`backends/macos.py`: `_with_viber_front` 977 (`_handoff` lock), `hold_foreground` 1200,
+`open_url` 411, `click_at` 938, `type_into_focus` 1147, `paste_files` 1215, `focus` 392.
+Typing target `_focus_el`: None · the field Viber really focuses · a field Viber no longer
+focuses · gone. **Invariants:** real input only while Viber is in front; the user's app gets the
+front back; characters go only to the field last clicked. Open: M1, M4, M5 (below).
+
+## 11. Windows backend: UIA worker, caches, foreground guards
+
+`backends/windows.py`: `_on_uia` 109 (one worker thread; abandoned after 30 s),
+`_uia_write_keeping_focus` 249, `_value` 565 (`_target_node` cache), `type_into_focus` 771
+(`_last_click` screen point), `_viber_pids` 293. **Invariants:** a cached node is the field
+it was taken from; a write never touches another app; nothing blocks forever. Open: W1-W4.
+
+---
+
+## Issues
+
+Each groups bugs by root cause. Evidence = the trace, plus the regression test that reached the
+invalid state before the fix.
+
+### I1. Chat confirmation trusted an unknown or volatile "previous chat" (impact 1). Fixed.
+
+- *Unknown counted as changed:* an `OCRError` on the header read before `open_url` set
+  `previous=None`, and `_wait_for_sendable_chat` started with `changed = previous is None`. When
+  the `viber://` link didn't navigate, the chat still open was accepted after 4 s and sent to.
+- *Blank read:* an empty read before (window not drawn) or after made `changed` true the same way.
+- *Volatile key:* the key was the whole header band, subtitle included. "Active" → "Last seen
+  today at 3:41 PM" (live fixtures in `tests/test_right_chat.py`) made the same chat count as
+  a new one.
+- **Fix:** identify the chat by its title row only (`header_title_key`); unreadable or blank =
+  unknown = strong proof required; a blank read after never counts as changed.
+- **Tests:** `test_open_chat_needs_proof_when_the_chat_it_came_from_couldnt_be_read`,
+  `test_open_chat_refuses_the_same_chat_when_only_its_last_seen_line_changed`,
+  `test_header_title_key_is_the_title_row_only`.
+- Trade-off: right after Viber starts with no chat open, a saved contact opened by number (no
+  number in its header) is refused once; the retry works.
+
+### I2. Code paths posted to "the open chat" without naming it (impact 1). Fixed.
+
+- **GC flow:** after Save and the rename, the client's template, the listing and the @mention
+  went to the open chat unchecked (`viber_gc.py`). A new post switching the open chat is on
+  record (2026-10-22, APR LISTING ONLY mid-rename).
+- **post_new_listing:** the listings GC was checked once. The full text, including the internal
+  part (owner/agent numbers), then the photos, the separator and the "Added to Drive" reply all
+  went to the open chat.
+- **Fix:** every post passes `expect_chat` (the GC's name / `LISTINGS_GC`). In the GC flow a
+  refusal becomes a GCError, and the rerun resumes. `_title_is` lets "~" in a placeholder GC
+  name match the 0-2 characters OCR makes of it ("-", "e").
+- **Tests:** `test_gc_posts_go_only_into_the_gc_it_made`,
+  `test_a_placeholder_gc_name_matches_its_header_however_ocr_reads_the_tilde`,
+  `test_new_listing_posts_nothing_more_once_another_chat_is_open`.
+
+### I3. The batch GC run re-read its template by position (impact 1). Fixed.
+
+- `process_client_templates` found the template by text (n=2 when scrolled up), planned it, then
+  called `create_client_gc(n=2)`, which read message 2 again.
+- Planning's `gc_exists` can open a search result, after which the templates chat is reopened
+  at its newest messages; a new post shifts `n` too.
+- The other template's client got the intro and a GC. Later the right template was answered
+  "existing client".
+- **Fix:** the template's text is passed through (`template_text`); `n` is not read again.
+- **Test:** `test_batch_run_makes_the_gc_for_the_template_it_found_not_whatever_is_at_n_now`.
+
+### I4. A failed update install left a half-old, half-new server running (impact 2). Fixed.
+
+- `install` replaced files one by one. A failure part-way (a file held open by an antivirus
+  scan, a full disk) returned to `update_and_restart`, and `server.py` then imported the rest
+  of its modules from that mix.
+- A corrupt member raised `zipfile.BadZipFile`, which wasn't caught, so the server didn't start.
+- **Fix:** stage every file first, then swap with the old bytes kept and roll back on failure;
+  catch `BadZipFile`.
+- **Tests:** `test_an_install_cut_short_puts_the_old_version_back`,
+  `test_a_corrupt_file_in_the_download_keeps_the_running_version`.
+
+### I5. The prescribed Drive re-run duplicated the listing's photos (impact 2). Fixed.
+
+- After a Drive-side STOP, `add_listing_to_drive` reused the folder and uploaded every photo
+  again, numbered after the existing ones: 2N photos when only the confirm had failed.
+- `confirm` checks `>= N`, so it passed, and `send_listing` sent the duplicates to clients.
+- **Fix:** skip local photos whose md5 is already in the folder.
+- **Test:** `test_rerun_upload_skips_the_photos_already_in_the_folder`.
+
+### I6. A dead Google sign-in stayed cached until restart (impact 2). Fixed.
+
+- `_writer_service`, `_docs_service` and the event-loop thread's read service were built once.
+- After the refresh token died (revoked, or 7 days while the consent screen is "Testing"),
+  every call failed with RefreshError. That included `drive_sign_in(write=True)`, which
+  `check_setup` prescribes.
+- **Fix:** each cached service keeps its credentials and is rebuilt (signing in again) when a
+  refresh fails.
+- **Test:** `test_a_dead_sign_in_is_asked_again_instead_of_failing_every_call`.
+
+### Confirmed, still open
+
+The traces have been re-read against the code. A test can only reach most of these on Windows
+or macOS CI.
+
+- **W1 (Windows, impact 1).** `type_into_focus` with emoji or a newline does
+  `ControlFromPoint(last click) → SetValue(Value + text)` on whatever is at that screen point
+  (`windows.py:784-788`). The backend runs with Viber covered, so the text is written into the
+  user's own window.
+  - `_last_click` isn't refreshed by `click_compose`/`click_search`.
+  - Fix: write only to an element of Viber's process, and drop `_last_click` with `_target_node`.
+- **M1 (macOS, impact 1).** A real click on a field the hit test misses (search already open,
+  `macos.py:903-905`) leaves `_focus_el` on the field clicked before. `type_into_focus` then
+  re-focuses that field and types there (`macos.py:953-958, 1151-1156`); an Enter can send it.
+  - Fix: after the real click, adopt Viber's focused text field.
+- **W3 (Windows, impact 2).** `_uia_write_keeping_focus` waits for the write with no deadline
+  (`windows.py:249-263`). A hung Viber freezes the server (tools run on the event loop) and
+  snaps the foreground back every 20 ms.
+  - Fix: `_on_uia`'s 30 s deadline and abandonment.
+- **W4 (Windows, impact 2).** The UIA worker writes `self._target_node` (`windows.py:579-580`).
+  A worker abandoned after 30 s can finish later and replace the node a newer call located.
+  - Fix: assign on the caller's thread.
+- **W2 (Windows, impact 2).** `_viber_pids` counts every user's Viber.exe (`windows.py:295-298`).
+  Another signed-in Windows user's Viber makes `app_running` true, so `start_viber` waits 60 s
+  and `restart_viber` fails "still running".
+  - Fix: this user's processes only, as in `_own_viber_processes`.
+- **M4 (macOS, impact 2).** With auto-start off, `focus()`'s `open -g -b` / `open -b` fallback
+  launches and activates Viber anyway (`macos.py:392-409`), bypassing the setting and the
+  updater wait.
+- **M5 (macOS, impact 2).** `paste_files` restores its clipboard snapshot unconditionally, over
+  anything the user copied during the up-to-10 s wait (`macos.py:1225-1249`).
+  - Fix: restore only if `changeCount` is unchanged.
+- **D3 (Drive, impact 2).** The `add_listing_to_drive` clash check matches by `listing_key`,
+  which ignores `*`, "Brgy." and punctuation. Reuse, though, looks for the exact `*<name>`. A
+  hand-made "X" in the same parent gets a second folder "*X", and the confirm then reports
+  "found 2" every time.
+  - Fix: return the clashing folder from `_check_new_listing` and reuse it.
+- **D5 (Drive, impact 2, needs a decision).** `update_listing_doc` rewrites the whole doc text
+  with no precondition (`viber_drive.py:724`). An edit made after `get_listing` read it (a
+  staff edit, or `record_availability`'s line) is lost.
+  - Fix needs an API choice: refuse when `modifiedTime` changed since the read, or edit
+    through the Docs API with `requiredRevisionId`.
+- **D7 (Drive, impact 3).** At start, `sign_in_at_start` holds `_SIGN_IN` for up to 300 s
+  waiting on the write consent. A first read tool (no service-account key) then waits on the
+  event loop, and afterwards opens a second, read-only consent, because `_browser_sign_in`
+  re-checks only its own token file.
+- **D8 (Drive, impact 3).** Parallel download threads can each refresh and `_save` the same
+  token file (`write_text`, not atomic), which can leave it corrupt.
+
+### Suspected
+
+Each needs the named check to confirm.
+
+- **Windows, COM objects across threads.** After `_on_uia` abandons a thread, the fresh thread
+  reuses COM objects from the stuck thread's apartment (`_uia_cache`, `_target_node`). If they
+  are apartment-bound, every call times out until restart.
+  - Confirm: create objects on thread 1, block it, walk Notepad from thread 2.
+- **macOS, gone `_focus_el`.** If `_focus_el` stops answering AX (`_get` → None), the focus
+  check is skipped and characters go to Viber's real focus.
+  - Confirm: read AXRole of the old `_focus_el` after `open_url`.
+- **macOS, `foreground()` uses window order.** Clicking the desktop (Finder active, Viber's
+  window topmost) or back-to-back hand-offs could make it say "Viber is in front" when it isn't.
+  - Confirm: log `foreground()` against Viber's `AXFrontmost` right after a restore.
+- **Drive, stale .docx.** A .docx listing is reused from the cache forever if Drive keeps its
+  id when it's edited.
+  - Confirm: edit one, then compare `md5Checksum` under the same id.
+  - Fix: key the cache by `modifiedTime`.
+- **Drive, retried creates.** `execute(num_retries=3)` retries a create Drive already
+  committed, making a second folder or photo.
+  - Confirm: a "retry 1 of 3 … POST …/files" log line next to a duplicate.
+- **Drive, doc picked by name.** `get_listing` with no `*` doc picks `docs[0]` by name; an
+  internal-notes doc sorting first would be split and sent.
+  - Confirm: a folder with two unstarred docs.

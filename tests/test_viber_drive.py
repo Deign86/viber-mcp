@@ -287,3 +287,46 @@ def test_listing_photos_are_shrunk_and_counted(monkeypatch, tmp_path):
     assert got["names"] == ["0.jpg", "1.jpg"] and got["total_photos"] == 3 and got["videos"] == 1
     import io
     assert max(pil.open(io.BytesIO(got["images"][0])).size) == 800
+
+
+# --- State-machine hunt 2026-11-06: a cached Drive/Docs service kept a sign-in that had died
+# (revoked, or the refresh token's 7 days while the consent screen is "Testing"): every call
+# failed with RefreshError until the server restarted — drive_sign_in(write=True), which
+# check_setup prescribes, too, since it reused the same cached service.
+
+class _Creds:
+    """A sign-in that is fine when the service is built and can die later."""
+
+    def __init__(self):
+        self.valid, self.expired, self.dead = True, False, False
+
+    def expire(self, dead):
+        self.valid, self.expired, self.dead = False, True, dead
+
+    def refresh(self, _request):
+        if self.dead:
+            raise RuntimeError("invalid_grant: Token has been expired or revoked.")
+        self.valid, self.expired = True, False
+
+
+@pytest.mark.parametrize("get, cache", [("_writer", "_writer_service"), ("_docs", "_docs_service"),
+                                        ("_drive", None)])
+def test_a_dead_sign_in_is_asked_again_instead_of_failing_every_call(monkeypatch, tmp_path, get, cache):
+    import googleapiclient.discovery
+
+    client = tmp_path / "client.json"
+    client.write_text("{}")
+    monkeypatch.setattr(viber_drive, "CLIENT_FILE", client)
+    if cache:
+        monkeypatch.setattr(viber_drive, cache, None)
+    monkeypatch.setattr(viber_drive, "_local", __import__("threading").local())
+    signed_in = []
+    monkeypatch.setattr(viber_drive, "_creds", lambda *a, **k: signed_in.append(_Creds()) or signed_in[-1])
+    monkeypatch.setattr(googleapiclient.discovery, "build",
+                        lambda *a, credentials=None, **k: type("Svc", (), {"creds": credentials})())
+    first = getattr(viber_drive, get)()
+    signed_in[-1].expire(dead=False)       # an hour later: the access token is refreshed, same service
+    assert getattr(viber_drive, get)() is first and len(signed_in) == 1
+    signed_in[-1].expire(dead=True)        # days later: the refresh token is gone
+    again = getattr(viber_drive, get)()
+    assert again is not first and len(signed_in) == 2 and again.creds is signed_in[-1]

@@ -40,6 +40,9 @@ naming, `pending_templates`, `choose_listing`) and pure helpers in `viber_ui.py`
 `_preview`, `find_number_row`, ...) so it can be tested with fixture data; UI-structure tests inject a
 fake backend via `backends._backend` (no module mocking). **Every bug found on the live app gets a
 regression test** in `tests/test_regressions.py` (or the matching test file) before/with the fix.
+`docs/STATE-MACHINES.md` models the stateful flows (chat confirmation, GC run, listing post,
+update, sign-in, backends): their invariants, transitions and the open/suspected issues — update
+it when a fix changes a transition.
 Flows that poll (`_poll`) are tested with stateful fakes (`ChatBackend`, `PickerBackend`,
 `PanelBackend`, `GroupFlowBackend` in `test_regressions.py`) that change state after N reads; a
 fake that must make a poll time out uses `_use(..., fast_clock=True)` so the deadline is virtual.
@@ -141,8 +144,9 @@ port-ready for Windows/Linux — see "Porting" below):
   server.py runs `update_and_restart()` under `__main__` before its heavy imports: it compares that
   version with GitHub's latest release (cached 1 h in `DATA_DIR/update_check.json`, failures too;
   2 s timeout; system CAs, then certifi), downloads that tag's asset, checks it (`_bundle`: name,
-  version, required files, no unsafe paths), `install`s it over `config.HERE` (temp file +
-  `os.replace` each, manifest.json last so a cut-short install is redone; deletes only the .py
+  version, required files, no unsafe paths), `install`s it over `config.HERE` (all or nothing: every file
+  staged as `.updating` first, then `os.replace` each with the old bytes kept, rolled back if a
+  rename fails, manifest.json last so a killed install is redone; deletes only the .py
   files the release dropped; `.venv` stays), then runs the new server as a child on the same stdio
   via `$UV run --frozen` (installs new deps; `VIBER_MCP_UPDATED` stops a second check), forwarding
   SIGTERM/SIGINT. Not `os.execv`: on Windows that ends the process and Claude Desktop sees the
@@ -314,7 +318,9 @@ Status:
   the unsaved-number banner, or the title matching the name) — never from the sidebar, the compose
   placeholder or message text, which all belong to whatever chat was open before (that sent
   messages to the wrong person). Without strong proof a chat is accepted after a 4 s settle only
-  if its header differs from the one captured before `open_url`. It also errors "isn't on Viber"
+  if its title (`header_title_key`: the title row only, not the "Active"/"Last seen …" line)
+  differs from the one captured before `open_url`; when that couldn't be read (OCR error,
+  blank), only strong proof counts. It also errors "isn't on Viber"
   for non-users and "cannot add yourself" for the user's own number (My Notes is separate).
 - **Every open-chat writer takes `expect_chat`** (`reply`, `paste_into_open_chat`,
   `reply_to_message`, `send_files`, `send_listing` — passed through to each step):
@@ -473,8 +479,9 @@ Status:
   write into the existing APR LISTING folders); token in `%LOCALAPPDATA%\viber-mcp\google_token_write.json`.
   `drive_sign_in(write=True)` does the one-time browser consent. While the consent screen is in
   "Testing" the refresh token expires after 7 days and the next upload reopens the browser.
-  `upload_listing` reuses an existing `*<name>` folder/doc and numbers photos after the ones
-  already there. Without the client file, `post_new_listing` falls back to returning the plan for
+  `upload_listing` reuses an existing `*<name>` folder/doc, skips photos already there (same
+  md5Checksum, so the prescribed re-run doesn't duplicate them) and numbers new ones after them.
+  Cached Drive/Docs services are rebuilt when their sign-in can't be refreshed (`_still_signed_in`). Without the client file, `post_new_listing` falls back to returning the plan for
   the Drive connector. Tests patch `CLIENT_FILE`/`WRITE_TOKEN_FILE` away (conftest autouse) — a
   test once opened the real consent page and hung.
 - `post_new_listing` (viber_drive.py) validates everything first (separator, photos,

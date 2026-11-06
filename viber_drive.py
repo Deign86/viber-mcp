@@ -17,6 +17,7 @@ internal and is never returned unless explicitly requested for staff eyes.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
@@ -144,12 +145,34 @@ def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
     return _saved_creds(scopes, token_file) or _browser_sign_in(scopes, token_file)
 
 
+def _still_signed_in(service) -> bool:
+    """Can a cached service still be used? Its sign-in is refreshed here once its access token
+    has expired; a refresh that fails (revoked, or the refresh token's 7 days while the consent
+    screen is "Testing") means it can't: the caller builds a new one, signing in again, instead
+    of the service failing every call until the server restarts."""
+    creds = getattr(service, "_viber_creds", None)
+    if creds is None or creds.valid or not getattr(creds, "expired", False):
+        return True
+    from google.auth.transport.requests import Request
+    try:
+        creds.refresh(Request())
+    except Exception:  # noqa: BLE001 — RefreshError, or no network: sign in again / fail there
+        return False
+    return True
+
+
+def _build(api: str, version: str, creds):
+    from googleapiclient.discovery import build
+    service = build(api, version, credentials=creds, cache_discovery=False)
+    service._viber_creds = creds  # for _still_signed_in
+    return service
+
+
 def _drive():
     """The read-only Drive service for the calling thread (downloads run in parallel threads)."""
     service = getattr(_local, "service", None)
-    if service is None:
-        from googleapiclient.discovery import build
-        service = _local.service = build("drive", "v3", credentials=_creds(), cache_discovery=False)
+    if service is None or not _still_signed_in(service):
+        service = _local.service = _build("drive", "v3", _creds())
     return service
 
 
@@ -160,12 +183,10 @@ def _writer():
     """Drive service that can create files: the company Google account via the OAuth client
     (browser sign-in once; the token is kept in WRITE_TOKEN_FILE)."""
     global _writer_service
-    if _writer_service is None:
+    if _writer_service is None or not _still_signed_in(_writer_service):
         if not CLIENT_FILE.exists() and not WRITE_TOKEN_FILE.exists():
             raise DriveError(f"Drive uploads aren't set up: the OAuth client file {CLIENT_FILE} is missing.")
-        from googleapiclient.discovery import build
-        creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False)
-        _writer_service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        _writer_service = _build("drive", "v3", _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False))
     return _writer_service
 
 
@@ -176,10 +197,8 @@ def _docs():
     """Google Docs API as the company account, for in-place edits that keep a doc's formatting
     and link (docs.googleapis.com is enabled in the apg-viber-assistant project)."""
     global _docs_service
-    if _docs_service is None:
-        from googleapiclient.discovery import build
-        creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False)
-        _docs_service = build("docs", "v1", credentials=creds, cache_discovery=False)
+    if _docs_service is None or not _still_signed_in(_docs_service):
+        _docs_service = _build("docs", "v1", _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False))
     return _docs_service
 
 
@@ -680,14 +699,26 @@ def upload_listing(upload: dict) -> dict:
                                  supportsAllDrives=True).execute(num_retries=RETRIES)
     existing = svc.files().list(
         q=f"'{folder['id']}' in parents and mimeType contains 'image/' and trashed = false",
-        fields="files(id)", supportsAllDrives=True,
+        fields="files(id,md5Checksum)", supportsAllDrives=True,
         includeItemsFromAllDrives=True).execute(num_retries=RETRIES).get("files", [])
-    photos = upload_files(folder["id"], [p["path"] for p in upload.get("photos", [])],
-                          start=len(existing) + 1) if upload.get("photos") else []
+    # A re-run (post_new_listing's STOP says to re-run add_listing_to_drive) must not upload a
+    # photo that an earlier run already put there: same bytes, same md5Checksum.
+    there = {f["md5Checksum"] for f in existing if f.get("md5Checksum")}
+    wanted = [p["path"] for p in upload.get("photos", [])]
+    todo = [p for p in wanted if _md5(p) not in there]
+    photos = upload_files(folder["id"], todo, start=len(existing) + 1) if todo else []
     _tree_cache = None
     return {"folder_id": folder["id"], "folder_created": created_folder,
             "doc_id": doc["id"], "doc_created": created_doc, "photos_uploaded": len(photos),
+            "photos_already_there": len(wanted) - len(todo),
             "folder_url": f"https://drive.google.com/drive/folders/{folder['id']}"}
+
+
+def _md5(path: str) -> str | None:
+    try:
+        return hashlib.md5(Path(path).expanduser().read_bytes()).hexdigest()
+    except OSError:
+        return None  # upload_files reports the missing file
 
 
 def update_listing_doc(folder_id: str, text: str) -> dict:
@@ -874,7 +905,7 @@ def _quote_reply_posted(text: str, reply_text: str, tries: int = 8) -> dict:
     for _ in range(tries):
         n = find_posted_message(viber_ui.list_messages()["messages"], text)
         if n is not None:
-            return viber_ui.reply_to_message(n, reply_text)
+            return viber_ui.reply_to_message(n, reply_text, expect_chat=LISTINGS_GC)
         viber_ocr.scroll_and_read("chat", "up", 10)
     raise DriveError("Couldn't find the posted listing on screen to quote-reply to.")
 
@@ -904,16 +935,19 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
     if find_posted_message(viber_ui.list_messages()["messages"], text) is not None:
         raise DriveError("This listing is already the latest post in the GC. Nothing sent.")
     done: dict = {"gc": LISTINGS_GC, "posted": False}
+    # Each post names the GC (expect_chat): the text carries the internal part (owner/agent
+    # numbers), and a new post can bring another chat to the front between two sends.
     try:
-        viber_send.reply(text.strip())
+        viber_send.reply(text.strip(), expect_chat=LISTINGS_GC)
         # reply's own 'verified' gives false negatives on long texts; look for the post itself.
         if find_posted_message(viber_ui.list_messages()["messages"], text) is None:
             raise DriveError("the listing text isn't showing in the GC after sending — check it "
                              "before posting the photos")
         done["text_posted"] = True
         if plan["photos"]:
-            done["photos_verified"] = viber_ui.send_files(plan["photos"]).get("verified")
-        viber_send.reply(GC_SEPARATOR)
+            done["photos_verified"] = viber_ui.send_files(plan["photos"], expect_chat=LISTINGS_GC
+                                                          ).get("verified")
+        viber_send.reply(GC_SEPARATOR, expect_chat=LISTINGS_GC)
         done["posted"] = True
     except Exception as e:
         done["STOP"] = (f"Stopped part-way: {e}. Everything listed above here is done — finish the "

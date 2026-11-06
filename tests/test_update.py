@@ -217,6 +217,36 @@ def test_install_writes_the_manifest_last(installed, monkeypatch):
     assert order[-1] == "manifest.json" and len(order) == 7
 
 
+def test_an_install_cut_short_puts_the_old_version_back(installed, github, monkeypatch):
+    # State-machine hunt 2026-11-06: a rename that failed half-way (a file held open by an
+    # antivirus scan, a full disk) left the folder part 0.1.90, part 0.1.85, and update_and_
+    # restart then returned so server.py imported that mix. Now nothing changes unless it all does.
+    monkeypatch.setattr(viber_update, "_download", _release)
+    real_replace = viber_update.os.replace
+
+    def locked(src, dst):
+        if Path(dst).name == "viber_send.py" and str(src).endswith(".updating"):
+            raise PermissionError("in use by another process")
+        return real_replace(src, dst)
+    monkeypatch.setattr(viber_update.os, "replace", locked)
+    viber_update.update_and_restart()  # returns: the running version goes on
+    assert viber_update.installed_version() == "0.1.85"
+    for rel in ("server.py", "viber_send.py", "backends/windows.py", "viber_dropped.py"):
+        assert (installed / rel).read_text() == "# 0.1.85\n", rel
+    assert not (installed / "guidelines.md").exists()  # not there before the update
+    assert not [p for p in installed.rglob("*") if p.name.endswith((".updating", ".previous"))]
+
+
+def test_a_corrupt_file_in_the_download_keeps_the_running_version(installed, github, monkeypatch):
+    # A member whose bytes don't match its CRC only fails when it's read, in install(): that
+    # raised zipfile.BadZipFile, which _install_latest didn't catch, so the server didn't start.
+    data = _release("0.1.90").replace(b"# send 0.1.90", b"# send 0.1.9X")
+    monkeypatch.setattr(viber_update, "_download", lambda v: data)
+    viber_update.update_and_restart()
+    assert viber_update.installed_version() == "0.1.85"
+    assert (installed / "server.py").read_text() == "# 0.1.85\n"
+
+
 @pytest.mark.parametrize("data, why", [
     (_release("0.1.91"), "isn't viber-mcp 0.1.90"),
     (_release("0.1.90", name="something-else"), "isn't viber-mcp 0.1.90"),
