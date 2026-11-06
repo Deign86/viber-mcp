@@ -30,6 +30,10 @@ _E164_RE = re.compile(r"^\+\d{8,15}$")
 _DIGITS_RE = re.compile(r"^\d{8,15}$")
 
 
+# Only seen with "Start Viber automatically" off: tools otherwise start Viber first (viber_app).
+NOT_RUNNING = "Viber is not running. Start it with start_viber (or launch it and sign in)."
+
+
 class SendError(Exception):
     """Raised when a message cannot be sent (recipient unresolved, Viber not running, etc.)."""
 
@@ -283,7 +287,7 @@ def open_chat(to: str, confirm: bool = True) -> str:
     is not a Viber user).
     """
     if not viber_is_running():
-        raise SendError("Viber is not running. Launch and sign in to Viber first.")
+        raise SendError(NOT_RUNNING)
     number, name = resolve_recipient(to)
     # Remember the header of the chat open NOW: a chat is accepted without strong proof only
     # once the header has changed from this (viber:// sometimes doesn't navigate).
@@ -429,7 +433,7 @@ def paste_into_open_chat(text: str, expect_chat: str = "") -> dict:
     if not text:
         raise SendError("Refusing to draft an empty message.")
     if not viber_is_running():
-        raise SendError("Viber is not running. Launch and sign in to Viber first.")
+        raise SendError(NOT_RUNNING)
     require_open_chat(expect_chat)
 
     saved = backend.clipboard_get()
@@ -454,7 +458,7 @@ def reply(text: str, expect_chat: str = "") -> dict:
     if not text:
         raise SendError("Refusing to send an empty message.")
     if not viber_is_running():
-        raise SendError("Viber is not running. Launch and sign in to Viber first.")
+        raise SendError(NOT_RUNNING)
     info = require_open_chat(expect_chat)
 
     saved = backend.clipboard_get()
@@ -719,7 +723,7 @@ def search_messages(query: str, pages: int = 2) -> dict:
     if not query:
         raise SendError("Search query is empty.")
     if not viber_is_running():
-        raise SendError("Viber is not running. Launch and sign in to Viber first.")
+        raise SendError(NOT_RUNNING)
     type_search_query(query)
 
     # Result-type tabs under the search box, left to right: names, messages, businesses.
@@ -779,7 +783,7 @@ def search_and_open(name: str) -> dict:
     if not name:
         raise SendError("Search query is empty.")
     if not viber_is_running():
-        raise SendError("Viber is not running. Launch and sign in to Viber first.")
+        raise SendError(NOT_RUNNING)
 
     backend.focus()
     if _header_matches(name):  # already open
@@ -816,7 +820,7 @@ def open_my_notes() -> dict:
     Raises SendError if the opened chat doesn't look like My Notes.
     """
     if not viber_is_running():
-        raise SendError("Viber is not running. Launch and sign in to Viber first.")
+        raise SendError(NOT_RUNNING)
     backend.focus()
     matched = _open_my_notes_checked()
     return {"opened": "My Notes", "matched": matched}
@@ -850,7 +854,7 @@ def save_to_my_notes(text: str) -> dict:
     if not text:
         raise SendError("Refusing to save an empty note.")
     if not viber_is_running():
-        raise SendError("Viber is not running. Launch and sign in to Viber first.")
+        raise SendError(NOT_RUNNING)
 
     saved = backend.clipboard_get()
     verified = None

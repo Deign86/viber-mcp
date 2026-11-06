@@ -12,11 +12,13 @@ if __name__ == "__main__":
     # before anything else loads (it doesn't return then).
     viber_update.update_and_restart()
 
+import functools  # noqa: E402
 import threading  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 from mcp.server.fastmcp import FastMCP, Image  # noqa: E402
 
+import viber_app  # noqa: E402
 import viber_drive  # noqa: E402
 import viber_gc  # noqa: E402
 import viber_ocr  # noqa: E402
@@ -32,7 +34,18 @@ GUIDELINES = Path(__file__).with_name("guidelines.md").read_text(encoding="utf-8
 mcp = FastMCP("viber", instructions=GUIDELINES + viber_update.notice())
 
 
-@mcp.tool()
+def viber_tool(fn):
+    """@mcp.tool() for a tool that drives Viber: Viber is started first when it isn't running
+    (it crashed, or was quit) and restarted when it has stopped responding
+    (viber_app.ensure_running; the "Start Viber automatically" setting turns that off)."""
+    @functools.wraps(fn)
+    def run(*args, **kwargs):
+        viber_app.ensure_running()
+        return fn(*args, **kwargs)
+    return mcp.tool()(run)
+
+
+@viber_tool
 def send_message(to: str, text: str, dry_run: bool = False) -> dict:
     """Send a Viber message.
 
@@ -49,7 +62,7 @@ def send_message(to: str, text: str, dry_run: bool = False) -> dict:
     return viber_send.send_message(to=to, text=text, dry_run=dry_run)
 
 
-@mcp.tool()
+@viber_tool
 def open_chat(to: str) -> dict:
     """Open (foreground) a Viber conversation without sending anything.
 
@@ -60,7 +73,7 @@ def open_chat(to: str) -> dict:
     return {"opened": number}
 
 
-@mcp.tool()
+@viber_tool
 def open_and_read(to: str) -> dict:
     """Open a conversation and return its visible text in one step ("read my chat with X").
 
@@ -73,7 +86,7 @@ def open_and_read(to: str) -> dict:
     return result
 
 
-@mcp.tool()
+@viber_tool
 def reply(text: str, expect_chat: str = "") -> dict:
     """Send `text` into the CURRENTLY OPEN chat (no navigation).
 
@@ -89,7 +102,7 @@ def reply(text: str, expect_chat: str = "") -> dict:
     return viber_send.reply(text, expect_chat=expect_chat)
 
 
-@mcp.tool()
+@viber_tool
 def current_chat() -> dict:
     """Which chat is open right now, from the chat pane's header only: title, the line under it
     (last seen / number / "N participants"), is_group, and the number if shown. Cheap — use it
@@ -98,7 +111,7 @@ def current_chat() -> dict:
     return viber_send.current_chat()
 
 
-@mcp.tool()
+@viber_tool
 def search_and_open(name: str) -> dict:
     """Search Viber for `name` and open the best-matching contact/chat; return its visible text.
 
@@ -114,7 +127,7 @@ def search_and_open(name: str) -> dict:
     return viber_send.search_and_open(name)
 
 
-@mcp.tool()
+@viber_tool
 def search_messages(query: str, pages: int = 2) -> dict:
     """Search the TEXT of messages across all chats (e.g. "LOI", "letter of intent", a street).
 
@@ -130,7 +143,7 @@ def search_messages(query: str, pages: int = 2) -> dict:
     return viber_send.search_messages(query, pages)
 
 
-@mcp.tool()
+@viber_tool
 def list_chats(unread_only: bool = False) -> dict:
     """List the chats in the sidebar (OCR): raw lines plus `chats` rows with name, time, preview,
     unread badge count and last_from ("me"/"them" — who sent the last message, best-effort from
@@ -145,7 +158,7 @@ def list_chats(unread_only: bool = False) -> dict:
     return viber_ocr.read_chat_list(unread_only)
 
 
-@mcp.tool()
+@viber_tool
 def mark_as_read(name: str) -> dict:
     """Clear a chat's unread badge: right-clicks its sidebar row and picks "Mark as read" (opening
     a chat in the background doesn't clear the badge). The row must be visible in the chat list
@@ -158,7 +171,7 @@ def mark_as_read(name: str) -> dict:
     return viber_ui.mark_as_read(name)
 
 
-@mcp.tool()
+@viber_tool
 def scroll_chat(direction: str = "up", amount: int = 5) -> dict:
     """Scroll the currently open conversation and return its visible text afterwards.
 
@@ -173,7 +186,7 @@ def scroll_chat(direction: str = "up", amount: int = 5) -> dict:
     return viber_ocr.scroll_and_read("chat", direction, amount)
 
 
-@mcp.tool()
+@viber_tool
 def jump_to_latest() -> dict:
     """Jump the open chat to its newest messages (clicks Viber's "↓" button when the chat is
     scrolled up — wheel-scrolling alone can't get back from far up). Use before reading or
@@ -181,7 +194,7 @@ def jump_to_latest() -> dict:
     return viber_ui.jump_to_latest()
 
 
-@mcp.tool()
+@viber_tool
 def scroll_chat_list(direction: str = "down", amount: int = 5) -> dict:
     """Scroll the sidebar chat list and return the chats visible afterwards.
 
@@ -196,7 +209,7 @@ def scroll_chat_list(direction: str = "down", amount: int = 5) -> dict:
     return viber_ocr.scroll_and_read("chats", direction, amount)
 
 
-@mcp.tool()
+@viber_tool
 def put_draft(text: str, expect_chat: str = "") -> dict:
     """Paste `text` into the currently-open Viber chat's compose box WITHOUT sending.
 
@@ -211,7 +224,7 @@ def put_draft(text: str, expect_chat: str = "") -> dict:
     return viber_send.paste_into_open_chat(text, expect_chat=expect_chat)
 
 
-@mcp.tool()
+@viber_tool
 def save_to_my_notes(text: str) -> dict:
     """Save a note to Viber's private "My Notes" self-chat.
 
@@ -225,13 +238,13 @@ def save_to_my_notes(text: str) -> dict:
     return viber_send.save_to_my_notes(text)
 
 
-@mcp.tool()
+@viber_tool
 def open_my_notes() -> dict:
     """Open Viber's private "My Notes" self-chat without saving anything."""
     return viber_send.open_my_notes()
 
 
-@mcp.tool()
+@viber_tool
 def read_open_chat() -> dict:
     """Read the currently-open Viber conversation via screen OCR.
 
@@ -251,7 +264,7 @@ def list_contacts() -> dict:
 # ---------------------------------------------------------------- message-level actions
 
 
-@mcp.tool()
+@viber_tool
 def list_messages() -> dict:
     """List the messages visible in the open chat, read exactly from Viber's UI (not OCR).
 
@@ -261,7 +274,7 @@ def list_messages() -> dict:
     return viber_ui.list_messages()
 
 
-@mcp.tool()
+@viber_tool
 def backread_chat(screens: int = 40, until: str = "") -> dict:
     """Read the open chat's whole history, oldest first, exactly from Viber's UI (not OCR).
 
@@ -276,7 +289,7 @@ def backread_chat(screens: int = 40, until: str = "") -> dict:
     return viber_ui.backread(screens, until)
 
 
-@mcp.tool()
+@viber_tool
 def open_image(n: int = 1) -> list:
     """Open the n-th newest visible image in the open chat full-size and return what it shows.
 
@@ -290,7 +303,7 @@ def open_image(n: int = 1) -> list:
     return [Image(data=png, format="png"), "Image viewer is open — call close_viewer when done."]
 
 
-@mcp.tool()
+@viber_tool
 def send_files(paths: list[str], caption: str = "", dry_run: bool = False, expect_chat: str = "") -> dict:
     """Send local files (photos, PDFs, videos, docs) to the OPEN chat in one batch, with an
     optional caption.
@@ -307,7 +320,7 @@ def send_files(paths: list[str], caption: str = "", dry_run: bool = False, expec
     return viber_ui.send_files(paths, caption=caption, dry_run=dry_run, expect_chat=expect_chat)
 
 
-@mcp.tool()
+@viber_tool
 def reply_to_message(n: int, text: str, send: bool = True, expect_chat: str = "") -> dict:
     """Quote-reply to a specific message (n from list_messages) — the client sees which message
     you're answering. Sends by default; send=False leaves it as a draft. Returns `verified`
@@ -317,7 +330,7 @@ def reply_to_message(n: int, text: str, send: bool = True, expect_chat: str = ""
     return viber_ui.reply_to_message(n, text, send, expect_chat=expect_chat)
 
 
-@mcp.tool()
+@viber_tool
 def rename_group(new_name: str, expect_current: str = "") -> dict:
     """Rename the OPEN group chat (e.g. a client GC after the client accepts a listing:
     JANE-WH-(~, LAS PINAS) → JANE-WH-(240SQM, LAS PINAS)). Goes through the info panel's pencil
@@ -327,7 +340,7 @@ def rename_group(new_name: str, expect_current: str = "") -> dict:
     return viber_ui.rename_group(new_name, expect_current)
 
 
-@mcp.tool()
+@viber_tool
 def groups_in_common(number: str = "") -> dict:
     """The groups the OPEN 1:1 chat's contact already shares with us (info panel → Groups in
     common). `existing_client: true` means the client already has a GC — HARD RULE: never make
@@ -336,20 +349,20 @@ def groups_in_common(number: str = "") -> dict:
     return viber_ui.groups_in_common(number)
 
 
-@mcp.tool()
+@viber_tool
 def edit_message(n: int, text: str) -> dict:
     """Edit one of YOUR sent messages (n from list_messages) to `text` and save it.
     """
     return viber_ui.edit_message(n, text)
 
 
-@mcp.tool()
+@viber_tool
 def like_message(n: int) -> dict:
     """Toggle the heart reaction on message n (from list_messages)."""
     return viber_ui.like_message(n)
 
 
-@mcp.tool()
+@viber_tool
 def message_action(n: int, action: str) -> dict:
     """Right-click message n and pick an item from Viber's message menu, e.g. "Pin", "Forward",
     "Copy message", "Translate", "Set reminder", "Select". Returns the full menu that was offered.
@@ -358,13 +371,13 @@ def message_action(n: int, action: str) -> dict:
     return viber_ui.message_action(n, action)
 
 
-@mcp.tool()
+@viber_tool
 def close_viewer() -> dict:
     """Close the image viewer, or any open menu/dialog in Viber (presses Escape)."""
     return viber_ui.close_viewer()
 
 
-@mcp.tool()
+@viber_tool
 def unsend_message(text: str = "", n: int = 0, for_everyone: bool = True) -> dict:
     """Delete (unsend) ONE of your own messages in the open chat (permanent; other people's
     messages are refused).
@@ -384,7 +397,7 @@ def unsend_message(text: str = "", n: int = 0, for_everyone: bool = True) -> dic
 # ------------------------------------------------------------------- client GCs
 
 
-@mcp.tool()
+@viber_tool
 def process_client_templates(limit: int = 5, preview: bool = False) -> dict:
     """Make client GCs for the templates in the templates chat (APG CLIENTS) that have no
     "DONE-..." reply yet.
@@ -402,7 +415,7 @@ def process_client_templates(limit: int = 5, preview: bool = False) -> dict:
     return viber_gc.process_client_templates(limit, preview=preview)
 
 
-@mcp.tool()
+@viber_tool
 def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = "",
                      dry_run: bool = False) -> dict:
     """Make the client GC for ONE specific template (use process_client_templates for "make the
@@ -473,7 +486,7 @@ def view_listing_photos(folder_id: str, max_photos: int = 6) -> list:
             f"({', '.join(got['names']) or 'none'}); {got['videos']} video(s) not shown."]
 
 
-@mcp.tool()
+@viber_tool
 def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = True,
                  dry_run: bool = False, expect_chat: str = "") -> dict:
     """Send a listing to the OPEN Viber chat: the client-facing details text, the photos together
@@ -487,7 +500,7 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Tr
     return viber_drive.send_listing(folder_id, max_photos, include_videos, dry_run, expect_chat)
 
 
-@mcp.tool()
+@viber_tool
 def post_new_listing(text: str, category: str, deal: str, folder_name: str,
                      photo_paths: list[str], subfolder: str = "", dry_run: bool = False) -> dict:
     """Post a NEW listing to the staff listings GC (APR LISTING ONLY) and add it to Drive.
@@ -516,7 +529,7 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
                                         dry_run)
 
 
-@mcp.tool()
+@viber_tool
 def confirm_listing_in_drive(folder_name: str, photos: int) -> dict:
     """After uploading a posted listing with the Drive connector: check its Drive folder has the
     "*<folder_name>" doc and at least `photos` photos, then quote-reply
@@ -609,7 +622,7 @@ def clear_downloads(everything: bool = False) -> dict:
 # ------------------------------------------------------------- computer-use primitives
 
 
-@mcp.tool()
+@viber_tool
 def screenshot() -> Image:
     """Screenshot of the Viber window (taken in the background, even if Viber is covered).
 
@@ -619,7 +632,7 @@ def screenshot() -> Image:
     return Image(data=viber_ui.screenshot(), format="png")
 
 
-@mcp.tool()
+@viber_tool
 def list_elements(query: str = "") -> str:
     """List Viber's on-screen controls and texts with ids and click points (screenshot pixels).
 
@@ -632,28 +645,28 @@ def list_elements(query: str = "") -> str:
     return viber_ui.list_elements(query or None)
 
 
-@mcp.tool()
+@viber_tool
 def click_element(element_id: int, button: str = "left", double: bool = False) -> dict:
     """Click an element from the latest list_elements (left/right/middle, optional double-click).
     Right-click a message to get its menu (Reply, Edit, Copy, Forward, Pin, Delete, ...)."""
     return viber_ui.click_element(element_id, button=button, double=double)
 
 
-@mcp.tool()
+@viber_tool
 def click(x: int, y: int, button: str = "left", double: bool = False) -> dict:
     """Click at (x, y) in the latest screenshot. button: "left", "right" or "middle".
     Runs in the background — the real mouse cursor doesn't move."""
     return viber_ui.click(x, y, button=button, double=double)
 
 
-@mcp.tool()
+@viber_tool
 def type_text(text: str) -> dict:
     """Type text into the field you last clicked in Viber (search box, message box, edit box).
     Does NOT send — sending is a separate click on the send button or press_key("enter")."""
     return viber_ui.type_text(text)
 
 
-@mcp.tool()
+@viber_tool
 def press_key(key: str, repeat: int = 1) -> dict:
     """Press a key in Viber: escape, enter, backspace, delete, tab, space, up, down, left, right,
     pageup, pagedown, home, end. Ctrl/Alt shortcuts aren't available in the background.
@@ -661,7 +674,7 @@ def press_key(key: str, repeat: int = 1) -> dict:
     return viber_ui.press_key(key, repeat)
 
 
-@mcp.tool()
+@viber_tool
 def scroll(x: int, y: int, direction: str = "down", amount: int = 5) -> dict:
     """Scroll whatever is under (x, y) in the latest screenshot. direction "up"/"down",
     amount = wheel notches (1-50)."""
@@ -676,6 +689,33 @@ def check_setup() -> dict:
     up, and pass `to_fix` on: it says exactly what the user has to do. Opens nothing; it's the
     server's start that asks for permissions and opens Google's sign-in."""
     return viber_setup.status()
+
+
+@mcp.tool()
+def start_viber() -> dict:
+    """Start Viber Desktop if it isn't running, and wait (up to a minute) for its main screen.
+    Tools that use Viber already do this on their own, so call it only when the user asks or
+    to check Viber is back (after an update). Returns started (it had to be launched), ready
+    (its chat list is up) and a note when it isn't (still loading or updating, signed out)."""
+    return viber_app.start()
+
+
+@mcp.tool()
+def quit_viber() -> dict:
+    """Quit Viber Desktop (politely, then by force after 10 s: `forced`). Only when the user
+    asks: Viber is started again by the next tool that needs it (unless that's turned off).
+    Refuses while Viber is being updated."""
+    return viber_app.stop()
+
+
+@mcp.tool()
+def restart_viber() -> dict:
+    """Quit Viber Desktop and start it again, waiting for its main screen. Use it when Viber is
+    frozen or broken (tools keep failing with "didn't answer" or "window not found"), or to
+    apply a Viber update that's waiting for a restart.
+    Never in the middle of a send: whatever chat was open is closed. Viber that has stopped
+    responding is restarted on its own before a tool runs."""
+    return viber_app.restart()
 
 
 @mcp.tool()

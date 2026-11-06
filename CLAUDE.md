@@ -76,6 +76,28 @@ port-ready for Windows/Linux — see "Porting" below):
   `backread_chat` (`viber_ui.backread`: scrolls up 10 notches a screen from the newest, joins the
   UIA screens at their longest overlap (`_merge_older`, keeps repeated "ok"/photo rows), stops
   when the top stops moving twice; returns the whole chat oldest first, then jumps back down).
+- `viber_app.py` — **platform-neutral** start/quit/restart of Viber itself (tools `start_viber`,
+  `quit_viber`, `restart_viber`). server.py registers every tool that drives Viber with
+  `@viber_tool` (= `@mcp.tool()` + `viber_app.ensure_running()` first); Drive-only tools stay
+  `@mcp.tool()` (`extension/build.py` `TOOL_DECORATORS` counts both). `ensure_running`: running
+  and responding → nothing (two cheap checks); not running → `launch_app` and wait for the main
+  screen (`viber_ocr._chat_pane` in `elements()`: splash/sign-in screens have none; raises
+  `ViberAppError` after 60 s so the tool doesn't run against them); not responding for
+  `HUNG_GRACE` → quit + start. `VIBER_MCP_AUTO_START` ("Start Viber automatically") turns that
+  off. Updates: while `updater_running()` names an installer (a process name with "viber" and
+  setup/update/install, `looks_like_updater`), Viber isn't launched (the installer relaunches it)
+  or quit — for at most `UPDATER_GRACE`, since it's a guess by name. Backend side:
+  `launch_app` / `quit_app(timeout)` / `app_responding` / `updater_running`. **Windows:** the exe
+  comes from the `viber://` handler's registry command (kept current by updates), else the last
+  seen running exe, else `%LOCALAPPDATA%\Viber\Viber.exe`; launched `DETACHED_PROCESS |
+  CREATE_BREAKAWAY_FROM_JOB` with DEVNULL stdio (stdout is the MCP stream; Viber must outlive the
+  server's job), via `explorer.exe` if the job forbids breakaway; quit = `WM_CLOSE` (usually only
+  hides it to the tray), then kill this user's Viber.exe and its children; `IsHungAppWindow`
+  for "Not Responding". The foreground is handed back whenever a Viber window takes it for
+  20 s after a launch (`_keep_viber_behind`, both platforms). **macOS:** `open -g -b`,
+  `NSRunningApplication.terminate` (no Automation prompt) then `forceTerminate`/SIGKILL,
+  responding = an AX read not failing with kAXErrorCannotComplete. Not verified on the live app
+  yet (written 2026-11-06).
 - `viber_send.py` — **platform-neutral** write/navigation logic: recipient resolution
   (`contacts.json` alias → E.164), the send pipeline, search-result scoring, panel detection, send
   verification. Holds a module-level `backend = get_backend()` and calls only its semantic methods.

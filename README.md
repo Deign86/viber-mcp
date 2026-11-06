@@ -73,6 +73,16 @@ the extension's settings to update by hand instead: Claude then tells you about 
 the link. `check_for_update` says which version you have. Your own files stay where they are,
 outside the extension.
 
+**Viber is kept running.** When a tool needs Viber and it isn't running (it crashed, or was quit),
+Viber MCP starts it, in the background, and waits for its chat list. When Viber has frozen ("Not
+Responding" for more than about 15 seconds), it's quit and started again. While Viber's installer is
+updating it, nothing is started or quit until the update is done. You can also ask Claude to
+**start, quit or restart Viber** (`start_viber`, `quit_viber`, `restart_viber`). Restarting also
+installs a Viber update that's waiting for one. Turn off **Start Viber automatically** in the
+extension's settings to start Viber yourself. On Windows Viber can't be asked to quit (its ✕ only
+hides it in the tray), so quitting ends it the way Task Manager does. Your chats are safe on
+Viber's servers.
+
 The extension serves Claude Desktop only. For Claude Code, use the setup below.
 
 ## Quick start (Windows)

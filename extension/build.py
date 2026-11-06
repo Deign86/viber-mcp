@@ -61,9 +61,14 @@ def bundle_files(root: Path = ROOT) -> dict[str, Path]:
     return files
 
 
+# server.py's own decorators that register an @mcp.tool() (viber_tool starts Viber first).
+TOOL_DECORATORS = {"viber_tool"}
+
+
 def declared(source: str, kind: str = "tool") -> list[dict]:
-    """[{name, description}] for each function decorated with @mcp.<kind>() in `source`;
-    the description is the docstring's first paragraph on one line."""
+    """[{name, description}] for each function decorated with @mcp.<kind>() (or, for tools, one
+    of TOOL_DECORATORS) in `source`; the description is the docstring's first paragraph on one
+    line."""
     found = []
     for node in ast.parse(source).body:
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -71,7 +76,9 @@ def declared(source: str, kind: str = "tool") -> list[dict]:
         for dec in node.decorator_list:
             target = dec.func if isinstance(dec, ast.Call) else dec
             if (isinstance(target, ast.Attribute) and target.attr == kind
-                    and isinstance(target.value, ast.Name) and target.value.id == "mcp"):
+                    and isinstance(target.value, ast.Name) and target.value.id == "mcp") \
+                    or (kind == "tool" and isinstance(target, ast.Name)
+                        and target.id in TOOL_DECORATORS):
                 doc = ast.get_docstring(node) or ""
                 found.append({"name": node.name, "description": " ".join(doc.split("\n\n")[0].split())})
     return found

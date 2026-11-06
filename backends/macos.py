@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import signal
 import subprocess
 import tempfile
 import threading
@@ -49,16 +50,17 @@ from ApplicationServices import (  # type: ignore
     kAXValueCGPointType,
     kAXValueCGSizeType,
 )
-from AppKit import NSPasteboard, NSPasteboardItem  # type: ignore
+from AppKit import NSPasteboard, NSPasteboardItem, NSRunningApplication  # type: ignore
 from CoreFoundation import CFEqual, CFGetTypeID, CFHash  # type: ignore
 from Foundation import NSURL, NSData, NSMakeRange  # type: ignore
 from PIL import Image
 
 from . import _maclogic as ml
 from . import _winlogic as wl  # pure element helpers (Remix / Viber Plus pop-ups) are shared
-from .base import Backend, OCRError
+from .base import Backend, OCRError, looks_like_updater
 
 _BUNDLE_ID = "com.viber.osx"
+_AX_CANNOT_COMPLETE = -25204  # kAXErrorCannotComplete: the app didn't answer in time
 _ATTRS = ["AXRole", "AXIdentifier", "AXTitle", "AXDescription", "AXValue", "AXPosition",
           "AXSize", "AXChildren"]
 _MAX_NODES = 4000
@@ -104,6 +106,16 @@ def _alive(pid: int) -> bool:
         return False
 
 
+def _wait_gone(pid: int, timeout: float) -> bool:
+    """Wait up to `timeout` s for `pid` to exit; True once it has."""
+    end = time.time() + timeout
+    while _alive(pid):
+        if time.time() >= end:
+            return False
+        time.sleep(0.1)
+    return True
+
+
 def _actions(el) -> list[str]:
     err, names = AXUIElementCopyActionNames(el, None)
     return list(names or []) if err == 0 else []
@@ -139,6 +151,75 @@ class MacBackend(Backend):
     def app_running(self) -> bool:
         return self._viber_pid() is not None
 
+    # --- starting / quitting Viber (viber_app) ----------------------------------------
+    def launch_app(self) -> None:
+        """`open -g -b`: start Viber without bringing it forward. If it comes forward anyway,
+        the user's front app gets the front back while Viber starts up."""
+        prev = self.foreground()
+        done = subprocess.run(["open", "-g", "-b", _BUNDLE_ID], capture_output=True, text=True)
+        if done.returncode != 0:
+            raise OCRError(f"Viber couldn't be started (is Viber Desktop installed? "
+                           f"{done.stderr.strip() or 'no app ' + _BUNDLE_ID})")
+        self._pid = None
+        self._target_el = self._focus_el = None
+        if prev:
+            threading.Thread(target=self._keep_viber_behind, args=(prev, 20.0),
+                             name="viber-fg-guard", daemon=True).start()
+
+    def _keep_viber_behind(self, prev: int, seconds: float) -> None:
+        """For `seconds`, whenever Viber is the front app, give the front back to `prev` (a
+        pid). Other apps the user switches to are left be."""
+        end = time.time() + seconds
+        while time.time() < end:
+            pid = self._pid if self._pid is not None and _alive(self._pid) else self._viber_pid()
+            if pid and pid != prev and self.foreground() == pid \
+                    and self._handoff.acquire(blocking=False):  # never mid-click
+                try:
+                    AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev), "AXFrontmost", True)
+                finally:
+                    self._handoff.release()
+            time.sleep(0.2)
+
+    def quit_app(self, timeout: float) -> bool:
+        """Ask Viber to quit as the Dock's Quit does (NSRunningApplication.terminate: no
+        Automation permission needed); force it once `timeout` seconds pass."""
+        pid = self._viber_pid()
+        if pid is None:
+            return False
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        if app is not None:
+            app.terminate()
+        else:
+            os.kill(pid, signal.SIGTERM)
+        forced = not _wait_gone(pid, timeout)
+        if forced:
+            if app is not None:
+                app.forceTerminate()
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+            _wait_gone(pid, 5.0)
+        self._pid = None
+        self._target_el = self._focus_el = None
+        return forced
+
+    def app_responding(self) -> bool:
+        """False while Viber doesn't answer an accessibility request (macOS gives up after a
+        few seconds with kAXErrorCannotComplete): the spinning beach ball. True when that
+        can't be asked (not running, no Accessibility access)."""
+        pid = self._pid if self._pid is not None and _alive(self._pid) else self._viber_pid()
+        if pid is None or not AXIsProcessTrusted():
+            return True
+        err, _ = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), "AXRole", None)
+        return err != _AX_CANNOT_COMPLETE
+
+    def updater_running(self) -> str | None:
+        """An installer/updater by its executable's path (`ps` gives macOS paths whole)."""
+        out = subprocess.run(["ps", "-Axo", "comm="], capture_output=True, text=True).stdout
+        return next((os.path.basename(line.strip()) for line in out.splitlines()
+                     if looks_like_updater(line.strip())), None)
+
     def access(self, ask: bool = False) -> dict[str, bool]:
         """Accessibility (find, read, type, press) and Screen Recording (see the window). With
         ask=True, macOS's prompt for each missing one, which also lists the app in Settings."""
@@ -168,7 +249,8 @@ class MacBackend(Backend):
                 "started the server: uv, your terminal), then restart Claude.")
         pid = self._pid if self._pid is not None and _alive(self._pid) else self._viber_pid()
         if pid is None:
-            raise OCRError("Viber is not running. Launch and sign in to Viber first.")
+            raise OCRError("Viber is not running. Start it with start_viber (or launch it and "
+                           "sign in).")
         return AXUIElementCreateApplication(pid)
 
     def _onscreen_window(self) -> dict | None:

@@ -10,6 +10,20 @@ def normalize_viber_url(url: str) -> str:
     return url.replace("number=+", "number=%2B")
 
 
+def exe_from_command(command: str) -> str | None:
+    """The program in a registry shell command such as the viber:// handler's
+    `"C:\\Users\\me\\AppData\\Local\\Viber\\Viber.exe" "%1"` (quoted or not); None if it
+    doesn't name an .exe."""
+    command = (command or "").strip()
+    if command.startswith('"'):
+        exe = command[1:].split('"', 1)[0]
+    else:
+        lowered = command.lower()
+        end = lowered.find(".exe")
+        exe = command[:end + 4] if end >= 0 else ""
+    return exe if exe.lower().endswith(".exe") else None
+
+
 def split_line(words, gap_factor: float = 3.0):
     """Split one OCR line into segments wherever there's a big horizontal gap.
 

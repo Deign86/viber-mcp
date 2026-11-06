@@ -25,6 +25,7 @@ import ctypes
 import hashlib
 import os
 import re
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,11 +37,12 @@ import win32con
 import win32gui
 import win32process
 import win32ui
+import winreg
 from PIL import Image
 from uiautomation.uiautomation import _AutomationClient  # the raw IUIAutomation (for caching)
 
 from . import _winlogic as wl
-from .base import Backend, OCRError
+from .base import Backend, OCRError, looks_like_updater
 
 _VIBER_EXE = "viber.exe"
 _PW_RENDERFULLCONTENT = 2
@@ -114,7 +116,7 @@ def _on_uia(fn, *args):
         stuck, _uia_pool = _uia_pool, _new_uia_pool()
         stuck.shutdown(wait=False, cancel_futures=True)
         raise OCRError("Viber's UI Automation didn't answer within 30 s (is Viber frozen?). "
-                       "Try again.") from None
+                       "Try again; if it keeps happening, restart_viber.") from None
 
 
 def _is_main_window(hwnd: int) -> bool:
@@ -282,6 +284,7 @@ class WindowsBackend(Backend):
     def __init__(self) -> None:
         self._pids: set[int] = set()
         self._pids_at = 0.0
+        self._exe: str | None = None      # Viber.exe as last seen running (to start it again)
         self._staged: str | None = None   # text "on the clipboard" (never the real clipboard)
         self._target = _is_compose        # element that type/paste/delete act on
         self._target_node: _Node | None = None  # that element, once located (value reads)
@@ -294,11 +297,121 @@ class WindowsBackend(Backend):
                 if (p.info["name"] or "").lower() == _VIBER_EXE
             }
             self._pids_at = time.time()
+            if self._pids and self._exe is None:
+                try:
+                    self._exe = psutil.Process(min(self._pids)).exe()
+                except psutil.Error:
+                    pass
         return self._pids
 
     def app_running(self) -> bool:
         self._pids_at = 0.0
         return bool(self._viber_pids())
+
+    # --- starting / quitting Viber (viber_app) ----------------------------------------
+    def _viber_exe(self) -> str:
+        """Viber.exe: the program of the viber:// link handler (Viber's installer keeps it
+        current through updates), else where the running Viber was seen, else the default
+        per-user install."""
+        candidates = []
+        for root, key in ((winreg.HKEY_CURRENT_USER, r"Software\Classes\viber\shell\open\command"),
+                          (winreg.HKEY_CLASSES_ROOT, r"viber\shell\open\command")):
+            try:
+                with winreg.OpenKey(root, key) as handle:
+                    candidates.append(wl.exe_from_command(winreg.QueryValueEx(handle, "")[0]))
+            except OSError:
+                pass
+        candidates += [self._exe,
+                       os.path.join(os.environ.get("LOCALAPPDATA", ""), "Viber", "Viber.exe")]
+        for exe in candidates:
+            if exe and os.path.isfile(exe):
+                return exe
+        raise OCRError("Viber.exe wasn't found (not in the viber:// link handler nor in "
+                       "%LOCALAPPDATA%\\Viber). Is Viber Desktop installed? Start it by hand once.")
+
+    def launch_app(self) -> None:
+        """Start Viber.exe detached from this server: its own process group, out of any job
+        Claude runs the server in (so Viber outlives the server), none of our handles (stdout
+        is the MCP connection). Where the job forbids breaking away, Explorer starts it as the
+        user's own app. Windows gives a new app the foreground, so it's handed back while
+        Viber comes up."""
+        exe = self._viber_exe()
+        prev = win32gui.GetForegroundWindow()
+        quiet = {"close_fds": True, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+                 "stderr": subprocess.DEVNULL}
+        try:
+            subprocess.Popen([exe], cwd=os.path.dirname(exe), **quiet,
+                             creationflags=subprocess.DETACHED_PROCESS
+                             | subprocess.CREATE_NEW_PROCESS_GROUP
+                             | subprocess.CREATE_BREAKAWAY_FROM_JOB)
+        except OSError:
+            subprocess.Popen(["explorer.exe", exe], **quiet, creationflags=subprocess.CREATE_NO_WINDOW)
+        self._pids_at = 0.0
+        self._target_node = None
+        threading.Thread(target=self._keep_viber_behind, args=(prev, 20.0),
+                         name="viber-fg-guard", daemon=True).start()
+
+    def _keep_viber_behind(self, prev: int, seconds: float) -> None:
+        """For `seconds`, whenever a Viber window takes the foreground (its splash, then its
+        main window), give it back to `prev`. Other windows the user switches to are left be."""
+        end = time.time() + seconds
+        while time.time() < end:
+            fg = win32gui.GetForegroundWindow()
+            if fg and fg != prev and win32process.GetWindowThreadProcessId(fg)[1] in self._viber_pids():
+                _restore_foreground(prev)
+            time.sleep(0.2)
+
+    def _own_viber_processes(self) -> list:
+        """This user's Viber.exe processes (never another signed-in user's)."""
+        me = psutil.Process().username()
+        procs = []
+        for p in psutil.process_iter(["name", "username"]):
+            if (p.info["name"] or "").lower() == _VIBER_EXE and p.info["username"] == me:
+                procs.append(p)
+        return procs
+
+    def quit_app(self, timeout: float) -> bool:
+        """Close Viber's window, then end Viber and its helper processes (QtWebEngine, crash
+        reporter) if it's still running — usually so: its ✕ only hides it in the tray, and
+        Exit is in the tray menu, which nothing can post to. Ending it is like Task Manager's
+        End task: its chats are on Viber's servers and its local database survives it as it
+        does a crash."""
+        procs = self._own_viber_processes()
+        if not procs:
+            return False
+        hwnd = self._find_hwnd()
+        if hwnd:
+            win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+        _, alive = psutil.wait_procs(procs, timeout=min(3.0, timeout))
+        forced = bool(alive)
+        if alive:
+            family = list(alive)
+            for p in alive:
+                try:
+                    family += p.children(recursive=True)
+                except psutil.Error:
+                    pass
+            for p in family:
+                try:
+                    p.kill()
+                except psutil.Error:
+                    pass
+            psutil.wait_procs(family, timeout=timeout)
+        self._pids_at = 0.0
+        self._target_node = None
+        return forced
+
+    def app_responding(self) -> bool:
+        """Windows' own "Not Responding": the main window hasn't taken messages for 5 s."""
+        hwnd = self._find_hwnd()
+        return not (hwnd and ctypes.windll.user32.IsHungAppWindow(hwnd))
+
+    def updater_running(self) -> str | None:
+        for p in psutil.process_iter(["name"]):
+            name = p.info["name"] or ""
+            if looks_like_updater(name):
+                return name
+        return None
 
     def _find_hwnd(self) -> int | None:
         pids = self._viber_pids()
@@ -320,7 +433,7 @@ class WindowsBackend(Backend):
             hwnd = self._find_hwnd()
         if hwnd is None:
             raise OCRError("Viber window not found. Make sure Viber is running and signed in "
-                           "(open it from the tray once if it is hidden).")
+                           "(open it from the tray once if it is hidden; start_viber starts it).")
         return hwnd
 
     def focus(self) -> None:
