@@ -277,7 +277,9 @@ Status:
     front back for 4 s in a thread (like the Windows backend).
   - **Files are pasted, not picked** (`paste_files`): file URLs on the general pasteboard, the
     message box focused through AX, Cmd+V posted to Viber's pid → one preview with all of them,
-    fully in the background; the user's clipboard is restored once the preview shows. The
+    fully in the background; the user's clipboard is restored once the preview shows (unless
+    they copied something meanwhile: `changeCount`). `focus()` never starts Viber (`open -b`
+    would): that's `viber_app`'s, under "Start Viber automatically". The
     "send a file" picker (an `AXSheet`) needed Cmd+Shift+G and Return as real keys, so Viber came
     to the front for every file (a 12-photo listing took over the screen 12 times and timed out).
     Viber's Edit menu has no Paste item, so it's the posted shortcut.

@@ -395,6 +395,10 @@ class MacBackend(Backend):
         Space is left there: reopening it switched the user out of their full-screen app."""
         if self._onscreen_window() is not None or self._offspace_window() is not None:
             return
+        if self._viber_pid() is None:
+            # `open -b` below would start it: that's viber_app's job, under the "Start Viber
+            # automatically" setting and its wait for an update to finish.
+            raise OCRError("Viber is not running. Start it with start_viber.")
         try:
             win = _get(self._app(), "AXMainWindow")
             if win is not None and _get(win, "AXMinimized"):
@@ -1230,10 +1234,12 @@ class MacBackend(Backend):
         board = NSPasteboard.generalPasteboard()
         saved = [{t: item.dataForType_(t) for t in item.types()}
                  for item in board.pasteboardItems() or []]
+        ours = None  # the pasteboard's changeCount once it holds our files
         try:
             board.clearContents()
             if not board.writeObjects_([NSURL.fileURLWithPath_(p) for p in paths]):
                 raise OCRError("Couldn't put the files on the clipboard; nothing was sent.")
+            ours = board.changeCount()
             self._post_key(_KEY_V, Quartz.kCGEventFlagMaskCommand)
             deadline = time.time() + 10
             while not taken():
@@ -1243,14 +1249,17 @@ class MacBackend(Backend):
                     raise OCRError("Viber didn't take the pasted files; nothing was sent.")
                 time.sleep(0.2)
         finally:
-            board.clearContents()
-            items = []
-            for types in saved:
-                item = NSPasteboardItem.alloc().init()
-                for t, data in types.items():
-                    if data is not None:
-                        item.setData_forType_(data, t)
-                items.append(item)
-            if items:
-                board.writeObjects_(items)
+            # Put the user's clipboard back, unless they copied something meanwhile (that's
+            # their clipboard now: restoring the snapshot overwrote it).
+            if ours is None or board.changeCount() == ours:
+                board.clearContents()
+                items = []
+                for types in saved:
+                    item = NSPasteboardItem.alloc().init()
+                    for t, data in types.items():
+                        if data is not None:
+                            item.setData_forType_(data, t)
+                    items.append(item)
+                if items:
+                    board.writeObjects_(items)
         return True

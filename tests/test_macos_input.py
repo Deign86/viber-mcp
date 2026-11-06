@@ -124,3 +124,83 @@ def test_other_keys_still_use_the_front_hand_off(monkeypatch):
     monkeypatch.setattr(b, "_onscreen_window", lambda: None)
     b.press_key("escape")
     assert len(handed) == 1
+
+
+# --- State-machine hunt 2026-11-06 ----------------------------------------------------------
+
+
+class _Item:
+    def __init__(self, data=None):
+        self.data = dict(data or {})
+
+    def types(self):
+        return list(self.data)
+
+    def dataForType_(self, t):
+        return self.data[t]
+
+    def setData_forType_(self, data, t):
+        self.data[t] = data
+
+
+class _Board:
+    def __init__(self, text):
+        self.items, self.count = [_Item({"public.utf8-plain-text": text})], 1
+
+    def pasteboardItems(self):
+        return self.items
+
+    def clearContents(self):
+        self.items, self.count = [], self.count + 1
+
+    def writeObjects_(self, objects):
+        self.items, self.count = list(objects), self.count + 1
+        return True
+
+    def changeCount(self):
+        return self.count
+
+
+def _paste_backend(monkeypatch, board):
+    monkeypatch.setattr(macos, "NSPasteboard", type("PB", (), {"generalPasteboard": staticmethod(lambda: board)}))
+    monkeypatch.setattr(macos, "NSPasteboardItem", type("PI", (), {
+        "alloc": staticmethod(lambda: type("A", (), {"init": lambda self: _Item()})())}))
+    monkeypatch.setattr(macos, "NSURL", type("U", (), {"fileURLWithPath_": staticmethod(lambda p: _Item({"url": p}))}))
+    b = macos.MacBackend.__new__(macos.MacBackend)
+    b._focus_el = None
+    monkeypatch.setattr(b, "click_compose", lambda: None)
+    monkeypatch.setattr(b, "_check_focus", lambda field: None)
+    monkeypatch.setattr(b, "_value", lambda: "")
+    monkeypatch.setattr(b, "_post_key", lambda *a, **k: None)
+    monkeypatch.setattr(macos.time, "sleep", lambda s: None)
+    return b
+
+
+def test_paste_files_gives_the_user_their_clipboard_back(monkeypatch):
+    board = _Board(b"the user's text")
+    assert _paste_backend(monkeypatch, board).paste_files(["/tmp/a.jpg"], lambda: True)
+    assert [i.data for i in board.items] == [{"public.utf8-plain-text": b"the user's text"}]
+
+
+def test_paste_files_keeps_what_the_user_copied_while_viber_took_the_files(monkeypatch):
+    # paste_files put its snapshot back unconditionally, over anything the user copied during
+    # the up-to-10 s wait for Viber to take the files.
+    board = _Board(b"old")
+
+    def taken():
+        board.writeObjects_([_Item({"public.utf8-plain-text": b"copied meanwhile"})])
+        return True
+    assert _paste_backend(monkeypatch, board).paste_files(["/tmp/a.jpg"], taken)
+    assert [i.data for i in board.items] == [{"public.utf8-plain-text": b"copied meanwhile"}]
+
+
+def test_focus_doesnt_start_viber_when_it_isnt_running(monkeypatch):
+    # focus()'s `open -g -b` / `open -b` fallback launched (and activated) a Viber that wasn't
+    # running, around viber_app: past "Start Viber automatically" off and its update wait.
+    b = macos.MacBackend.__new__(macos.MacBackend)
+    monkeypatch.setattr(b, "_onscreen_window", lambda: None)
+    monkeypatch.setattr(b, "_offspace_window", lambda: None)
+    monkeypatch.setattr(b, "_viber_pid", lambda: None)
+    monkeypatch.setattr(macos.subprocess, "run", lambda *a, **k: pytest.fail(f"ran {a[0]}"))
+    with pytest.raises(OCRError, match="not running"):
+        b.focus()

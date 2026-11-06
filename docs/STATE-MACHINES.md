@@ -155,7 +155,8 @@ mtime); a crash never leaves a half file under its final name.
 `open_url` 411, `click_at` 938, `type_into_focus` 1147, `paste_files` 1215, `focus` 392.
 Typing target `_focus_el`: None · the field Viber really focuses · a field Viber no longer
 focuses · gone. **Invariants:** real input only while Viber is in front; the user's app gets the
-front back; characters go only to the field last clicked (I7). Open: M4, M5 (below).
+front back; characters go only to the field last clicked (I7); Viber is started only by
+`viber_app`, and the user's clipboard is theirs (I10).
 
 ## 11. Windows backend: UIA worker, caches, foreground guards
 
@@ -277,21 +278,29 @@ invalid state before the fix.
 - **Fix:** this user's processes only (`_own_viber_processes`).
 - **Test:** `test_another_windows_users_viber_doesnt_count_as_running`.
 
+### I10. The macOS backend overrode the user's own choices (impact 2). Fixed.
+
+- With "Start Viber automatically" off, `focus()`'s `open -g -b` / `open -b` fallback launched
+  and activated a Viber that wasn't running. That bypassed `viber_app`, the setting and the
+  wait for an update to finish.
+- `paste_files` put its clipboard snapshot back unconditionally, over anything the user copied
+  during the up-to-10 s wait.
+- **Fix:** `focus()` raises "not running" instead of launching. The snapshot is restored only
+  while the pasteboard's `changeCount` is still ours.
+- **Tests:** `test_focus_doesnt_start_viber_when_it_isnt_running`,
+  `test_paste_files_keeps_what_the_user_copied_while_viber_took_the_files`,
+  `test_paste_files_gives_the_user_their_clipboard_back`.
+
 ### Confirmed, still open
 
 The traces have been re-read against the code.
 
-- **M4 (macOS, impact 2).** With auto-start off, `focus()`'s `open -g -b` / `open -b` fallback
-  launches and activates Viber anyway (`macos.py:392-409`), bypassing the setting and the
-  updater wait.
-- **M5 (macOS, impact 2).** `paste_files` restores its clipboard snapshot unconditionally, over
-  anything the user copied during the up-to-10 s wait (`macos.py:1225-1249`).
-  - Fix: restore only if `changeCount` is unchanged.
-- **D3 (Drive, impact 2).** The `add_listing_to_drive` clash check matches by `listing_key`,
+- **D3 (Drive, impact 2, needs a decision).** The `add_listing_to_drive` clash check matches by `listing_key`,
   which ignores `*`, "Brgy." and punctuation. Reuse, though, looks for the exact `*<name>`. A
   hand-made "X" in the same parent gets a second folder "*X", and the confirm then reports
   "found 2" every time.
-  - Fix: return the clashing folder from `_check_new_listing` and reuse it.
+  - Fix needs a choice: reuse the hand-made folder under its own name (then `confirm` must
+    look it up by `listing_key`), or rename it to the `*` form.
 - **D5 (Drive, impact 2, needs a decision).** `update_listing_doc` rewrites the whole doc text
   with no precondition (`viber_drive.py:724`). An edit made after `get_listing` read it (a
   staff edit, or `record_availability`'s line) is lost.
