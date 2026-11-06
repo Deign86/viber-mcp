@@ -60,6 +60,9 @@ _SEPARATOR = re.compile(r"^\s*[-_—–=─━]{3,}\s*$")  # a lone "—" (signa
 _ALL = {"supportsAllDrives": True, "includeItemsFromAllDrives": True, "corpora": "allDrives"}
 
 _local = threading.local()  # one Drive service per thread: httplib2 isn't thread-safe
+# Taken by _fetch's reuse of a cached file and by prune_downloads per file: a prune that read a
+# file's age before a send reused it deleted it under that send.
+_CACHE_LOCK = threading.Lock()
 _SIGN_IN = threading.Lock()  # one browser sign-in at a time
 SIGN_IN_TIMEOUT = 300  # seconds the sign-in page waits for the user
 SIGN_IN_ASK_HOURS = 12  # the automatic sign-in at start asks at most this often
@@ -75,8 +78,16 @@ class DriveError(Exception):
 
 
 def _save(creds, token_file: Path) -> None:
+    """Write the sign-in whole or not at all: rewritten in place, a write cut short (or two of
+    the parallel download threads saving a refresh at once) left a token that no longer parses,
+    which reads as "not signed in"."""
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(creds.to_json(), encoding="utf-8")
+    tmp = token_file.with_name(f"{token_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(creds.to_json(), encoding="utf-8")
+        os.replace(tmp, token_file)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _saved_creds(scopes: list[str], token_file: Path):
@@ -107,6 +118,10 @@ def _browser_sign_in(scopes: list[str], token_file: Path):
     """Google's sign-in page in the browser (one at a time: the start-up sign-in and a tool can
     both want one); the sign-in is remembered in `token_file`."""
     if not CLIENT_FILE.exists():
+        if token_file.exists():
+            raise DriveError(
+                f"The Google sign-in saved in {token_file} has expired or was revoked, and renewing "
+                f"it needs the OAuth client file {CLIENT_FILE} (see README → Google Drive).")
         raise DriveError(
             "Google Drive isn't set up on this PC. Ask the admin for the service account key "
             f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>, "
@@ -114,7 +129,10 @@ def _browser_sign_in(scopes: list[str], token_file: Path):
             f"{CLIENT_FILE} (see README → Google Drive)."
         )
     with _SIGN_IN:
-        creds = _saved_creds(scopes, token_file)  # signed in while this one waited
+        # Signed in while this one waited — for a read, the upload sign-in counts too (the
+        # start-up thread asks for that one; a read used to open a second page after it).
+        creds = _saved_creds(scopes, token_file) or (
+            token_file == TOKEN_FILE and _saved_creds(WRITE_SCOPES, WRITE_TOKEN_FILE))
         if creds:
             return creds
         from google_auth_oauthlib.flow import InstalledAppFlow
@@ -301,10 +319,11 @@ def _cached_download(fid: str) -> Path | None:
 def _fetch(fid: str) -> str:
     from googleapiclient.http import MediaIoBaseDownload
 
-    cached = _cached_download(fid)
-    if cached is not None:
-        os.utime(cached)  # in use again: the age-based prune must not take it before it's sent
-        return str(cached)  # no metadata round trip for a photo we already have
+    with _CACHE_LOCK:
+        cached = _cached_download(fid)
+        if cached is not None:
+            os.utime(cached)  # in use again: the age-based prune must not take it before it's sent
+            return str(cached)  # no metadata round trip for a photo we already have
     meta = _drive().files().get(fileId=fid, fields="id,name,size,mimeType",
                                 supportsAllDrives=True).execute(num_retries=RETRIES)
     if meta["mimeType"].startswith("application/vnd.google-apps"):
@@ -323,6 +342,17 @@ def _fetch(fid: str) -> str:
     return str(path)
 
 
+def _media_bytes(fid: str) -> bytes:
+    from googleapiclient.http import MediaIoBaseDownload
+
+    buf = io.BytesIO()
+    dl = MediaIoBaseDownload(buf, _drive().files().get_media(fileId=fid, supportsAllDrives=True))
+    done = False
+    while not done:
+        _, done = dl.next_chunk(num_retries=RETRIES)
+    return buf.getvalue()
+
+
 def download(file_ids: list[str]) -> list[str]:
     """Download Drive files to the local cache in parallel; returns their paths in order (cached
     files are reused). A listing's 20 photos used to be 40 sequential round trips."""
@@ -331,8 +361,11 @@ def download(file_ids: list[str]) -> list[str]:
     if not file_ids:
         return []
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    with ThreadPoolExecutor(max_workers=min(DOWNLOAD_THREADS, len(file_ids))) as pool:
-        paths = list(pool.map(_fetch, file_ids))
+    # Each id once: two threads fetching the same one wrote the same ".part".
+    unique = list(dict.fromkeys(file_ids))
+    with ThreadPoolExecutor(max_workers=min(DOWNLOAD_THREADS, len(unique))) as pool:
+        fetched = dict(zip(unique, pool.map(_fetch, unique)))
+    paths = [fetched[fid] for fid in file_ids]
     # Every download also drops what's gone stale (view_listing_photos / drive_download used to
     # leave photos behind until the next send_listing). The ones just fetched are fresh.
     prune_downloads()
@@ -419,8 +452,9 @@ def _doc_text(f: dict) -> str:
     if f["mimeType"] == DOCX:
         import docx
 
-        path = download([f["id"]])[0]
-        return "\n".join(p.text for p in docx.Document(path).paragraphs)
+        # Straight from Drive, not the photo cache: that's keyed by file id and an edited .docx
+        # keeps its id, so its old text was read on and on.
+        return "\n".join(p.text for p in docx.Document(io.BytesIO(_media_bytes(f["id"]))).paragraphs)
     raise DriveError(f"Unsupported listing document type: {f['mimeType']}")
 
 
@@ -476,14 +510,7 @@ def split_listing(text: str, strict: bool = False) -> tuple[str, str]:
 def get_listing(folder_id: str, include_internal: bool = False) -> dict:
     """The listing in a property folder: client-facing text, and its photos (and videos)."""
     files = _children(folder_id)
-    docs = [f for f in files if f["mimeType"] in (GDOC, DOCX)]
-    if not docs:
-        raise DriveError("No listing document (Google Doc / .docx) in this folder.")
-    if len(docs) > 1:
-        # Listing docs are conventionally prefixed with '*'.
-        starred = [d for d in docs if d["name"].startswith("*")]
-        docs = starred or docs
-    doc = docs[0]
+    doc = _listing_doc(files)
     # Read before the text, so an edit between the two reads fails the update instead of passing it.
     revision = _doc_revision(doc["id"]) if include_internal and doc["mimeType"] == GDOC else None
     public, internal = split_listing(_doc_text(doc))
@@ -501,6 +528,22 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
         result["internal_part"] = "INTERNAL — FOR STAFF ONLY, NEVER SEND:\n" + internal
         result["doc_revision"] = revision  # for update_listing_doc
     return result
+
+
+def _listing_doc(files: list[dict]) -> dict:
+    """The folder's listing doc: its only doc, else its only "*" doc. Never a guess: the first
+    by name could be an internal-notes doc, whose "client part" would then be sent."""
+    docs = [f for f in files if f["mimeType"] in (GDOC, DOCX)]
+    if not docs:
+        raise DriveError("No listing document (Google Doc / .docx) in this folder.")
+    if len(docs) == 1:
+        return docs[0]
+    starred = [d for d in docs if d["name"].startswith("*")]
+    if len(starred) == 1:
+        return starred[0]
+    raise DriveError(f"This folder has {len(docs)} documents ({', '.join(d['name'] for d in docs)}) "
+                     f"and {'more than one' if starred else 'none'} marked '*'. Which one is the "
+                     "listing? Start only its name with '*' in Drive, then try again.")
 
 
 def _doc_revision(doc_id: str) -> str | None:
@@ -630,6 +673,8 @@ def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
         parent = pick_folder([f for f in _children(parent["id"]) if f["mimeType"] == FOLDER],
                              subfolder, "subfolder")
         path += f" / {parent['name']}"
+    global _tree_cache
+    _tree_cache = None  # fresh: a listing another PC added in the last 5 minutes must count
     clash = [p for p in _property_folders()
              if listing_key(p["name"]) == listing_key(folder_name)]
     reuse = None
@@ -699,11 +744,33 @@ def upload_files(folder_id: str, paths: list[str], start: int = 1) -> list[dict]
         ext = path.suffix.lower() or ".jpg"
         mime = _IMAGE_TYPES.get(ext, "application/octet-stream")
         media = MediaFileUpload(str(path), mimetype=mime, resumable=path.stat().st_size > 5_000_000)
-        f = svc.files().create(body={"name": f"AlphaPremier_Photo_{i:02d}{ext}", "parents": [folder_id]},
-                               media_body=media, fields="id,name",
-                               supportsAllDrives=True).execute(num_retries=RETRIES)
-        out.append(f)
+        name = f"AlphaPremier_Photo_{i:02d}{ext}"
+        out.append(_create_once(svc, lambda: _find_child(svc, folder_id, name, mime),
+                                body={"name": name, "parents": [folder_id]}, media_body=media))
     return out
+
+
+def _create_once(svc, find, **create) -> dict:
+    """files().create that never makes a second copy. Drive can commit a create whose answer is
+    lost (a 500, a dropped connection: WinError 10053 is common), and googleapiclient's
+    num_retries re-sent it blind. So no blind retry: after a failure `find()` looks for what
+    Drive made, and only if it isn't there is the create sent again."""
+    from googleapiclient.errors import HttpError
+
+    for attempt in range(RETRIES + 1):
+        try:
+            return svc.files().create(fields="id,name", supportsAllDrives=True, **create).execute()
+        except (HttpError, OSError) as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if isinstance(exc, HttpError) and not (status == 429 or (status or 0) >= 500):
+                raise  # a real refusal (403, 404, …): retrying won't help
+            made = find()
+            if made is not None:
+                return made
+            if attempt == RETRIES:
+                raise
+            time.sleep(2 ** attempt)
+    raise AssertionError("unreachable")
 
 
 def upload_listing(upload: dict) -> dict:
@@ -721,17 +788,22 @@ def upload_listing(upload: dict) -> dict:
         folder = _find_child(svc, upload["parent_folder_id"], name, FOLDER)
     created_folder = folder is None
     if folder is None:
-        folder = svc.files().create(body={"name": name, "mimeType": FOLDER,
-                                          "parents": [upload["parent_folder_id"]]},
-                                    fields="id,name", supportsAllDrives=True).execute(num_retries=RETRIES)
+        parent = upload["parent_folder_id"]
+        folder = _create_once(svc, lambda: _find_child(svc, parent, name, FOLDER),
+                              body={"name": name, "mimeType": FOLDER, "parents": [parent]})
     doc = _find_child(svc, folder["id"], upload["doc_title"], GDOC)
+    if doc is None and upload.get("folder_id"):
+        # The reused folder's own listing doc, however it's named: a second "*" doc beside it
+        # left get_listing two to choose from.
+        starred = [f for f in _children(folder["id"])
+                   if f["mimeType"] in (GDOC, DOCX) and f["name"].startswith("*")]
+        doc = starred[0] if len(starred) == 1 else None
     created_doc = doc is None
     if doc is None:
         media = MediaInMemoryUpload(upload["doc_text"].encode("utf-8"), mimetype="text/plain")
-        doc = svc.files().create(body={"name": upload["doc_title"], "mimeType": GDOC,
-                                       "parents": [folder["id"]]},
-                                 media_body=media, fields="id,name",
-                                 supportsAllDrives=True).execute(num_retries=RETRIES)
+        doc = _create_once(svc, lambda: _find_child(svc, folder["id"], upload["doc_title"], GDOC),
+                           body={"name": upload["doc_title"], "mimeType": GDOC, "parents": [folder["id"]]},
+                           media_body=media)
     existing = svc.files().list(
         q=f"'{folder['id']}' in parents and mimeType contains 'image/' and trashed = false",
         fields="files(id,md5Checksum)", supportsAllDrives=True,
@@ -918,9 +990,11 @@ def move_listing_to_sold(folder_id: str) -> dict:
     if sold is None:
         raise DriveError(f"Can't find the '{SOLD_FOLDER_NAME}' folder in {LISTINGS_ROOT_NAME}.")
     target = sold_target(listing["category"], [f for f in _children(sold["id"]) if f["mimeType"] == FOLDER]) or sold
-    _writer().files().update(fileId=folder_id, addParents=target["id"], removeParents=listing["parent_id"],
-                             fields="id,parents", supportsAllDrives=True).execute(num_retries=RETRIES)
-    _tree_cache = None
+    try:
+        _writer().files().update(fileId=folder_id, addParents=target["id"], removeParents=listing["parent_id"],
+                                 fields="id,parents", supportsAllDrives=True).execute(num_retries=RETRIES)
+    finally:
+        _tree_cache = None  # Drive may have moved it even when the answer was lost
     path = SOLD_FOLDER_NAME + ("" if target is sold else f" / {target['name']}")
     return {"moved": True, "listing": listing["name"], "from": f"{listing['category']} / {listing['deal']}",
             "to": f"{LISTINGS_ROOT_NAME} / {path}",
@@ -1046,6 +1120,9 @@ def confirm_listing_in_drive(folder_name: str, photos: int) -> dict:
         raise DriveError(f"Expected one Drive folder named '{name}', found {len(hits)}. Nothing posted.")
     files = _children(hits[0]["folder_id"])
     docs = [f for f in files if f["mimeType"] in (GDOC, DOCX) and f["name"].strip() == f"*{name}"]
+    if not docs:  # a reused folder keeps its own "*" doc, named after the folder
+        starred = [f for f in files if f["mimeType"] in (GDOC, DOCX) and f["name"].strip().startswith("*")]
+        docs = starred if len(starred) == 1 else []
     if not docs:
         raise DriveError(f"The folder has no listing doc '*{name}' yet. Nothing posted.")
     images = [f for f in files if f["mimeType"].startswith("image/")]
@@ -1089,7 +1166,16 @@ def prune_downloads(cache_dir: Path | None = None, max_age_days: float | None = 
     days = KEEP_DOWNLOADS_DAYS if max_age_days is None else max_age_days
     cutoff = time.time() - days * 86400
     files = [f for f in root.iterdir() if f.is_file()] if root.exists() else []
-    old = [str(f) for f in files if f.stat().st_mtime < cutoff]
-    removed = remove_downloads(old, root)
+    removed = 0
+    for f in files:
+        # The age is read and the file deleted under the lock _fetch reuses files with, so one
+        # a send marks fresh in between is kept.
+        with _CACHE_LOCK:
+            try:
+                if f.stat().st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue  # gone meanwhile (a ".part" renamed into place)
+            removed += remove_downloads([str(f)], root)
     return {"removed": removed, "kept": len(files) - removed, "older_than_days": days,
             "folder": str(root)}

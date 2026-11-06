@@ -670,6 +670,71 @@ def test_add_listing_to_drive_reuses_the_hand_made_folder_of_that_listing(monkey
     assert viber_drive.confirm_listing_in_drive("Quezon City, 860 Apolonio Samson", 1)["folder_id"] == "F0"
 
 
+def test_a_reused_folder_keeps_its_own_listing_doc(monkeypatch, tmp_path):
+    # The reused hand-made folder already had its listing doc ("*…, 860 Brgy. Apolonio Samson"):
+    # a second "*<name>" doc beside it left get_listing two "*" docs to choose from.
+    import viber_drive
+
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"x")
+    own_doc = {"id": "D0", "name": "*Quezon City, 860 Brgy. Apolonio Samson", "mimeType": viber_drive.GDOC}
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: {
+        "root": [{"id": "c", "name": "WAREHOUSE", "mimeType": viber_drive.FOLDER}],
+        "c": [{"id": "d", "name": "For lease", "mimeType": viber_drive.FOLDER}],
+        "F0": [own_doc]}.get(fid, []))
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [
+        {"folder_id": "F0", "name": "Quezon City, 860 Brgy. Apolonio Samson", "category": "WAREHOUSE",
+         "deal": "For lease", "parent_id": "d"}])
+    w = _FakeWriter()
+    monkeypatch.setattr(viber_drive, "_writer", lambda: w)
+    out = viber_drive.add_listing_to_drive("WAREHOUSE FOR LEASE\n-----\nOwner: X", "warehouse", "lease",
+                                           "Quezon City, 860 Apolonio Samson", [str(photo)])
+    assert out["doc_id"] == "D0" and out["doc_created"] is False
+    assert [b["name"] for b in w.created] == ["AlphaPremier_Photo_01.jpg"]
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        own_doc, {"id": "P", "name": "AlphaPremier_Photo_01.jpg", "mimeType": "image/jpeg"}])
+    monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "WAREHOUSE FOR LEASE\n-----\nOwner: X")
+    monkeypatch.setattr(viber_drive, "_open_listings_gc", lambda: None)
+    monkeypatch.setattr(viber_drive, "_quote_reply_posted", lambda text, reply: None)
+    assert viber_drive.confirm_listing_in_drive("Quezon City, 860 Apolonio Samson", 1)["folder_id"] == "F0"
+
+
+def test_a_create_whose_answer_was_lost_isnt_made_twice(monkeypatch, tmp_path):
+    # Drive can commit a create and the connection then drops (WinError 10053 is common here):
+    # googleapiclient's num_retries re-sent the POST blind and made a second photo (or folder,
+    # or doc), which confirm (>= N photos) didn't notice and send_listing sent to clients.
+    import viber_drive
+
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"x")
+
+    class Committed:
+        def __init__(self, writer, body):
+            self.writer, self.body = writer, body
+
+        def execute(self, **kw):
+            f = {"id": f"new{len(self.writer.created) + 1}", "name": self.body["name"]}
+            self.writer.created.append(self.body)
+            self.writer.existing[(self.body["parents"][0], self.body["name"], "image/jpeg")] = f["id"]
+            if not self.writer.dropped:
+                self.writer.dropped = True
+                raise ConnectionAbortedError(10053, "An established connection was aborted")
+            return f
+
+    class LostAnswer(_FakeWriter):
+        dropped = False
+
+        def create(self, body=None, **kw):
+            return Committed(self, body)
+    w = LostAnswer()
+    monkeypatch.setattr(viber_drive, "_writer", lambda: w)
+    monkeypatch.setattr(viber_drive.time, "sleep", lambda s: None)
+    out = viber_drive.upload_files("F1", [str(photo)])
+    assert [b["name"] for b in w.created] == ["AlphaPremier_Photo_01.jpg"]
+    assert [f["name"] for f in out] == ["x"]  # what _find_child found: the one Drive made
+
+
 def _plan(*_):
     return {"parent_id": "d", "path": "APR LISTING / WAREHOUSE / FOR LEASE/RENT",
             "folder_name": "Quezon City, 860 Apolonio Samson", "photos": ["C:/p/a.JPG", "C:/p/b.png"]}

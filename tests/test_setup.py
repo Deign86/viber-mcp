@@ -176,3 +176,46 @@ def test_mac_asks_once_for_each_missing_permission(monkeypatch):
     mac.access(ask=True)
     mac.access(ask=True)
     assert asked == ["ax", "screen"]  # macOS shows each prompt once per run
+
+
+# --- State-machine hunt 2026-11-06 ----------------------------------------------------------
+
+
+def test_a_read_waiting_on_the_start_up_upload_sign_in_uses_it(google, monkeypatch):
+    # D7: the start-up thread holds the sign-in lock for the upload account's page; a read tool
+    # (no service-account key) waited behind it, then re-checked only the read token and opened a
+    # second, read-only sign-in page — although the upload sign-in covers reads.
+    signed_in = FakeCreds()
+    monkeypatch.setattr(viber_drive, "_saved_creds", lambda scopes, token_file:
+                        signed_in if token_file == viber_drive.WRITE_TOKEN_FILE else None)
+    assert viber_drive._browser_sign_in(viber_drive.SCOPES, viber_drive.TOKEN_FILE) is signed_in
+    assert google.opened == []
+
+
+def test_a_token_save_cut_short_keeps_the_sign_in_there_was(monkeypatch, tmp_path):
+    # D8: the token was rewritten in place (truncate, then write), by up to six download threads
+    # at once after a refresh: a write cut short or two interleaved left a file that no longer
+    # parses, which reads as "not signed in" and asks for the browser sign-in again.
+    token = tmp_path / "google_token.json"
+    token.write_text('{"token": "old"}')
+    real = Path.write_text
+
+    def cut_short(self, data, *args, **kwargs):
+        real(self, data[: len(data) // 2], *args, **kwargs)
+        raise OSError("disk full")
+    monkeypatch.setattr(Path, "write_text", cut_short)
+    with pytest.raises(OSError):
+        viber_drive._save(FakeCreds(), token)
+    monkeypatch.undo()
+    assert token.read_text() == '{"token": "old"}'
+    assert [p.name for p in tmp_path.iterdir()] == ["google_token.json"]
+
+
+def test_an_expired_sign_in_without_the_client_file_says_so(monkeypatch, tmp_path):
+    # It said "Google Drive isn't set up … ask for the service account key" even with the key
+    # there: what's missing is a way to renew the sign-in that expired.
+    token = tmp_path / "google_token_write.json"
+    token.write_text("{}")
+    monkeypatch.setattr(viber_drive, "CLIENT_FILE", tmp_path / "no_client.json")
+    with pytest.raises(viber_drive.DriveError, match="has expired or was revoked"):
+        viber_drive._browser_sign_in(viber_drive.WRITE_SCOPES, token)

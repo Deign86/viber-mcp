@@ -369,3 +369,135 @@ def test_a_dead_sign_in_is_asked_again_instead_of_failing_every_call(monkeypatch
     signed_in[-1].expire(dead=True)        # days later: the refresh token is gone
     again = getattr(viber_drive, get)()
     assert again is not first and len(signed_in) == 2 and again.creds is signed_in[-1]
+
+
+# --- State-machine hunt 2026-11-06: the photo cache, the folder tree, the listing doc ---------
+
+
+def test_the_same_file_twice_in_one_download_is_fetched_once(monkeypatch, tmp_path):
+    # Two threads fetched the same id at once and wrote the same ".part": one rename failed, or
+    # a file of mixed writes was renamed into place as "whole".
+    monkeypatch.setattr(viber_drive, "CACHE_DIR", tmp_path)
+    fetched = []
+    monkeypatch.setattr(viber_drive, "_fetch", lambda fid: fetched.append(fid) or f"/cache/{fid}")
+    monkeypatch.setattr(viber_drive, "prune_downloads", lambda: {})
+    assert viber_drive.download(["a", "b", "a"]) == ["/cache/a", "/cache/b", "/cache/a"]
+    assert sorted(fetched) == ["a", "b"]
+
+
+def test_prune_waits_for_a_reuse_in_progress_and_keeps_the_file(tmp_path):
+    # The start-up prune read a photo's age, a send reused it (and marked it fresh), and the
+    # prune then deleted it anyway: the send went on with a file that was gone.
+    import os
+    import threading
+    import time
+
+    photo = tmp_path / "fid1_a.jpg"
+    photo.write_bytes(b"x")
+    old = time.time() - 10 * 86400
+    os.utime(photo, (old, old))
+    with viber_drive._CACHE_LOCK:  # _fetch is reusing it right now
+        prune = threading.Thread(target=viber_drive.prune_downloads, args=(tmp_path, 3))
+        prune.start()
+        prune.join(0.3)
+        assert photo.exists()
+        os.utime(photo)
+    prune.join(5)
+    assert photo.exists() and not prune.is_alive()
+
+
+def test_prune_skips_a_file_that_goes_while_it_looks(monkeypatch, tmp_path):
+    # A ".part" renamed between the listing and the age check made the prune raise.
+    (tmp_path / "x.jpg.part").write_bytes(b"x")
+    real = Path.stat
+
+    def stat(self, *args, **kwargs):
+        if self.name == "x.jpg.part":
+            raise FileNotFoundError(str(self))
+        return real(self, *args, **kwargs)
+    monkeypatch.setattr(Path, "stat", stat)
+    assert viber_drive.prune_downloads(tmp_path, 3)["removed"] == 0
+
+
+def test_an_edited_docx_listing_is_read_fresh_not_from_the_photo_cache(monkeypatch, tmp_path):
+    # A .docx listing went through the photo cache, which is keyed by file id and refreshed on
+    # every reuse: edited in Drive (same id), its old text was read on and on.
+    import io
+
+    docx = pytest.importorskip("docx")
+
+    def make(text):
+        d = docx.Document()
+        for line in text.split("\n"):
+            d.add_paragraph(line)
+        buf = io.BytesIO()
+        d.save(buf)
+        return buf.getvalue()
+    monkeypatch.setattr(viber_drive, "CACHE_DIR", tmp_path)
+    (tmp_path / "d1_listing.docx").write_bytes(make("PRICE: 100\n-----\nOwner: X"))  # read last week
+    monkeypatch.setattr(viber_drive, "_media_bytes", lambda fid: make("PRICE: 120\n-----\nOwner: X"),
+                        raising=False)
+    text = viber_drive._doc_text({"id": "d1", "name": "listing.docx", "mimeType": viber_drive.DOCX})
+    assert "PRICE: 120" in text
+
+
+def _tree(monkeypatch):
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: {
+        "root": [{"id": "c", "name": "WAREHOUSE", "mimeType": viber_drive.FOLDER},
+                 {"id": "s", "name": "SOLD", "mimeType": viber_drive.FOLDER}],
+        "c": [{"id": "d", "name": "For lease", "mimeType": viber_drive.FOLDER}]}.get(fid, []))
+
+
+def test_the_duplicate_check_reads_the_folder_tree_afresh(monkeypatch):
+    # The tree is cached 5 minutes: a listing another PC added in that time passed the check and
+    # was posted twice.
+    import time
+
+    _tree(monkeypatch)
+    monkeypatch.setattr(viber_drive, "_tree_cache", (time.time(), []))
+    seen = []
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: seen.append(viber_drive._tree_cache) or [])
+    viber_drive._check_new_listing("WAREHOUSE FOR LEASE\n-----\nOwner: X", "warehouse", "lease", "Pasig, 1 Ugong", [])
+    assert seen == [None]
+
+
+def test_a_move_that_fails_forgets_the_folder_tree(monkeypatch):
+    # Drive can commit a move whose answer is lost; the cached tree still had the folder under
+    # FOR LEASE for 5 minutes.
+    import time
+
+    _tree(monkeypatch)
+    listing = {"folder_id": "F", "name": "Pasig, 1 Ugong", "category": "WAREHOUSE", "deal": "For lease",
+               "parent_id": "d"}
+    monkeypatch.setattr(viber_drive, "_tree_cache", (time.time(), [listing]))
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [listing])  # (fake_tree is autouse)
+
+    class Dropped:
+        def files(self):
+            return self
+
+        def update(self, **kw):
+            return self
+
+        def execute(self, **kw):
+            raise ConnectionAbortedError(10053, "dropped")
+    monkeypatch.setattr(viber_drive, "_writer", lambda: Dropped())
+    with pytest.raises(ConnectionAbortedError):
+        viber_drive.move_listing_to_sold("F")
+    assert viber_drive._tree_cache is None
+
+
+@pytest.mark.parametrize("names", [["Owner notes", "Listing"], ["*Listing", "*Listing (old)"]])
+def test_get_listing_refuses_to_guess_which_doc_is_the_listing(monkeypatch, names):
+    # With several docs and not exactly one marked "*", it took the first by name: an
+    # internal-notes doc sorting first would have been split and its "client part" sent.
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": n, "name": n, "mimeType": viber_drive.GDOC} for n in names])
+    monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "TITLE\n-----\nOwner: X")
+    with pytest.raises(viber_drive.DriveError, match="Which one is the listing"):
+        viber_drive.get_listing("f1")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "a", "name": "*Listing", "mimeType": viber_drive.GDOC},
+        {"id": "b", "name": "Owner notes", "mimeType": viber_drive.GDOC}])
+    assert viber_drive.get_listing("f1")["doc"] == "*Listing"
