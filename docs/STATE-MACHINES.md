@@ -126,7 +126,7 @@ version; `DATA_DIR/update_check.json` caches the check for 1 h. In memory: modul
 `viber_app.py`: `ensure_running` 184, `_bring_up` 75, `_quit` 106, `start` 157, `restart` 175.
 States: NotRunning · Launching · Up (main screen) · NotUp (splash/sign-in/update) · Hung ·
 Updating (installer running, ≤ `UPDATER_GRACE`). `_LOCK` serialises start/quit with the
-before-tool check. No invalid reachable state found in the domain layer; the platform side has W2.
+before-tool check. No invalid reachable state found in the domain layer; the platform side had I9.
 
 ## 8. Google sign-in and service caches
 
@@ -155,14 +155,14 @@ mtime); a crash never leaves a half file under its final name.
 `open_url` 411, `click_at` 938, `type_into_focus` 1147, `paste_files` 1215, `focus` 392.
 Typing target `_focus_el`: None · the field Viber really focuses · a field Viber no longer
 focuses · gone. **Invariants:** real input only while Viber is in front; the user's app gets the
-front back; characters go only to the field last clicked. Open: M1, M4, M5 (below).
+front back; characters go only to the field last clicked (I7). Open: M4, M5 (below).
 
 ## 11. Windows backend: UIA worker, caches, foreground guards
 
 `backends/windows.py`: `_on_uia` 109 (one worker thread; abandoned after 30 s),
 `_uia_write_keeping_focus` 249, `_value` 565 (`_target_node` cache), `type_into_focus` 771
 (`_last_click` screen point), `_viber_pids` 293. **Invariants:** a cached node is the field
-it was taken from; a write never touches another app; nothing blocks forever. Open: W1-W4.
+it was taken from; a write never touches another app; nothing blocks forever (I7-I9).
 
 ---
 
@@ -243,32 +243,44 @@ invalid state before the fix.
   refresh fails.
 - **Test:** `test_a_dead_sign_in_is_asked_again_instead_of_failing_every_call`.
 
+### I7. Typing went to a field other than the one last clicked (impact 1). Fixed.
+
+- **Windows:** `type_into_focus` with emoji or a newline wrote through
+  `ControlFromPoint(last click)`. That point is on the desktop, so with Viber covered (the
+  usual case) `SetValue(Value + text)` rewrote a field in the user's own window.
+  `click_compose`/`click_search` didn't update the point, so a stale one could pick another field.
+- **macOS:** a real click on a field the hit test misses (the search box while a search is
+  open) left `_focus_el` on the field clicked before. `type_into_focus` re-focused that field
+  and typed the query into the open chat's message box, where an Enter sends it.
+- **Fix:** Windows takes the field under the click from Viber's own UIA tree, and `_post_click`
+  records its point too. macOS adopts the text field that has Viber's focus after a real click
+  (a mention row or picker circle leaves the focus where it was, so that case is unchanged).
+- **Tests:** `test_emoji_typing_writes_into_vibers_field_not_whatever_window_covers_it`
+  (`tests/test_windows_backend.py`), `test_a_real_click_on_another_field_moves_typing_there`
+  (`tests/test_macos_input.py`). They run on the Windows and macOS CI jobs.
+
+### I8. The Windows UIA worker could hang the server or write stale state (impact 2). Fixed.
+
+- `_uia_write_keeping_focus` waited for its write with no deadline. A frozen Viber kept the
+  tool, and so the whole server, stuck, and snapped the foreground back every 20 ms.
+- The worker itself stored `self._target_node`, so a worker abandoned after 30 s could finish
+  later and replace the field a newer call had located.
+- **Fix:** the same 30 s deadline and abandonment as `_on_uia` (`_abandon_uia_thread`), and
+  the node is stored on the caller's side.
+- **Tests:** `test_a_uia_write_viber_never_answers_gives_up_after_30_s`,
+  `test_an_abandoned_uia_read_never_replaces_the_field_a_later_call_located`.
+
+### I9. Another Windows user's Viber counted as running (impact 2). Fixed.
+
+- `_viber_pids` counted every user's Viber.exe, so `ensure_running`/`start_viber` waited for a
+  window this desktop can't see, and `restart_viber` failed "still running".
+- **Fix:** this user's processes only (`_own_viber_processes`).
+- **Test:** `test_another_windows_users_viber_doesnt_count_as_running`.
+
 ### Confirmed, still open
 
-The traces have been re-read against the code. A test can only reach most of these on Windows
-or macOS CI.
+The traces have been re-read against the code.
 
-- **W1 (Windows, impact 1).** `type_into_focus` with emoji or a newline does
-  `ControlFromPoint(last click) → SetValue(Value + text)` on whatever is at that screen point
-  (`windows.py:784-788`). The backend runs with Viber covered, so the text is written into the
-  user's own window.
-  - `_last_click` isn't refreshed by `click_compose`/`click_search`.
-  - Fix: write only to an element of Viber's process, and drop `_last_click` with `_target_node`.
-- **M1 (macOS, impact 1).** A real click on a field the hit test misses (search already open,
-  `macos.py:903-905`) leaves `_focus_el` on the field clicked before. `type_into_focus` then
-  re-focuses that field and types there (`macos.py:953-958, 1151-1156`); an Enter can send it.
-  - Fix: after the real click, adopt Viber's focused text field.
-- **W3 (Windows, impact 2).** `_uia_write_keeping_focus` waits for the write with no deadline
-  (`windows.py:249-263`). A hung Viber freezes the server (tools run on the event loop) and
-  snaps the foreground back every 20 ms.
-  - Fix: `_on_uia`'s 30 s deadline and abandonment.
-- **W4 (Windows, impact 2).** The UIA worker writes `self._target_node` (`windows.py:579-580`).
-  A worker abandoned after 30 s can finish later and replace the node a newer call located.
-  - Fix: assign on the caller's thread.
-- **W2 (Windows, impact 2).** `_viber_pids` counts every user's Viber.exe (`windows.py:295-298`).
-  Another signed-in Windows user's Viber makes `app_running` true, so `start_viber` waits 60 s
-  and `restart_viber` fails "still running".
-  - Fix: this user's processes only, as in `_own_viber_processes`.
 - **M4 (macOS, impact 2).** With auto-start off, `focus()`'s `open -g -b` / `open -b` fallback
   launches and activates Viber anyway (`macos.py:392-409`), bypassing the setting and the
   updater wait.

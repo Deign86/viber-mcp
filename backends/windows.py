@@ -106,17 +106,24 @@ def _new_uia_pool() -> ThreadPoolExecutor:
 _uia_pool = _new_uia_pool()
 
 
-def _on_uia(fn, *args):
+_UIA_TIMEOUT = 30.0
+
+
+def _abandon_uia_thread() -> OCRError:
+    """The UIA thread is stuck inside a COM call (Viber isn't answering). Every later call would
+    queue behind it for good, so abandon that thread and start a fresh one."""
     global _uia_pool
+    stuck, _uia_pool = _uia_pool, _new_uia_pool()
+    stuck.shutdown(wait=False, cancel_futures=True)
+    return OCRError("Viber's UI Automation didn't answer within 30 s (is Viber frozen?). "
+                    "Try again; if it keeps happening, restart_viber.")
+
+
+def _on_uia(fn, *args):
     try:
-        return _uia_pool.submit(fn, *args).result(timeout=30)
+        return _uia_pool.submit(fn, *args).result(timeout=_UIA_TIMEOUT)
     except concurrent.futures.TimeoutError:
-        # The UIA thread is stuck inside a COM call (Viber isn't answering). Every later call
-        # would queue behind it for good, so abandon that thread and start a fresh one.
-        stuck, _uia_pool = _uia_pool, _new_uia_pool()
-        stuck.shutdown(wait=False, cancel_futures=True)
-        raise OCRError("Viber's UI Automation didn't answer within 30 s (is Viber frozen?). "
-                       "Try again; if it keeps happening, restart_viber.") from None
+        raise _abandon_uia_thread() from None
 
 
 def _is_main_window(hwnd: int) -> bool:
@@ -253,6 +260,10 @@ def _uia_write_keeping_focus(fn) -> None:
     prev = win32gui.GetForegroundWindow()
     job = _uia_pool.submit(fn)
     settle_until = None
+    # The same 30 s as _on_uia: a write Viber never answers used to keep this loop (and, since
+    # tools run on the server's event loop, the whole server) going for good, snapping the
+    # foreground back every 20 ms.
+    deadline = time.time() + _UIA_TIMEOUT
     while True:
         if win32gui.GetForegroundWindow() != prev:
             _restore_foreground(prev)
@@ -260,6 +271,8 @@ def _uia_write_keeping_focus(fn) -> None:
             settle_until = settle_until or time.time() + 0.6  # late activation after the write
             if time.time() >= settle_until:
                 break
+        elif time.time() >= deadline:
+            raise _abandon_uia_thread()
         time.sleep(0.02)
     job.result(timeout=0)  # re-raise errors from the write
 
@@ -292,10 +305,9 @@ class WindowsBackend(Backend):
     # --- app / window ----------------------------------------------------------------
     def _viber_pids(self) -> set[int]:
         if time.time() - self._pids_at > 3.0:
-            self._pids = {
-                p.pid for p in psutil.process_iter(["name"])
-                if (p.info["name"] or "").lower() == _VIBER_EXE
-            }
+            # This user's only: another signed-in Windows user's Viber made app_running true,
+            # so start_viber waited for a window this desktop can't see and restart_viber failed.
+            self._pids = {p.pid for p in self._own_viber_processes()}
             self._pids_at = time.time()
             if self._pids and self._exe is None:
                 try:
@@ -566,21 +578,23 @@ class WindowsBackend(Backend):
         """The target field's text. Reads the element located by the last click_compose /
         click_search (~1 ms); re-finds it when it's gone (Qt rebuilt the page) or unknown."""
         hwnd = self._hwnd()
+        cached, target = self._target_node, self._target
 
         def run():
-            node = self._target_node
-            if node is not None:
+            if cached is not None:
                 try:
-                    pattern = node.value_pattern()
+                    pattern = cached.value_pattern()
                     if pattern is not None:
-                        return pattern.Value
+                        return cached, pattern.Value
                 except Exception:  # noqa: BLE001 — element gone: fall through to a re-find
                     pass
-            node = _find_desc(hwnd, self._target)
-            self._target_node = node
+            node = _find_desc(hwnd, target)
             pattern = node.value_pattern() if node is not None else None
-            return pattern.Value if pattern is not None else ""
-        return _on_uia(run)
+            return node, pattern.Value if pattern is not None else ""
+        # Stored here, not on the UIA thread: a thread abandoned after 30 s could otherwise
+        # finish later and replace the field a newer call located.
+        self._target_node, value = _on_uia(run)
+        return value
 
     def _set_value(self, text: str, what: str = "text box") -> None:
         """UIA SetValue on the target field (makes Qt activate Viber — foreground is guarded)."""
@@ -597,6 +611,7 @@ class WindowsBackend(Backend):
     # --- posted input: goes to Viber's window queue, never to the cursor/keyboard ------
     def _post_click(self, x: float, y: float) -> None:
         hwnd = self._hwnd()
+        self._last_click = (x, y)  # type_into_focus's field: the one clicked last, however
         cx, cy = win32gui.ScreenToClient(hwnd, (int(x), int(y)))
         lp = win32api.MAKELONG(cx & 0xFFFF, cy & 0xFFFF)
         win32gui.PostMessage(hwnd, win32con.WM_MOUSEMOVE, 0, lp)
@@ -780,9 +795,14 @@ class WindowsBackend(Backend):
         point = getattr(self, "_last_click", None)
         if point is None:
             raise OCRError("Click the text field first, then type (needed for emoji/newlines).")
+        x, y = point
+
         def run():
-            el = auto.ControlFromPoint(int(point[0]), int(point[1]))
-            pattern = el.GetPattern(auto.PatternId.ValuePattern) if el else None
+            # The text field there in VIBER's tree. ControlFromPoint asked the desktop, and with
+            # Viber covered (it usually is) that wrote into the user's own window.
+            node = _find_desc(hwnd, lambda n: n.ControlTypeName == "EditControl"
+                              and n.rect[0] <= x < n.rect[2] and n.rect[1] <= y < n.rect[3], max_depth=9)
+            pattern = node.value_pattern() if node is not None else None
             if pattern is None:
                 raise OCRError("The last-clicked spot isn't a text field; click the field first.")
             pattern.SetValue(pattern.Value + text)

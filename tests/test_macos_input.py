@@ -73,6 +73,34 @@ def test_a_hid_click_keeps_the_field_typing_goes_to(monkeypatch):
     assert b._focus_el is field
 
 
+def test_a_real_click_on_another_field_moves_typing_there(monkeypatch):
+    # State-machine hunt 2026-11-06: with Viber's search open the hit test can miss the search
+    # box, so the click is a real one, and _focus_el stayed on the field clicked before (the
+    # open chat's message box). type_into_focus then focused that box again and typed the query
+    # into it, where an Enter sends it to the client.
+    box, search = Field(), Field()
+    b = _backend(monkeypatch, box)
+    now = {"focus": box}  # what has Viber's keyboard focus
+
+    def set_attr(el, attr, value):
+        if attr == "AXFocused" and value:
+            now["focus"] = el
+        elif attr == "AXValue":
+            el.value = value
+    monkeypatch.setattr(macos, "_get", lambda el, attr: {
+        "AXRole": "AXTextArea", "AXValue": el.value, "AXIdentifier": "box" if el is box else "search"}.get(attr))
+    monkeypatch.setattr(macos, "AXUIElementSetAttributeValue", set_attr)
+    monkeypatch.setattr(b, "_focused", lambda: now["focus"], raising=False)
+    monkeypatch.setattr(b, "_post_key", lambda code, flags=0, text=None: setattr(
+        now["focus"], "value", now["focus"].value + text))
+    monkeypatch.setattr(b, "_to_screen", lambda x, y: (x, y))
+    monkeypatch.setattr(b, "_hit", lambda sx, sy: None)
+    monkeypatch.setattr(b, "_with_viber_front", lambda action: now.update(focus=search))  # the real click
+    b.click_at(150, 40)
+    b.type_into_focus("Ivy")
+    assert search.value == "Ivy" and box.value == ""
+
+
 def test_text_editing_keys_are_posted_without_bringing_viber_forward(monkeypatch):
     # 2026-11-01: the GC rename's End + Backspace brought Viber to the front (real keys); posted
     # to Viber's process they edit the clicked field in the background.

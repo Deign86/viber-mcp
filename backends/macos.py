@@ -954,8 +954,14 @@ class MacBackend(Backend):
                                             "AXRadioButton") and "AXPress" in _actions(hit):
                 if AXUIElementPerformAction(hit, "AXPress") == 0:
                     return
-        # _focus_el stays: picking a mention row or a picker circle leaves typing in that field.
         self._with_viber_front(lambda: self._hid_click(sx, sy, button, double))
+        # Typing goes where this click put Viber's focus: a text field the hit test missed (the
+        # search box while a search is open) becomes the field; picking a mention row or a
+        # picker circle leaves the focus, and so _focus_el, in the field clicked before.
+        if button == "left":
+            focused = self._focused()
+            if focused is not None and _get(focused, "AXRole") in ("AXTextField", "AXTextArea"):
+                self._focus_el = focused
 
     def _hid_click(self, sx: float, sy: float, button: str, double: bool) -> None:
         kinds = {

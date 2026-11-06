@@ -195,6 +195,8 @@ Status:
 - **Posted `WM_CHAR` drops non-BMP chars** (surrogate pairs, e.g. 😀; `WM_UNICHAR` is ignored
   too) and Enter may send, so those texts fall back to UIA `SetValue` + `_restore_foreground`
   (AttachThreadInput trick; activation arrives asynchronously, so wait for it before restoring).
+  `type_into_focus` takes that field from Viber's own tree under the last click (never
+  `ControlFromPoint`: with Viber covered that's the user's window).
 - **Search-result UIA delegates are whole sections**, not rows — click the OCR'd row position.
 - Capture with `PrintWindow(..., PW_RENDERFULLCONTENT)`; it works while Viber is covered.
 - **Speed (profiled 2026-10-21 on the live app).** OCR takes the raw BGRA pixels straight into a
@@ -218,7 +220,9 @@ Status:
   or changes a panel, call `backend.wait_still()` (two identical PrintWindow captures) and
   then walk once; `_levels` also fetches two levels per call (children + cached grandchildren)
   to halve the round trips. A UIA call that doesn't return in 30 s leaves its thread stuck, so
-  `_on_uia` abandons that thread, starts a fresh one and raises `OCRError` ("try again").
+  `_on_uia` abandons that thread, starts a fresh one and raises `OCRError` ("try again"); the
+  guarded write (`_uia_write_keeping_focus`) has the same deadline, and the UIA thread never
+  stores shared state (`_value` returns the node; the caller keeps it).
   **UIA has no text for the chat list rows, the search result rows or the chat header** (they
   are unnamed `ListViewDelegateLoader`s), so those stay OCR; `_await_results` hands over to the
   open-first-result fallback after two reads with the results header up and no readable row.
@@ -302,7 +306,7 @@ Status:
     AXFocused on another field doesn't always take, and Viber hands focus back to the message
     box when a search closes. `type_into_focus` therefore posts nothing unless the field last
     focused by `click_at`/`click_compose`/`click_search` still has the focus (`_check_focus`,
-    `typing_target_ok`). Search text goes in via AXValue on the box itself, and
+    `typing_target_ok`); a real click that puts the focus in a text field makes that the field. Search text goes in via AXValue on the box itself, and
     `viber_send.type_search_query` checks the message box didn't change (puts it back, raises).
   - With Viber's search already open the hit test can miss the search box; `click_search`
     falls back to the unfiltered tree (`sidebar_search_box`: a TextFieldItem in the sidebar's
