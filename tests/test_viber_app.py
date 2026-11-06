@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import backends  # noqa: E402
 import viber_app  # noqa: E402
+from backends import _maclogic as ml  # noqa: E402
 from backends import _winlogic as wl  # noqa: E402
 from backends.base import looks_like_updater  # noqa: E402
 
@@ -286,3 +287,45 @@ def test_viber_exe_is_read_from_the_link_handlers_command():
     assert wl.exe_from_command(r"C:\Viber\Viber.exe %1") == r"C:\Viber\Viber.exe"
     assert wl.exe_from_command("rundll32 url.dll") is None
     assert wl.exe_from_command("") is None and wl.exe_from_command(None) is None
+
+
+def test_mac_app_executable_is_read_from_the_bundle(tmp_path):
+    import plistlib
+    app = tmp_path / "Viber.app"
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    assert ml.app_executable(str(app)) is None                # no Info.plist
+    with open(app / "Contents" / "Info.plist", "wb") as fh:
+        plistlib.dump({"CFBundleExecutable": "Viber"}, fh)
+    assert ml.app_executable(str(app)) is None                # mid-update: no executable yet
+    (app / "Contents" / "MacOS" / "Viber").write_text("")
+    assert ml.app_executable(str(app)) == str(app / "Contents" / "MacOS" / "Viber")
+    assert ml.app_executable(str(app) + "/") == str(app / "Contents" / "MacOS" / "Viber")
+    (app / "Contents" / "Info.plist").write_text("not a plist")   # half-written by an update
+    assert ml.app_executable(str(app)) is None
+
+
+def test_mac_ps_rows_keep_paths_with_spaces():
+    text = ("  512   501 /Applications/Viber.app/Contents/MacOS/Viber\n"
+            "  900   501 /Applications/Rakuten Viber.app/Contents/MacOS/Viber Helper\n"
+            "garbage\n")
+    assert ml.parse_ps(text) == [
+        (512, 501, "/Applications/Viber.app/Contents/MacOS/Viber"),
+        (900, 501, "/Applications/Rakuten Viber.app/Contents/MacOS/Viber Helper")]
+
+
+def test_mac_helpers_are_this_users_processes_inside_viber_app():
+    procs = [(512, 501, "/Applications/Viber.app/Contents/MacOS/Viber"),
+             (513, 501, "/Applications/Viber.app/Contents/Frameworks/QtWebEngineProcess"),
+             (514, 502, "/Applications/Viber.app/Contents/Frameworks/QtWebEngineProcess"),
+             (515, 501, "/Applications/Viber.application/x"),
+             (516, 501, "/System/Applications/Notes.app/Contents/MacOS/Notes")]
+    assert ml.bundle_processes(procs, "/Applications/Viber.app", 501, skip=512) == [513]
+    assert ml.bundle_processes(procs, None, 501) == []
+
+
+def test_mac_updater_is_found_by_its_whole_path():
+    procs = [(512, 501, "/Applications/Viber.app/Contents/MacOS/Viber"),
+             (900, 501, "/Applications/Viber.app/Contents/Frameworks/Sparkle.framework/Versions/B/"
+                        "Autoupdate")]
+    assert ml.updater_process(procs) == "Autoupdate"
+    assert ml.updater_process(procs[:1]) is None

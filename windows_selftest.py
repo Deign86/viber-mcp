@@ -2,8 +2,8 @@
 
     uv run windows_selftest.py
 
-Checks: Viber process, main window, UI Automation elements (search box, message box, send
-button), and background capture + OCR. Saves viber_capture.png (what OCR sees).
+Checks: where Viber.exe is (for start_viber), Viber process, responding, main window, UI
+Automation elements (search box, message box, send button), and background capture + OCR. Saves viber_capture.png (what OCR sees).
 Open a chat with some text in the message box to see the send button.
 """
 import sys
@@ -21,10 +21,21 @@ def main() -> int:
         return 1
     fg, cursor = win32gui.GetForegroundWindow(), win32api.GetCursorPos()
     b = get_backend()
+    try:
+        print(f"[ok] Viber.exe found (for start_viber/restart_viber): {b._viber_exe()}")
+    except OCRError as exc:
+        print(f"[FAIL] {exc}")
+        return 1
     ok = b.app_running()
     print(f"[{'ok' if ok else 'FAIL'}] Viber.exe running")
     if not ok:
         return 1
+    responding = b.app_responding()
+    print(f"[{'ok' if responding else 'FAIL'}] Viber is responding")
+    ok &= responding
+    updater = b.updater_running()
+    if updater:
+        print(f"[note] an update is in progress: {updater}")
     try:
         info = b.debug_info()
     except OCRError as exc:

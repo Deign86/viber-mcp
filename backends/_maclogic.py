@@ -8,8 +8,12 @@ viber_ui's structure matching works unchanged.
 
 from __future__ import annotations
 
+import os
+import plistlib
 import re
 import threading
+
+from .base import looks_like_updater
 
 _QML_SUFFIX = re.compile(r"(_QMLTYPE_\d+|_QML_\d+)+$")
 
@@ -286,3 +290,45 @@ def vertical_shift(before, after, direction: int = 0, max_shift: int | None = No
     if ImageStat.Stat(ImageChops.difference(before, after)).mean[0] <= best + 0.5:
         return 0  # no shift explains the change better than none
     return min((d for score, d in scores if score <= best * 1.05 + 0.5), key=abs)
+
+
+# --- starting / quitting Viber -------------------------------------------------------------
+
+def app_executable(bundle: str) -> str | None:
+    """The executable of the .app at `bundle` (Info.plist's CFBundleExecutable, else the
+    bundle's name), or None when it isn't there — not installed, or an update is swapping it."""
+    try:
+        with open(os.path.join(bundle, "Contents", "Info.plist"), "rb") as fh:
+            name = plistlib.load(fh).get("CFBundleExecutable")
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return None
+    name = name or os.path.splitext(os.path.basename(bundle.rstrip("/")))[0]
+    path = os.path.join(bundle, "Contents", "MacOS", name)
+    return path if os.path.isfile(path) else None
+
+
+def parse_ps(text: str) -> list[tuple[int, int, str]]:
+    """`ps -Axo pid=,uid=,comm=` → [(pid, uid, executable path)] (paths may hold spaces)."""
+    rows = []
+    for line in text.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2].strip()))
+    return rows
+
+
+def bundle_processes(processes, bundle: str | None, uid: int, skip: int | None = None) -> list[int]:
+    """Pids of `uid`'s processes running from inside the .app at `bundle` (Viber's helpers:
+    QtWebEngineProcess, its crash reporter), except `skip` (Viber itself)."""
+    if not bundle:
+        return []
+    inside = bundle.rstrip("/") + "/"
+    return [pid for pid, owner, path in processes
+            if owner == uid and pid != skip and path.startswith(inside)]
+
+
+def updater_process(processes) -> str | None:
+    """The name of a process that installs or updates Viber (Sparkle's Autoupdate inside
+    Viber.app, a "Viber Updater"), judged by its whole path."""
+    return next((os.path.basename(path) for _pid, _uid, path in processes
+                 if looks_like_updater(path)), None)

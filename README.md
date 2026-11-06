@@ -79,9 +79,10 @@ Responding" for more than about 15 seconds), it's quit and started again. While 
 updating it, nothing is started or quit until the update is done. You can also ask Claude to
 **start, quit or restart Viber** (`start_viber`, `quit_viber`, `restart_viber`). Restarting also
 installs a Viber update that's waiting for one. Turn off **Start Viber automatically** in the
-extension's settings to start Viber yourself. On Windows Viber can't be asked to quit (its ✕ only
-hides it in the tray), so quitting ends it the way Task Manager does. Your chats are safe on
-Viber's servers.
+extension's settings to start Viber yourself. On macOS Viber is asked to quit the way the Dock's
+Quit does, and ended only if it doesn't within 10 seconds. On Windows Viber can't be asked to quit
+(its ✕ only hides it in the tray), so quitting ends it the way Task Manager does. Your chats are
+safe on Viber's servers.
 
 The extension serves Claude Desktop only. For Claude Code, use the setup below.
 
@@ -346,12 +347,13 @@ Two cases briefly hand Viber the foreground and then give it straight back (unde
 - **Don't use Viber at the same moment.** The tools switch chats inside Viber's window, so your own
   clicks there can collide with them.
 - **It reads what's on screen.** `list_chats` and `read_open_chat` return the visible part; use
-  `scroll_chat_list` / `scroll_chat` to go further (scrolling is posted to Viber's window too, so
-  your cursor stays put). OCR can garble small text and emoji. Scrolling is Windows-only for now.
+  `scroll_chat_list` / `scroll_chat` to go further. On Windows scrolling is posted to Viber's window,
+  so your cursor stays put; on macOS Viber comes forward for a moment to take the wheel events, and
+  the cursor and your app are put back. OCR can garble small text and emoji.
 - **`verified` is best-effort.** `true` = seen on screen, `false` = not seen, `null` = couldn't check.
 - If Viber runs **as Administrator**, run the server elevated too.
-- After a Viber update, run `uv run windows_selftest.py`. It reports which controls it can't find
-  and saves `viber_capture.png`, showing what the server sees.
+- After a Viber update, run `uv run windows_selftest.py` (macOS: `uv run macos_selftest.py`). It
+  reports which controls it can't find and saves `viber_capture.png`, showing what the server sees.
 
 ## Tests
 
@@ -406,6 +408,9 @@ macOS would ask about `uv`, and allowing that would let every script run through
 Mac. Re-running the script keeps the permissions unless `macos/launcher.c` changed (a rebuilt app
 has a new signature and must be allowed again).
 
+To check the setup, run `uv run macos_selftest.py` from a terminal that has both permissions. It's
+safe: it sends, types and clicks nothing, and doesn't bring Viber forward.
+
 The Drive key goes in `~/viber-mcp/google_service_account.json` (or point
 `VIBER_MCP_GOOGLE_SERVICE_ACCOUNT` at it); tokens and the download cache live in `~/viber-mcp/` too.
 
@@ -452,6 +457,7 @@ names the Windows backend uses, so the tools find controls by identity there too
 | `backends/_maclogic.py` | Pure macOS helpers (AX → elements, popup nesting, unread badges), tested on every OS |
 | `backends/base.py` | The `Backend` interface each platform implements |
 | `windows_selftest.py` | Safe Windows health check |
+| `macos_selftest.py` | Safe macOS health check |
 | `client.py` | Standalone test client |
 | `setup.ps1` | One-shot Windows setup and Claude registration |
 | `setup_macos.sh`, `macos/launcher.c` | One-shot macOS setup; the "Viber MCP" launcher app the permissions are granted to |

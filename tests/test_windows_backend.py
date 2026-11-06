@@ -545,6 +545,18 @@ def test_updater_running_names_the_installer(monkeypatch):
             self.info = {"name": name}
     names = ["explorer.exe", "Viber.exe", "QtWebEngineProcess.exe"]
     monkeypatch.setattr(bw.psutil, "process_iter", lambda attrs=None: [P(n) for n in names])
+    monkeypatch.setattr(bw.WindowsBackend, "_handler_exe", lambda self: None)
     assert bw.WindowsBackend().updater_running() is None
     names.append("ViberSetup.exe")
     assert bw.WindowsBackend().updater_running() == "ViberSetup.exe"
+
+
+def test_updater_running_sees_viber_exe_being_replaced(monkeypatch, tmp_path):
+    # The installer has removed the old Viber.exe and not written the new one yet.
+    exe = tmp_path / "Viber" / "Viber.exe"
+    exe.parent.mkdir()
+    monkeypatch.setattr(bw.psutil, "process_iter", lambda attrs=None: [])
+    monkeypatch.setattr(bw.WindowsBackend, "_handler_exe", lambda self: str(exe))
+    assert bw.WindowsBackend().updater_running() == "Viber.exe (being replaced)"
+    exe.write_bytes(b"MZ")
+    assert bw.WindowsBackend().updater_running() is None

@@ -278,13 +278,13 @@ def _is_send(c) -> bool:
 
 class WindowsBackend(Backend):
     name = "windows"
+    _exe: str | None = None  # Viber.exe as last seen running (to start it again)
     input_confirmed = True  # _enter/delete wait on the box's UIA value
     panel_shifts_send = False  # the send button is found by identity, so no panel check
 
     def __init__(self) -> None:
         self._pids: set[int] = set()
         self._pids_at = 0.0
-        self._exe: str | None = None      # Viber.exe as last seen running (to start it again)
         self._staged: str | None = None   # text "on the clipboard" (never the real clipboard)
         self._target = _is_compose        # element that type/paste/delete act on
         self._target_node: _Node | None = None  # that element, once located (value reads)
@@ -309,20 +309,28 @@ class WindowsBackend(Backend):
         return bool(self._viber_pids())
 
     # --- starting / quitting Viber (viber_app) ----------------------------------------
-    def _viber_exe(self) -> str:
-        """Viber.exe: the program of the viber:// link handler (Viber's installer keeps it
-        current through updates), else where the running Viber was seen, else the default
-        per-user install."""
-        candidates = []
+    # The Windows counterparts of the macOS backend's: the viber:// handler in the registry
+    # for where Viber.exe is (macOS: Launch Services), a detached process out of the server's
+    # job (macOS: NSWorkspace), WM_CLOSE for a polite quit (macOS: terminate), IsHungAppWindow
+    # for "not responding" (macOS: an AX request that times out).
+    def _handler_exe(self) -> str | None:
+        """The program of the viber:// link handler; Viber's installer keeps it current."""
         for root, key in ((winreg.HKEY_CURRENT_USER, r"Software\Classes\viber\shell\open\command"),
                           (winreg.HKEY_CLASSES_ROOT, r"viber\shell\open\command")):
             try:
                 with winreg.OpenKey(root, key) as handle:
-                    candidates.append(wl.exe_from_command(winreg.QueryValueEx(handle, "")[0]))
+                    exe = wl.exe_from_command(winreg.QueryValueEx(handle, "")[0])
             except OSError:
-                pass
-        candidates += [self._exe,
-                       os.path.join(os.environ.get("LOCALAPPDATA", ""), "Viber", "Viber.exe")]
+                continue
+            if exe:
+                return exe
+        return None
+
+    def _viber_exe(self) -> str:
+        """Viber.exe: the viber:// link handler's, else where the running Viber was seen, else
+        the default per-user install."""
+        candidates = [self._handler_exe(), self._exe,
+                      os.path.join(os.environ.get("LOCALAPPDATA", ""), "Viber", "Viber.exe")]
         for exe in candidates:
             if exe and os.path.isfile(exe):
                 return exe
@@ -407,6 +415,11 @@ class WindowsBackend(Backend):
         return not (hwnd and ctypes.windll.user32.IsHungAppWindow(hwnd))
 
     def updater_running(self) -> str | None:
+        """An update in progress: Viber.exe gone from the folder the viber:// handler names (an
+        installer swapping it), or an installer/updater process named like one."""
+        exe = self._handler_exe()
+        if exe and os.path.isdir(os.path.dirname(exe)) and not os.path.isfile(exe):
+            return f"{os.path.basename(exe)} (being replaced)"
         for p in psutil.process_iter(["name"]):
             name = p.info["name"] or ""
             if looks_like_updater(name):
