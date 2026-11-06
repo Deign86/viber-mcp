@@ -204,3 +204,89 @@ def test_focus_doesnt_start_viber_when_it_isnt_running(monkeypatch):
     monkeypatch.setattr(macos.subprocess, "run", lambda *a, **k: pytest.fail(f"ran {a[0]}"))
     with pytest.raises(OCRError, match="not running"):
         b.focus()
+
+
+VIBER, USER_APP, OTHER_APP = 9, 5, 7
+
+
+def _front_backend(monkeypatch, foreground):
+    """A backend whose front app is `foreground()`; records the apps made frontmost."""
+    import threading
+
+    b = macos.MacBackend.__new__(macos.MacBackend)
+    b._handoff, b._pid = threading.Lock(), VIBER
+    fronted = []
+    monkeypatch.setattr(b, "_stop_if_away", lambda: None)
+    monkeypatch.setattr(b, "_app", lambda: ("app", VIBER))
+    monkeypatch.setattr(b, "foreground", foreground)
+    monkeypatch.setattr(macos, "_alive", lambda pid: True)
+    monkeypatch.setattr(macos, "AXUIElementCreateApplication", lambda pid: ("app", pid))
+    monkeypatch.setattr(macos, "AXUIElementSetAttributeValue",
+                        lambda el, attr, value: fronted.append(el[1]) if attr == "AXFrontmost" else 0)
+    monkeypatch.setattr(macos.Quartz, "CGEventCreate", lambda source: None)
+    monkeypatch.setattr(macos.Quartz, "CGEventGetLocation", lambda event: (0, 0))
+    monkeypatch.setattr(macos.Quartz, "CGWarpMouseCursorPosition", lambda point: None)
+    monkeypatch.setattr(macos.Quartz, "CGAssociateMouseAndMouseCursorPosition", lambda on: None)
+    clock = [0.0]
+    monkeypatch.setattr(macos.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    monkeypatch.setattr(macos.time, "time", lambda: clock[0])
+    return b, fronted
+
+
+def test_a_hand_off_that_fails_still_gives_the_front_back(monkeypatch):
+    # Viber was asked to the front, didn't get there in time, and the raise skipped the
+    # hand-back: when its activation landed later it kept the front, and the user's typing.
+    b, fronted = _front_backend(monkeypatch, lambda: USER_APP)
+    with pytest.raises(OCRError, match="front"):
+        b._with_viber_front(lambda: pytest.fail("input was sent"))
+    assert fronted == [VIBER, USER_APP]
+
+
+def test_a_hand_off_returns_only_once_the_user_app_is_back(monkeypatch):
+    # The hand-back lands asynchronously: the next hand-off (Down, then Tab, in a mention) read
+    # Viber as the front app, skipped bringing it forward, and its key reached the user's app.
+    reads = {"all": 0, "after_hand_back": 0}
+
+    def foreground():
+        reads["all"] += 1
+        if USER_APP not in fronted:  # the user's app until Viber is asked forward
+            return USER_APP if reads["all"] == 1 else VIBER
+        reads["after_hand_back"] += 1
+        return VIBER if reads["after_hand_back"] <= 3 else USER_APP
+    b, fronted = _front_backend(monkeypatch, foreground)
+    b._with_viber_front(lambda: None)
+    assert fronted == [VIBER, USER_APP] and reads["after_hand_back"] >= 4
+
+
+def test_the_hand_back_guard_leaves_an_app_the_user_switched_to(monkeypatch):
+    # hold_foreground gave the front back to the user's earlier app whenever anything else had
+    # it, so switching to a third app within the 2-4 s pulled the user back.
+    fronts = iter([VIBER] + [OTHER_APP] * 200)  # Viber activated itself, then the user switched
+    b, fronted = _front_backend(monkeypatch, lambda: next(fronts))
+    b.hold_foreground(USER_APP, 4.0)
+    assert fronted == [USER_APP]
+
+
+def test_typing_into_a_field_that_is_gone_is_refused(monkeypatch):
+    # _focus_el no longer answering (the page rebuilt) switched the focus check off: the
+    # characters went to whatever had Viber's focus.
+    field = Field()
+    b = _backend(monkeypatch, field)
+    monkeypatch.setattr(macos, "_get", lambda el, attr: None)
+    monkeypatch.setattr(b, "_post_key", lambda *a, **k: pytest.fail("posted blind"))
+    monkeypatch.setattr(b, "_with_viber_front", lambda action: pytest.fail("real keys sent"))
+    with pytest.raises(OCRError, match="isn't there any more"):
+        b.type_into_focus("Hazel")
+    with pytest.raises(OCRError, match="isn't there any more"):
+        b.press_key("backspace", 5)
+
+
+def test_a_revoked_accessibility_grant_is_noticed(monkeypatch):
+    # Once trusted, the grant was never asked again: revoked mid-run, every AX read then failed
+    # as "not found (is a chat open?)".
+    b = macos.MacBackend.__new__(macos.MacBackend)
+    b._trusted, b._asked_ax, b._pid = True, True, VIBER
+    monkeypatch.setattr(macos, "_alive", lambda pid: True)
+    monkeypatch.setattr(macos, "AXIsProcessTrusted", lambda: False)
+    with pytest.raises(OCRError, match="Accessibility"):
+        b._app()

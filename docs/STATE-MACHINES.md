@@ -9,7 +9,7 @@ event-loop thread (`func_metadata.py`: `return fn(**…)`), so **two tool calls 
 and a tool that blocks blocks the whole server. The only concurrency is the server's own threads:
 start-up `prune_downloads` and `request_access` (`server.py:797-799`), the download pool
 (`viber_drive.py` `download`), foreground guards (`hold_foreground`, `open_url`'s hand-back,
-`_keep_viber_behind`) and the Windows UIA worker (`backends/windows.py:109`).
+`_keep_viber_behind`) and the Windows UIA and OCR workers (`backends/windows.py` `_Worker` 56).
 
 Impact scale: **1** data to the wrong person, data loss, internal info leaked · **2** stuck, or
 wrong data · **3** recoverable glitch · **4** cosmetic.
@@ -83,20 +83,20 @@ chat. **Invariant:** the GC made is the template's that was found. Broken before
 
 ## 5. New listing post (listings GC + Drive)
 
-`viber_drive.post_new_listing` 913, `upload_listing` 677, `confirm_listing_in_drive` 971,
-`add_listing_to_drive` 866, `_check_new_listing` 596. No progress file: the GC itself and the
+`viber_drive.post_new_listing` 1051, `upload_listing` 776, `confirm_listing_in_drive` 1109,
+`add_listing_to_drive` 1004, `_check_new_listing` 655, `_create_once` 753, `_listing_doc` 533. No progress file: the GC itself and the
 folder/doc/photo count in Drive are the record.
 
 | From | Event | Guard | To | Code |
 | --- | --- | --- | --- | --- |
-| Validated | open listings GC | header is the GC, not the latest post already | GCOpen | 933-936 |
-| GCOpen | post text (expect_chat=GC) | shows in the GC | TextPosted | 941-946 |
-| TextPosted | photos, separator (expect_chat=GC) | | Posted | 947-951 |
-| any of these | failure | | STOP "don't re-run" | 952-955 |
-| Posted | upload_listing | | Uploaded | 963 |
-| Uploaded | confirm (≥ N photos, doc, one folder) | | Confirmed + "Added to Drive" quote-reply | 964 |
-| Posted/Uploaded | failure | | STOP "re-run add_listing_to_drive" | 965-967 |
-| STOP (Drive) | `add_listing_to_drive` | the listing's folder (same `listing_key`) is in the parent | reuses it by id, the `*<name>` doc if there, uploads only photos not there (md5) | 701-709 |
+| Validated | open listings GC | header is the GC, not the latest post already | GCOpen | 1071-1074 |
+| GCOpen | post text (expect_chat=GC) | shows in the GC | TextPosted | 1079-1084 |
+| TextPosted | photos, separator (expect_chat=GC) | | Posted | 1085-1089 |
+| any of these | failure | | STOP "don't re-run" | 1090-1093 |
+| Posted | upload_listing | | Uploaded | 1101 |
+| Uploaded | confirm (≥ N photos, doc, one folder) | | Confirmed + "Added to Drive" quote-reply | 1102 |
+| Posted/Uploaded | failure | | STOP "re-run add_listing_to_drive" | 1103-1105 |
+| STOP (Drive) | `add_listing_to_drive` | the listing's folder (same `listing_key`) is in the parent | reuses it by id, the `*<name>` doc if there, uploads only photos not there (md5) | 776-816 |
 
 **Invariants:** a listing is posted once; the internal part reaches only the listings GC; a
 Drive re-run converges (no duplicate folder, doc or photo). Broken before I2 (internal text to
@@ -130,40 +130,47 @@ before-tool check. No invalid reachable state found in the domain layer; the pla
 
 ## 8. Google sign-in and service caches
 
-`viber_drive.py`: `_saved_creds` 82, `_browser_sign_in` 106 (`_SIGN_IN` lock),
-`_still_signed_in` 148, `_drive` 171 (per thread), `_writer` 182, `_docs` 196,
-`sign_in_at_start` 209. Per token file: absent · valid · expired-refreshable · dead · corrupt.
+`viber_drive.py`: `_save` 80 (temp file + `os.replace`), `_saved_creds` 93, `_browser_sign_in`
+117 (`_SIGN_IN` lock), `_creds` 149, `_still_signed_in` 166, `_drive` 189 (per thread), `_writer`
+200, `_docs` 214, `sign_in_at_start` 227. Per token file: absent · valid · expired-refreshable · dead · corrupt.
 
 | From | Event | To | Code |
 | --- | --- | --- | --- |
-| cached service, token expired | next call | refreshed in place, same service | 148-161 |
-| cached service, refresh fails (dead) | next call | service rebuilt → `_creds` → browser sign-in | 171-200 |
-| no token | read tool, no service-account key | browser sign-in (readonly) | 141-145 |
+| cached service, token expired | next call | refreshed in place, same service | 166-180 |
+| cached service, refresh fails (dead) | next call | service rebuilt → `_creds` → browser sign-in | 189-221 |
+| no token | read tool, no service-account key | browser sign-in (readonly) | 159-163 |
+| waiting on the start-up upload sign-in | lock free | that sign-in serves the read, no second page | 131-137 |
 
-**Invariant:** a dead sign-in leads to a new sign-in, not a stuck error. Broken before I6.
+**Invariant:** a dead sign-in leads to a new sign-in, not a stuck error (I6); one consent page at
+a time, and a token file is whole (I13).
 
 ## 9. Listing photo cache
 
-`viber_drive._fetch` 301, `prune_downloads` 1020: per Drive file id, absent → in memory →
+`viber_drive._fetch` 319, `prune_downloads` 1163 (`_CACHE_LOCK`): per Drive file id, absent → in memory →
 `.part` → final name (whole, reused without a metadata call, mtime refreshed on reuse) → pruned
-after `VIBER_MCP_KEEP_DOWNLOADS_DAYS`. Checked: a file a send is using is never pruned (fresh
-mtime); a crash never leaves a half file under its final name.
+after `VIBER_MCP_KEEP_DOWNLOADS_DAYS`. A file a send is using is never pruned (reuse and prune
+share `_CACHE_LOCK`), a crash never leaves a half file under its final name, each id is fetched
+once per download, and listing docs aren't cached (I14).
 
 ## 10. macOS backend: front hand-off and typing target
 
-`backends/macos.py`: `_with_viber_front` 977 (`_handoff` lock), `hold_foreground` 1200,
-`open_url` 411, `click_at` 938, `type_into_focus` 1147, `paste_files` 1215, `focus` 392.
+`backends/macos.py`: `_with_viber_front` 994 (`_handoff` lock), `_keep_viber_behind` 234 (also
+`hold_foreground` 1231), `_live_pid` 230, `open_url` 422, `click_at` 949, `type_into_focus` 1176,
+`paste_files` 1237, `focus` 399.
 Typing target `_focus_el`: None · the field Viber really focuses · a field Viber no longer
 focuses · gone. **Invariants:** real input only while Viber is in front; the user's app gets the
-front back; characters go only to the field last clicked (I7); Viber is started only by
-`viber_app`, and the user's clipboard is theirs (I10).
+front back, and only Viber's activation is undone (I15); characters go only to the field last
+clicked, never to one that's gone (I7, I16); Viber is started only by `viber_app`, and the
+user's clipboard is theirs (I10).
 
 ## 11. Windows backend: UIA worker, caches, foreground guards
 
-`backends/windows.py`: `_on_uia` 109 (one worker thread; abandoned after 30 s),
-`_uia_write_keeping_focus` 249, `_value` 565 (`_target_node` cache), `type_into_focus` 771
-(`_last_click` screen point), `_viber_pids` 293. **Invariants:** a cached node is the field
-it was taken from; a write never touches another app; nothing blocks forever (I7-I9).
+`backends/windows.py`: `_Worker` 56 (one daemon thread), `_ocr_lines` 126 and `_on_uia` 168
+(abandoned after 40 / 30 s, `_abandon_uia_thread` 155), `_uia_write_keeping_focus` 312, `_value`
+633 (`_target_node` cache), `type_into_focus` 842 (`_last_click`), `_restore_foreground` 294
+(`_is_viber_window` 286), `_viber_pids` 362. **Invariants:** a cached node is the field it was
+taken from; a write never touches another app; nothing blocks forever, or holds up the exit;
+only Viber's own activation is undone (I7-I9, I17).
 
 ---
 
@@ -319,38 +326,112 @@ invalid state before the fix.
 - **Tests:** `test_update_listing_doc_replaces_the_text_only_if_the_doc_is_as_it_was_read`,
   `test_a_revision_is_only_read_for_a_signed_in_upload_account`.
 
-### Confirmed, still open
+### I13. Google sign-in: a second consent page, a token file that could break (impact 3). Fixed.
 
-The traces have been re-read against the code.
+- **D7:** at start, `sign_in_at_start` holds `_SIGN_IN` while the upload consent page is open.
+  A read tool (no service-account key) waited behind it, then re-checked only the read token
+  and opened a second, read-only page. The re-check in the lock now accepts the upload sign-in
+  for reads (it covers them).
+- **D8:** `_save` rewrote the token in place. A write cut short, or two of the parallel
+  download threads saving a refresh at once, left a file that no longer parses ("not signed
+  in"). It now writes a temp file per thread and `os.replace`s it.
+- A dead token with no OAuth client file said "ask for the service account key" even when the
+  key was there. It now says the saved sign-in expired and needs the client file.
+- **Tests:** `test_a_read_waiting_on_the_start_up_upload_sign_in_uses_it`,
+  `test_a_token_save_cut_short_keeps_the_sign_in_there_was`,
+  `test_an_expired_sign_in_without_the_client_file_says_so`.
 
-- **D7 (Drive, impact 3).** At start, `sign_in_at_start` holds `_SIGN_IN` for up to 300 s
-  waiting on the write consent. A first read tool (no service-account key) then waits on the
-  event loop, and afterwards opens a second, read-only consent, because `_browser_sign_in`
-  re-checks only its own token file.
-- **D8 (Drive, impact 3).** Parallel download threads can each refresh and `_save` the same
-  token file (`write_text`, not atomic), which can leave it corrupt.
+### I14. The Drive cache, folder tree and listing doc could serve the wrong thing (impact 1-3). Fixed.
 
-### Suspected
+- **Duplicate ids** in one `download` made two threads write the same `.part` (one rename
+  failed, or mixed writes were renamed into place as "whole"). Each id is fetched once now.
+- **Prune vs. reuse:** a prune that read a photo's age just before a send reused it deleted it
+  under that send, and a `.part` renamed mid-prune made it raise. Reuse (`_fetch`) and prune
+  (per file: age check and delete) now share `_CACHE_LOCK`, and a vanished file is skipped.
+- **Stale .docx:** a `.docx` listing went through the photo cache, keyed by file id and
+  refreshed on every reuse, so an edited one (same id) was read old forever. It's now read
+  straight from Drive (`_media_bytes`).
+- **Tree cache:** the duplicate check used a tree up to 5 minutes old, so a listing another PC
+  just added could be posted twice. It now reads the tree fresh. A move (or an upload) that
+  failed after Drive had done it kept the old tree; it's now forgotten whatever happens.
+- **Listing doc, impact 1:** with several docs and not exactly one starred, `get_listing` took
+  the first by name, so an internal-notes doc could be split and its "client part" sent. It now
+  refuses and asks for exactly one `*`. A reused folder keeps its own `*` doc
+  (`upload_listing`), and `confirm_listing_in_drive` accepts the folder's only `*` doc.
+- **Retried creates:** `execute(num_retries=3)` re-sent a create blind after a 500 or a
+  dropped connection, and Drive may already have made the file, so a second folder, doc or
+  photo appeared. `_create_once` looks for the file before sending again.
+- **Tests:** `test_the_same_file_twice_in_one_download_is_fetched_once`,
+  `test_prune_waits_for_a_reuse_in_progress_and_keeps_the_file`,
+  `test_prune_skips_a_file_that_goes_while_it_looks`,
+  `test_an_edited_docx_listing_is_read_fresh_not_from_the_photo_cache`,
+  `test_the_duplicate_check_reads_the_folder_tree_afresh`,
+  `test_a_move_that_fails_forgets_the_folder_tree`,
+  `test_get_listing_refuses_to_guess_which_doc_is_the_listing`,
+  `test_a_reused_folder_keeps_its_own_listing_doc`,
+  `test_a_create_whose_answer_was_lost_isnt_made_twice`.
 
-Each needs the named check to confirm.
+### I15. macOS hand-offs could leave Viber in front or pull the user back (impact 2). Fixed.
 
-- **Windows, COM objects across threads.** After `_on_uia` abandons a thread, the fresh thread
-  reuses COM objects from the stuck thread's apartment (`_uia_cache`, `_target_node`). If they
-  are apartment-bound, every call times out until restart.
-  - Confirm: create objects on thread 1, block it, walk Notepad from thread 2.
-- **macOS, gone `_focus_el`.** If `_focus_el` stops answering AX (`_get` → None), the focus
-  check is skipped and characters go to Viber's real focus.
-  - Confirm: read AXRole of the old `_focus_el` after `open_url`.
-- **macOS, `foreground()` uses window order.** Clicking the desktop (Finder active, Viber's
-  window topmost) or back-to-back hand-offs could make it say "Viber is in front" when it isn't.
-  - Confirm: log `foreground()` against Viber's `AXFrontmost` right after a restore.
-- **Drive, stale .docx.** A .docx listing is reused from the cache forever if Drive keeps its
-  id when it's edited.
-  - Confirm: edit one, then compare `md5Checksum` under the same id.
-  - Fix: key the cache by `modifiedTime`.
-- **Drive, retried creates.** `execute(num_retries=3)` retries a create Drive already
-  committed, making a second folder or photo.
-  - Confirm: a "retry 1 of 3 … POST …/files" log line next to a duplicate.
-- **Drive, doc picked by name.** `get_listing` with no `*` doc picks `docs[0]` by name; an
-  internal-notes doc sorting first would be split and sent.
-  - Confirm: a folder with two unstarred docs.
+- `_with_viber_front` asked Viber forward and, when that didn't land in time, raised before
+  its `try`. The late activation then kept the front, and the user's typing went to Viber. The
+  hand-back now runs on every path.
+- The hand-back lands asynchronously. A second hand-off right after (Down, then Tab, in a
+  mention) read Viber as the front app, skipped bringing it forward, and sent its key once the
+  user's app was back. A hand-off now returns only when the user's app is in front again.
+- `hold_foreground` handed the front back whenever anything but `prev` had it, so an app the
+  user switched to within 2-4 s was taken away. It now acts only when Viber has the front
+  (`_keep_viber_behind`). `open_url` compares with the live pid, not a stale `_pid`.
+- **Tests:** `test_a_hand_off_that_fails_still_gives_the_front_back`,
+  `test_a_hand_off_returns_only_once_the_user_app_is_back`,
+  `test_the_hand_back_guard_leaves_an_app_the_user_switched_to`.
+
+### I16. macOS: typing into a gone field, a revoked grant (impact 2). Fixed.
+
+- A `_focus_el` that no longer answers AX (the page was rebuilt) switched the focus check off:
+  characters, or real edit keys, went to whatever Viber had focused. `type_into_focus` and the
+  edit keys now refuse ("click it again").
+- Accessibility was asked once and cached as trusted. Revoked mid-run, every AX read then
+  failed as "not found (is a chat open?)". `_app()` now asks every time (it's cheap).
+- **Tests:** `test_typing_into_a_field_that_is_gone_is_refused`,
+  `test_a_revoked_accessibility_grant_is_noticed`.
+
+### I17. Windows: guards fought the user; stuck workers lingered (impact 2-3). Fixed.
+
+- `_restore_foreground` (open_url's guard, `hold_foreground`, the guarded UIA write) took the
+  foreground back from whatever had it, including a window the user Alt-Tabbed to. It now
+  acts only when a Viber.exe window has it (`_is_viber_window`).
+- A hung OCR call kept the single OCR thread: every later `observe` queued behind it and
+  timed out too. It's abandoned like the UIA thread (`_ocr_lines`), with the engine it owns.
+- `ThreadPoolExecutor` threads are joined at interpreter exit, so an abandoned stuck worker
+  kept the server process from ending. Both workers are now one daemon thread each
+  (`_Worker`). An abandoned UIA thread's cache request is dropped too, so the fresh thread
+  never calls a COM object bound to the stuck one.
+- **Tests:** `test_the_foreground_guards_only_take_it_back_from_viber`,
+  `test_a_hung_ocr_read_is_abandoned_for_a_fresh_thread`,
+  `test_an_abandoned_worker_never_holds_up_the_servers_exit`.
+
+### Still suspected
+
+- **macOS, `foreground()` uses window order.** Clicking the desktop makes Finder active with
+  Viber's window still topmost, so `foreground()` would say Viber is in front. A real key
+  (Escape, Return) would then go to Finder; clicks still land on Viber's window.
+  - Not changed blind: the window-order read was chosen because `frontmostApplication()` goes
+    stale in this process (CLAUDE.md), and switching to `AXFrontmost` unverified could stop
+    every macOS click.
+  - Confirm: click the desktop, then compare `foreground()` with Viber's `AXFrontmost`.
+  - If they disagree, require both before real input.
+
+### Checked, not bugs
+
+- macOS `_asked_ax` / `_asked_screen`: the flag is set before the prompt call, so a duplicate
+  prompt needs a thread switch between two bytecodes.
+- macOS `_cg_hangs` stays set for the run on purpose: each retried hung capture would keep
+  another thread.
+- macOS late paste: the clipboard is restored only after Viber shows the files. A paste that
+  times out is caught by `send_files`' "a preview is already open" check, and the next send
+  clears the message box first.
+- `_keep_viber_behind` pushes Viber back for 20 s after an automatic start, even if the user
+  brings it forward then. That's the documented trade-off (CLAUDE.md, "front app").
+- Windows `_set_value` uses the cached node without a fallback: `_value` has just
+  re-validated it in both callers.

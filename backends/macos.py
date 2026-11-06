@@ -227,19 +227,25 @@ class MacBackend(Backend):
         error = result.get("error")
         return None if error is None else str(error.localizedDescription())
 
-    def _keep_viber_behind(self, prev: int, seconds: float) -> None:
+    def _live_pid(self) -> int | None:
+        """This user's Viber now: the remembered pid while it lives, else looked up again."""
+        return self._pid if self._pid is not None and _alive(self._pid) else self._viber_pid()
+
+    def _keep_viber_behind(self, prev: int, seconds: float, interval: float = 0.2) -> None:
         """For `seconds`, whenever Viber is the front app, give the front back to `prev` (a
         pid). Other apps the user switches to are left be."""
+        if not prev:
+            return
         end = time.time() + seconds
         while time.time() < end:
-            pid = self._pid if self._pid is not None and _alive(self._pid) else self._viber_pid()
+            pid = self._live_pid()
             if pid and pid != prev and self.foreground() == pid \
                     and self._handoff.acquire(blocking=False):  # never mid-click
                 try:
                     AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev), "AXFrontmost", True)
                 finally:
                     self._handoff.release()
-            time.sleep(0.2)
+            time.sleep(interval)
 
     def _processes(self) -> list[tuple[int, int, str]]:
         """(pid, uid, executable path) of every process; `ps` gives macOS paths whole."""
@@ -287,7 +293,7 @@ class MacBackend(Backend):
         """False while Viber doesn't answer an accessibility request within
         _RESPONDING_TIMEOUT s (kAXErrorCannotComplete): the spinning beach ball. True when that
         can't be asked (not running, no Accessibility access)."""
-        pid = self._pid if self._pid is not None and _alive(self._pid) else self._viber_pid()
+        pid = self._live_pid()
         if pid is None or not AXIsProcessTrusted():
             return True
         app = AXUIElementCreateApplication(pid)
@@ -335,8 +341,9 @@ class MacBackend(Backend):
         return {"accessibility": accessibility, "screen_recording": screen}
 
     def _app(self):
-        if not self._trusted:
-            self._trusted = bool(AXIsProcessTrusted())
+        # Asked every time (it's cheap): a grant revoked mid-run used to stay "trusted", and every
+        # AX read then failed as "not found (is a chat open?)".
+        self._trusted = bool(AXIsProcessTrusted())
         if not self._trusted:
             if not self._asked_ax:  # once per run: shows macOS's prompt and lists the app
                 self._asked_ax = True
@@ -345,7 +352,7 @@ class MacBackend(Backend):
                 "macOS hasn't allowed the Viber server to control Viber. In System Settings → "
                 "Privacy & Security → Accessibility, turn on \"Viber MCP\" (or the app that "
                 "started the server: uv, your terminal), then restart Claude.")
-        pid = self._pid if self._pid is not None and _alive(self._pid) else self._viber_pid()
+        pid = self._live_pid()
         if pid is None:
             raise OCRError("Viber is not running. Start it with start_viber (or launch it and "
                            "sign in).")
@@ -420,7 +427,7 @@ class MacBackend(Backend):
         self._stop_if_away()  # Viber's activation would switch Spaces
         prev = self.foreground()
         subprocess.run(["open", "-g", url], check=True)
-        if prev and prev != self._pid:
+        if prev and prev != self._live_pid():
             threading.Thread(target=self.hold_foreground, args=(prev, 4.0), daemon=True).start()
 
     # --- window geometry -------------------------------------------------------------
@@ -995,23 +1002,33 @@ class MacBackend(Backend):
             prev_pid = self.foreground() or None
             cursor = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
             app = self._app()
-            if prev_pid != self._pid:
-                AXUIElementSetAttributeValue(app, "AXFrontmost", True)
-                for _ in range(50):
-                    if self.foreground() == self._pid:
-                        break
-                    time.sleep(0.02)
-                time.sleep(0.05)
-            if self.foreground() != self._pid:
-                raise OCRError("Couldn't bring Viber to the front for a click; nothing was sent.")
+            asked = prev_pid != self._pid
             try:
+                if asked:
+                    AXUIElementSetAttributeValue(app, "AXFrontmost", True)
+                    for _ in range(50):
+                        if self.foreground() == self._pid:
+                            break
+                        time.sleep(0.02)
+                    time.sleep(0.05)
+                if self.foreground() != self._pid:
+                    raise OCRError("Couldn't bring Viber to the front for a click; nothing was sent.")
                 action()
             finally:
+                # Also when Viber didn't come forward in time: its activation can still land
+                # after the raise, and it then kept the front (and the user's typing).
                 time.sleep(0.1)
                 Quartz.CGWarpMouseCursorPosition(cursor)
                 Quartz.CGAssociateMouseAndMouseCursorPosition(True)
-                if prev_pid is not None and prev_pid != self._pid:
+                if prev_pid is not None and asked:
                     AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev_pid), "AXFrontmost", True)
+                    # Until it's back: the next hand-off (Down then Tab in a mention) read
+                    # Viber as the front app, skipped bringing it forward, and its key went to
+                    # the user's app once that came back.
+                    for _ in range(25):
+                        if self.foreground() == prev_pid:
+                            break
+                        time.sleep(0.02)
 
     def scroll(self, area: str, notches: int) -> None:
         """Scroll the chat list ("chats") or the conversation by `notches` mouse-wheel notches;
@@ -1111,8 +1128,10 @@ class MacBackend(Backend):
                              "Modifier shortcuts (Cmd+...) aren't offered.")
         self._target_el = None  # Escape/Enter may close or change the page
         field = self._focus_el
-        if key.strip().lower() in _EDIT_KEYS and field is not None \
-                and _get(field, "AXRole") in ("AXTextField", "AXTextArea"):
+        if key.strip().lower() in _EDIT_KEYS and field is not None:
+            if _get(field, "AXRole") not in ("AXTextField", "AXTextArea"):
+                # Gone (the page was rebuilt): real keys would edit whatever Viber has focused.
+                raise OCRError("The field clicked last isn't there any more; click it again.")
             # Text editing in the field clicked last: posted to Viber, in the background.
             AXUIElementSetAttributeValue(field, "AXFocused", True)
             self._check_focus(field)
@@ -1159,14 +1178,16 @@ class MacBackend(Backend):
         send) are appended through AXValue on the focused field instead. Nothing is typed unless
         the clicked field really has the focus (`_check_focus`)."""
         field = self._focus_el
-        if field is not None and _get(field, "AXRole") in ("AXTextField", "AXTextArea"):
+        if field is not None and _get(field, "AXRole") not in ("AXTextField", "AXTextArea"):
+            # The field clicked last is gone (the page was rebuilt) or doesn't answer: posting
+            # anyway sent the characters to whatever had Viber's focus, unchecked.
+            raise OCRError("The field clicked last isn't there any more; click it again, then type.")
+        if field is not None:
             # After real keys (press_key's hand-off to the front and back) Qt's focus had left the
             # field and posted characters vanished: the GC rename typed nothing and the mention's
             # closing text was lost (2026-10-28). Focus it again first.
             AXUIElementSetAttributeValue(field, "AXFocused", True)
             time.sleep(0.05)
-        else:
-            field = None
         if "\n" not in text and "\r" not in text:
             if field is not None:
                 self._check_focus(field)
@@ -1208,18 +1229,9 @@ class MacBackend(Backend):
         return 0
 
     def hold_foreground(self, prev: int, seconds: float) -> None:
-        """Keep handing the front back to `prev` (a pid) for `seconds`."""
-        if not prev or prev == self._pid:
-            return
-        end = time.time() + seconds
-        while time.time() < end:
-            if self._handoff.acquire(blocking=False):  # never mid-click
-                try:
-                    if self.foreground() != prev:
-                        AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev), "AXFrontmost", True)
-                finally:
-                    self._handoff.release()
-            time.sleep(0.05)
+        """For `seconds`, hand the front back to `prev` (a pid) whenever Viber takes it. An app
+        the user switches to meanwhile is left be: it used to be pulled back to `prev`."""
+        self._keep_viber_behind(prev, seconds, interval=0.05)
 
     # --- files: pasted into the message box ------------------------------------------
     def paste_files(self, paths: list[str], taken) -> bool:

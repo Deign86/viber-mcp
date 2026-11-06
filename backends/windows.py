@@ -24,11 +24,11 @@ import concurrent.futures
 import ctypes
 import hashlib
 import os
+import queue
 import re
 import subprocess
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import psutil
 import uiautomation as auto
@@ -53,8 +53,39 @@ try:
 except Exception:
     ctypes.windll.shcore.SetProcessDpiAwareness(2)
 
+class _Worker:
+    """One daemon thread that runs submitted calls in order (a ThreadPoolExecutor of one, minus
+    its exit join). A call Viber or WinRT never answers is abandoned with its thread, and
+    ThreadPoolExecutor's threads are joined when the interpreter exits, so an abandoned stuck
+    one kept the server process from ending; a daemon thread doesn't."""
+
+    def __init__(self, name: str, initializer=None) -> None:
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        threading.Thread(target=self._run, args=(initializer,), name=name, daemon=True).start()
+
+    def _run(self, initializer) -> None:
+        if initializer is not None:
+            initializer()
+        while (item := self._queue.get()) is not None:
+            future, fn, args = item
+            if future.set_running_or_notify_cancel():
+                try:
+                    future.set_result(fn(*args))
+                except BaseException as exc:  # noqa: BLE001 — handed to the caller
+                    future.set_exception(exc)
+
+    def submit(self, fn, *args) -> concurrent.futures.Future:
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        self._queue.put((future, fn, args))
+        return future
+
+    def shutdown(self, wait: bool = False, cancel_futures: bool = False) -> None:
+        self._queue.put(None)  # a stuck thread never gets to it; it just stays a daemon
+
+
 # ---- OCR (Windows.Media.Ocr) — runs in its own thread/event loop ----------------------
-_ocr_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="viber-ocr")
+_OCR_TIMEOUT = 40.0
+_ocr_pool = _Worker("viber-ocr")
 _engine = None
 
 
@@ -92,15 +123,27 @@ async def _recognize(bgra: bytes, width: int, height: int):
               w.bounding_rect.height) for w in line.words] for line in result.lines]
 
 
+def _ocr_lines(img: Image.Image):
+    """_ocr_image on the OCR thread. One that doesn't answer in _OCR_TIMEOUT s is abandoned
+    (with the engine it owns) for a fresh thread: every later read used to queue behind it and
+    time out too."""
+    global _ocr_pool, _engine
+    try:
+        return _ocr_pool.submit(_ocr_image, img).result(timeout=_OCR_TIMEOUT)
+    except concurrent.futures.TimeoutError:
+        stuck, _ocr_pool, _engine = _ocr_pool, _Worker("viber-ocr"), None
+        stuck.shutdown(wait=False, cancel_futures=True)
+        raise OCRError("Windows OCR didn't answer within 40 s. Try again.") from None
+
+
 def _ocr_image(img: Image.Image):
     """OCR a PIL image (any mode) — runs on the OCR thread, which owns the engine."""
     return asyncio.run(_recognize(img.convert("RGBA").tobytes("raw", "BGRA"), img.width, img.height))
 
 
 # ---- UI Automation — COM objects stay on one initialized thread -----------------------
-def _new_uia_pool() -> ThreadPoolExecutor:
-    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="viber-uia",
-                              initializer=auto.InitializeUIAutomationInCurrentThread)
+def _new_uia_pool() -> "_Worker":
+    return _Worker("viber-uia", initializer=auto.InitializeUIAutomationInCurrentThread)
 
 
 _uia_pool = _new_uia_pool()
@@ -115,6 +158,9 @@ def _abandon_uia_thread() -> OCRError:
     global _uia_pool
     stuck, _uia_pool = _uia_pool, _new_uia_pool()
     stuck.shutdown(wait=False, cancel_futures=True)
+    # The cache request was made on the stuck thread: the fresh one makes its own (a COM object
+    # bound to the stuck thread's apartment would make every walk wait on that thread).
+    _uia_cache.clear()
     return OCRError("Viber's UI Automation didn't answer within 30 s (is Viber frozen?). "
                     "Try again; if it keeps happening, restart_viber.")
 
@@ -237,11 +283,21 @@ def _short_class(cls: str) -> str:
     return _QML_SUFFIX.sub("", cls)
 
 
+def _is_viber_window(hwnd: int) -> bool:
+    """Does `hwnd` belong to a Viber.exe process (its main window, splash, file dialog)?"""
+    try:
+        return psutil.Process(win32process.GetWindowThreadProcessId(hwnd)[1]).name().lower() == _VIBER_EXE
+    except Exception:  # noqa: BLE001 — gone, or not ours to read: not Viber's
+        return False
+
+
 def _restore_foreground(prev: int) -> None:
-    """Give the foreground back to `prev` if Viber took it. Attaching to the current foreground
-    thread's input lets SetForegroundWindow through Windows' focus-stealing lock."""
+    """Give the foreground back to `prev` if Viber took it — only then: a window the user
+    switched to meanwhile is theirs (every guard used to pull them back from it). Attaching to
+    the current foreground thread's input lets SetForegroundWindow through Windows'
+    focus-stealing lock."""
     cur = win32gui.GetForegroundWindow()
-    if not prev or cur == prev or not win32gui.IsWindow(prev):
+    if not prev or cur == prev or not win32gui.IsWindow(prev) or not _is_viber_window(cur):
         return
     user32 = ctypes.windll.user32
     tid = win32process.GetWindowThreadProcessId(cur)[0]
@@ -534,7 +590,7 @@ class WindowsBackend(Backend):
         if scale != 1:
             img = img.resize((img.width * scale, img.height * scale))
         try:
-            lines = _ocr_pool.submit(_ocr_image, img).result(timeout=40)
+            lines = _ocr_lines(img)
         except OCRError:
             raise
         except ImportError as exc:

@@ -157,7 +157,8 @@ port-ready for Windows/Linux — see "Porting" below):
   Screen Recording prompts, once per run), then `viber_drive.sign_in_at_start()`: Google's sign-in
   page when the OAuth client is here and no upload sign-in works (at most every 12 h,
   `SIGN_IN_ASKED_FILE`). One sign-in: reads without the service account key use the upload token.
-  `_browser_sign_in` holds `_SIGN_IN` and re-checks the token (start-up and a tool can race), and
+  `_browser_sign_in` holds `_SIGN_IN` and re-checks the token (start-up and a tool can race; for a
+  read the upload token counts too, so the start-up sign-in doesn't lead to a second page), and
   passes `authorization_prompt_message=None`: the library prints it to stdout, which is the MCP
   stream. `check_setup` = `viber_setup.status()` with `to_fix`.
   On macOS the TCC grant goes to `uv`, not "Viber MCP" (README says so;
@@ -222,7 +223,11 @@ Status:
   to halve the round trips. A UIA call that doesn't return in 30 s leaves its thread stuck, so
   `_on_uia` abandons that thread, starts a fresh one and raises `OCRError` ("try again"); the
   guarded write (`_uia_write_keeping_focus`) has the same deadline, and the UIA thread never
-  stores shared state (`_value` returns the node; the caller keeps it).
+  stores shared state (`_value` returns the node; the caller keeps it). OCR is abandoned the
+  same way after 40 s (`_ocr_lines`). Both are `_Worker`s, one daemon thread each:
+  ThreadPoolExecutor's threads are joined at exit, so an abandoned stuck one kept the server
+  process alive. `_restore_foreground` only takes the foreground back from a Viber.exe window
+  (`_is_viber_window`): an app the user switched to is left be.
   **UIA has no text for the chat list rows, the search result rows or the chat header** (they
   are unnamed `ListViewDelegateLoader`s), so those stay OCR; `_await_results` hands over to the
   open-first-result fallback after two reads with the results header up and no readable row.
@@ -258,9 +263,11 @@ Status:
     characters posted with `CGEventPostToPid`. Ignored in the background: posted mouse clicks
     (even with the window-number fields), posted wheel events, posted Escape to the image viewer.
     Those go through `_with_viber_front`: Viber made frontmost via `AXFrontmost`, real HID events,
-    then the cursor and the previous front app are restored (~0.6 s). It holds `_handoff`, and it
-    sends nothing unless Viber really is in front (the input would land in the user's app);
-    `hold_foreground` only acts while it can take that lock.
+    then the cursor and the previous front app are restored (~0.6 s) — on every path, and it
+    returns only once that app is back (a next hand-off read too early sent its key to the
+    user's app). It holds `_handoff`, and it sends nothing unless Viber really is in front (the
+    input would land in the user's app); `hold_foreground` only acts while it can take that
+    lock, and only when Viber itself took the front (`_keep_viber_behind`).
   - `NSWorkspace.frontmostApplication()` goes stale in this run-loop-less process and the
     system-wide AX focused app is empty for Electron apps: `foreground()` reads the owner of the
     topmost layer-0 window.
@@ -308,7 +315,8 @@ Status:
     AXFocused on another field doesn't always take, and Viber hands focus back to the message
     box when a search closes. `type_into_focus` therefore posts nothing unless the field last
     focused by `click_at`/`click_compose`/`click_search` still has the focus (`_check_focus`,
-    `typing_target_ok`); a real click that puts the focus in a text field makes that the field. Search text goes in via AXValue on the box itself, and
+    `typing_target_ok`); a real click that puts the focus in a text field makes that the field,
+    and a field that's gone (no AX role: the page was rebuilt) is refused, for edit keys too. Search text goes in via AXValue on the box itself, and
     `viber_send.type_search_query` checks the message box didn't change (puts it back, raises).
   - With Viber's search already open the hit test can miss the search box; `click_search`
     falls back to the unfiltered tree (`sidebar_search_box`: a TextFieldItem in the sidebar's
@@ -447,14 +455,19 @@ Status:
   token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads go to
   `%LOCALAPPDATA%\viber-mcp\drive-cache` (fetched in parallel, `DOWNLOAD_THREADS`, each thread
   with its own Drive service — httplib2 isn't thread-safe; written as `.part` then renamed, so a
-  file under its final name is whole and is reused without a metadata call) and are kept ~3 days, then pruned by `prune_downloads` (after every download, every send_listing and at server start; a reused cached file counts as fresh)
+  file under its final name is whole and is reused without a metadata call; each id once per
+  download; reuse and prune share `_CACHE_LOCK`; .docx listing text is read straight from Drive,
+  never from this cache) and are kept ~3 days, then pruned by `prune_downloads` (after every download, every send_listing and at server start; a reused cached file counts as fresh)
   (`VIBER_MCP_KEEP_DOWNLOADS_DAYS`; never delete right after sending — that raced Viber's upload and
   left photos "not sent"). `remove_downloads` /
   `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`
   (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / [group, e.g.
   `LOT` — a comma-less folder with subfolders, `_is_subfolder_group`] / `City, sqm Area`
-  folder with one Google Doc (title starts with `*`) plus JPGs. Drive calls use
-  `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common. Doc
+  folder with one Google Doc (title starts with `*`) plus JPGs (`_listing_doc` refuses to guess
+  between several docs without exactly one `*`). Drive calls use
+  `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common;
+  creates go through `_create_once` instead (it looks for the file before sending again: a
+  blind retry of a create Drive had done made a second folder/doc/photo). Doc
   text is read via `_plain_export`: Drive's text/plain export uses \r\n and two breaks per empty
   paragraph, so without it a get_listing → update_listing_doc round trip doubled every gap. The doc is split at the typed dashed
   line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in

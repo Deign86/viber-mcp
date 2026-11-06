@@ -687,3 +687,74 @@ def test_an_abandoned_uia_read_never_replaces_the_field_a_later_call_located(mon
         release.set()
         if bw._uia_pool is not pool:
             bw._uia_pool.shutdown(wait=False)
+
+
+def test_the_foreground_guards_only_take_it_back_from_viber(monkeypatch):
+    # _restore_foreground (open_url's guard, hold_foreground, the guarded UIA write) handed the
+    # foreground back whatever had taken it: a window the user Alt-Tabbed to was pulled away.
+    restored, fg = [], [0]
+    names = {4000: "Viber.exe", 5000: "WINWORD.EXE"}
+    monkeypatch.setattr(win32gui, "GetForegroundWindow", lambda: fg[0])
+    monkeypatch.setattr(win32gui, "IsWindow", lambda hwnd: True)
+    monkeypatch.setattr(bw.win32process, "GetWindowThreadProcessId", lambda hwnd: (1, {100: 4000, 200: 5000}[hwnd]))
+    monkeypatch.setattr(bw.psutil, "Process", lambda pid: type("P", (), {"name": lambda self: names[pid]})())
+
+    class User32:
+        def AttachThreadInput(self, *args):
+            return 1
+
+        def SetForegroundWindow(self, hwnd):
+            restored.append(hwnd)
+    kernel32 = type("K", (), {"GetCurrentThreadId": staticmethod(lambda: 1)})()
+    monkeypatch.setattr(bw.ctypes, "windll", type("W", (), {"user32": User32(), "kernel32": kernel32})())
+    fg[0] = 200  # the user switched to Word
+    bw._restore_foreground(300)
+    fg[0] = 100  # Viber took the foreground
+    bw._restore_foreground(300)
+    assert restored == [300]
+
+
+def test_a_hung_ocr_read_is_abandoned_for_a_fresh_thread(monkeypatch):
+    # observe's OCR had a 40 s timeout but kept its one thread: a WinRT call that never returned
+    # made every later read queue behind it and time out too.
+    import concurrent.futures
+
+    class Stuck:
+        def __init__(self):
+            self.shutdowns = 0
+
+        def submit(self, fn, *args):
+            class Never:
+                def result(self, timeout=None):
+                    raise concurrent.futures.TimeoutError()
+            return Never()
+
+        def shutdown(self, wait=False, cancel_futures=False):
+            self.shutdowns += 1
+    stuck = Stuck()
+    monkeypatch.setattr(bw, "_ocr_pool", stuck)
+    monkeypatch.setattr(bw, "_engine", "the stuck thread's engine")
+    try:
+        with pytest.raises(OCRError, match="didn't answer"):
+            bw._ocr_lines(Image.new("RGB", (10, 10)))
+        assert stuck.shutdowns == 1 and bw._ocr_pool is not stuck and bw._engine is None
+    finally:
+        if bw._ocr_pool is not stuck:
+            bw._ocr_pool.shutdown()
+
+
+def test_an_abandoned_worker_never_holds_up_the_servers_exit(monkeypatch):
+    # ThreadPoolExecutor's threads are joined when the interpreter exits: one abandoned while
+    # stuck in a COM call kept the server process from ending. And the fresh thread mustn't use
+    # the cache request the stuck one made.
+    import threading
+
+    monkeypatch.setattr(bw, "_uia_pool", bw._new_uia_pool())
+    monkeypatch.setattr(bw, "_uia_cache", {"request": "made on the stuck thread"})
+    err = bw._abandon_uia_thread()
+    try:
+        assert isinstance(err, OCRError) and bw._uia_cache == {}
+        workers = [t for t in threading.enumerate() if t.name in ("viber-uia", "viber-ocr")]
+        assert workers and all(t.daemon for t in workers)
+    finally:
+        bw._uia_pool.shutdown()
