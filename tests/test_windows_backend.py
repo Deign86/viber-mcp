@@ -406,3 +406,157 @@ def test_click_search_closes_the_remix_image_popup_first(monkeypatch):
     assert len(downs) == 2                      # "Maybe later", then the search box
     b.click_search()                            # no pop-up: just the search box
     assert len([m for m, _ in posted if m == win32con.WM_LBUTTONDOWN]) == 3
+
+
+# --- starting / quitting Viber (viber_app) ----------------------------------------------
+
+class _Key:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_viber_exe_is_the_link_handlers_then_the_last_seen_then_the_default(monkeypatch):
+    b = bw.WindowsBackend()
+    handler = r"C:\Users\me\AppData\Local\Viber\Viber.exe"
+    files = {handler}
+    monkeypatch.setattr(bw.winreg, "OpenKey", lambda root, key: _Key())
+    monkeypatch.setattr(bw.winreg, "QueryValueEx", lambda key, name: (f'"{handler}" "%1"', 1))
+    monkeypatch.setattr(bw.os.path, "isfile", lambda p: p in files)
+    assert b._viber_exe() == handler
+
+    def no_key(root, key):
+        raise OSError(2, "The system cannot find the file specified")
+    monkeypatch.setattr(bw.winreg, "OpenKey", no_key)
+    b._exe = r"D:\Apps\Viber\Viber.exe"
+    files.add(b._exe)
+    assert b._viber_exe() == r"D:\Apps\Viber\Viber.exe"     # where Viber was seen running
+    b._exe = None
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\me\AppData\Local")
+    assert b._viber_exe() == handler                           # the default per-user install
+    files.clear()
+    with pytest.raises(OCRError, match="Viber.exe wasn't found"):
+        b._viber_exe()
+
+
+def _launch(monkeypatch, breakaway_denied=False):
+    b = bw.WindowsBackend()
+    popens, threads = [], []
+    monkeypatch.setattr(b, "_viber_exe", lambda: r"C:\Viber\Viber.exe")
+    monkeypatch.setattr(win32gui, "GetForegroundWindow", lambda: 42)
+
+    class FakeThread:
+        def __init__(self, target, args=(), name="", daemon=False):
+            threads.append((args, name, daemon))
+
+        def start(self):
+            pass
+    monkeypatch.setattr(bw.threading, "Thread", FakeThread)
+
+    def popen(args, **kw):
+        popens.append((args, kw))
+        if breakaway_denied and kw["creationflags"] & bw.subprocess.CREATE_BREAKAWAY_FROM_JOB:
+            raise PermissionError(5, "Access is denied")
+    monkeypatch.setattr(bw.subprocess, "Popen", popen)
+    b._target_node = FakeNode("x")
+    b.launch_app()
+    return b, popens, threads
+
+
+def test_launch_app_starts_viber_detached_from_the_server(monkeypatch):
+    # Detached and out of the server's job: Viber must outlive a server restart, and must not
+    # inherit stdout (the MCP connection).
+    b, popens, threads = _launch(monkeypatch)
+    (args, kw), = popens
+    assert args == [r"C:\Viber\Viber.exe"] and kw["cwd"] == r"C:\Viber"
+    flags = kw["creationflags"]
+    assert flags & bw.subprocess.DETACHED_PROCESS and flags & bw.subprocess.CREATE_BREAKAWAY_FROM_JOB
+    assert kw["stdin"] is kw["stdout"] is kw["stderr"] is bw.subprocess.DEVNULL
+    assert threads == [((42, 20.0), "viber-fg-guard", True)]   # the user's window gets the front back
+    assert b._target_node is None
+
+
+def test_launch_app_goes_through_explorer_when_the_job_wont_let_go(monkeypatch):
+    _, popens, _ = _launch(monkeypatch, breakaway_denied=True)
+    assert [args for args, _ in popens] == [[r"C:\Viber\Viber.exe"], ["explorer.exe", r"C:\Viber\Viber.exe"]]
+    assert popens[1][1]["stdout"] is bw.subprocess.DEVNULL
+
+
+class _Proc:
+    def __init__(self, pid, children=(), exits_on_close=False):
+        self.pid, self._children, self.exits_on_close = pid, list(children), exits_on_close
+        self.killed = False
+
+    def children(self, recursive=False):
+        return self._children
+
+    def kill(self):
+        self.killed = True
+
+
+def _quit(monkeypatch, viber):
+    b = bw.WindowsBackend()
+    posted, waits = [], []
+    monkeypatch.setattr(b, "_own_viber_processes", lambda: [viber])
+    monkeypatch.setattr(b, "_find_hwnd", lambda: 7)
+    monkeypatch.setattr(win32gui, "PostMessage", lambda h, m, wp, lp: posted.append((h, m)))
+
+    def wait_procs(procs, timeout=None):
+        procs = list(procs)
+        waits.append(timeout)
+        gone = [p for p in procs if p.killed or p.exits_on_close]
+        return gone, [p for p in procs if p not in gone]
+    monkeypatch.setattr(bw.psutil, "wait_procs", wait_procs)
+    return b, b.quit_app(10.0), posted, waits
+
+
+def test_quit_app_closes_the_window_then_ends_viber_and_its_helpers(monkeypatch):
+    helper = _Proc(2)
+    viber = _Proc(1, [helper])
+    _, forced, posted, waits = _quit(monkeypatch, viber)
+    assert posted == [(7, win32con.WM_CLOSE)]
+    assert forced is True and viber.killed and helper.killed
+    assert waits == [3.0, 10.0]
+
+
+def test_quit_app_kills_nothing_when_closing_the_window_quit_viber(monkeypatch):
+    viber = _Proc(1, [_Proc(2)], exits_on_close=True)
+    _, forced, _, waits = _quit(monkeypatch, viber)
+    assert forced is False and not viber.killed and waits == [3.0]
+
+
+def test_app_responding_is_windows_not_responding_state(monkeypatch):
+    b = bw.WindowsBackend()
+    monkeypatch.setattr(b, "_find_hwnd", lambda: 7)
+    hung = {7: 1}
+    monkeypatch.setattr(bw.ctypes.windll.user32, "IsHungAppWindow", lambda h: hung.get(h, 0))
+    assert b.app_responding() is False
+    hung.clear()
+    assert b.app_responding() is True
+    monkeypatch.setattr(b, "_find_hwnd", lambda: None)
+    assert b.app_responding() is True      # no window: can't tell
+
+
+def test_updater_running_names_the_installer(monkeypatch):
+    class P:
+        def __init__(self, name):
+            self.info = {"name": name}
+    names = ["explorer.exe", "Viber.exe", "QtWebEngineProcess.exe"]
+    monkeypatch.setattr(bw.psutil, "process_iter", lambda attrs=None: [P(n) for n in names])
+    monkeypatch.setattr(bw.WindowsBackend, "_handler_exe", lambda self: None)
+    assert bw.WindowsBackend().updater_running() is None
+    names.append("ViberSetup.exe")
+    assert bw.WindowsBackend().updater_running() == "ViberSetup.exe"
+
+
+def test_updater_running_sees_viber_exe_being_replaced(monkeypatch, tmp_path):
+    # The installer has removed the old Viber.exe and not written the new one yet.
+    exe = tmp_path / "Viber" / "Viber.exe"
+    exe.parent.mkdir()
+    monkeypatch.setattr(bw.psutil, "process_iter", lambda attrs=None: [])
+    monkeypatch.setattr(bw.WindowsBackend, "_handler_exe", lambda self: str(exe))
+    assert bw.WindowsBackend().updater_running() == "Viber.exe (being replaced)"
+    exe.write_bytes(b"MZ")
+    assert bw.WindowsBackend().updater_running() is None

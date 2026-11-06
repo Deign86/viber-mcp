@@ -81,6 +81,28 @@ def test_built_extension_lists_the_servers_tools(tmp_path):
     assert all(t["description"] for t in built["tools"])
 
 
+def test_bundle_has_every_module_the_server_imports(tmp_path):
+    # Installed extensions update themselves to the release bundle: a module the server imports
+    # that the bundle lacks (viber_app.py when it was new) would install a server that can't
+    # start, so every repo module any bundled file imports must ship.
+    import ast
+    with zipfile.ZipFile(build.build(tmp_path)) as zf:
+        names = set(zf.namelist())
+        sources = [zf.read(n).decode("utf-8") for n in names if n.endswith(".py")]
+    local = {p.stem for p in ROOT.glob("*.py")} | {"backends"}
+    imported = set()
+    for source in sources:
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, ast.Import):
+                imported |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                imported.add(node.module.split(".")[0])
+    missing = {m for m in imported & local
+               if f"{m}.py" not in names and f"{m}/__init__.py" not in names}
+    assert not missing, f"the bundle lacks modules the server imports: {sorted(missing)}"
+    assert "viber_app.py" in names
+
+
 def test_unset_extension_setting_counts_as_unset(monkeypatch):
     # Claude Desktop passes an optional setting the user left empty as the literal placeholder.
     monkeypatch.setenv("VIBER_MCP_TEST", "${user_config.contacts_file}")

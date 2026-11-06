@@ -17,7 +17,9 @@ import viber_drive
 import viber_update
 
 FIX = {
-    "viber": "Open Viber Desktop and sign in. Keep its window open (behind other windows is fine).",
+    "viber": "Open Viber Desktop and sign in. Keep its window open (behind other windows is fine). "
+             "Viber MCP starts it by itself when it needs it, unless \"Start Viber "
+             "automatically\" is off in its settings.",
     "accessibility": "System Settings → Privacy & Security → Accessibility: turn on the app Claude "
                      "starts Viber MCP with (uv, or \"Viber MCP\"), then quit and reopen Claude.",
     "screen_recording": "System Settings → Privacy & Security → Screen Recording: turn on the same "

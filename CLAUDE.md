@@ -76,6 +76,35 @@ port-ready for Windows/Linux — see "Porting" below):
   `backread_chat` (`viber_ui.backread`: scrolls up 10 notches a screen from the newest, joins the
   UIA screens at their longest overlap (`_merge_older`, keeps repeated "ok"/photo rows), stops
   when the top stops moving twice; returns the whole chat oldest first, then jumps back down).
+- `viber_app.py` — **platform-neutral** start/quit/restart of Viber itself (tools `start_viber`,
+  `quit_viber`, `restart_viber`). server.py registers every tool that drives Viber with
+  `@viber_tool` (= `@mcp.tool()` + `viber_app.ensure_running()` first); Drive-only tools stay
+  `@mcp.tool()` (`extension/build.py` `TOOL_DECORATORS` counts both). `ensure_running`: running
+  and responding → nothing (two cheap checks); not running → `launch_app` and wait for the main
+  screen (`viber_ocr._chat_pane` in `elements()`: splash/sign-in screens have none; raises
+  `ViberAppError` after 60 s so the tool doesn't run against them); not responding for
+  `HUNG_GRACE` → quit + start. `VIBER_MCP_AUTO_START` ("Start Viber automatically") turns that
+  off. Updates: while `updater_running()` names an installer (a process name with "viber" and
+  setup/update/install, `looks_like_updater`), Viber isn't launched (the installer relaunches it)
+  or quit — for at most `UPDATER_GRACE`, since it's a guess by name. Backend side:
+  `launch_app` / `quit_app(timeout)` / `app_responding` / `updater_running`, one native
+  counterpart per platform (keep them paired — a piece added on one OS gets its equivalent on
+  the other, with a test in `test_windows_backend.py` / `test_macos_app.py`):
+
+  | | Windows (`WindowsBackend`) | macOS (`MacBackend`) |
+  |---|---|---|
+  | where Viber is | `viber://` handler's registry command (`_handler_exe`), else last seen running exe, else `%LOCALAPPDATA%\Viber\Viber.exe` | Launch Services (`URLForApplicationWithBundleIdentifier`, `_ls_app_path`), else last seen running bundle, else `/Applications`, `~/Applications` (`ml.app_executable` reads Info.plist) |
+  | launch | `DETACHED_PROCESS \| CREATE_BREAKAWAY_FROM_JOB`, DEVNULL stdio (stdout is the MCP stream); `explorer.exe` if the job forbids breakaway | `NSWorkspace.openApplicationAtURL` with `activates=NO` (launchd's child; completion handler on a dispatch queue, no run loop needed); `open -g` if it fails |
+  | front app | `_keep_viber_behind`: 20 s, only when a Viber window takes the foreground | same, via `AXFrontmost`, never mid-hand-off |
+  | quit | `WM_CLOSE` (usually only hides to the tray), then kill this user's Viber.exe + children | `NSRunningApplication.terminate` (no Automation prompt), then `forceTerminate`/SIGKILL, then this user's leftover processes inside Viber.app (`ml.bundle_processes`) |
+  | this user only | psutil `username` | `pgrep -U <uid>` (`_viber_pid`, everywhere) |
+  | not responding | `IsHungAppWindow` | an AX read failing with kAXErrorCannotComplete within `_RESPONDING_TIMEOUT` (3 s, `AXUIElementSetMessagingTimeout`) |
+  | update in progress | Viber.exe gone from the handler's folder, or a process named like an installer | Viber.app's executable gone while Launch Services has the bundle, or a process path like an updater (Sparkle's Autoupdate inside Viber.app) |
+  | frozen mid-tool | `_on_uia` 30 s timeout → "restart_viber" | `_walk`'s window read fails with kAXErrorCannotComplete → "restart_viber" |
+
+  Not verified on the live app yet (written 2026-11-06). Auto-update: `test_extension`'s
+  `test_bundle_has_every_module_the_server_imports` keeps a new module from being left out of
+  the release bundle (an installed extension would update into a server that can't start).
 - `viber_send.py` — **platform-neutral** write/navigation logic: recipient resolution
   (`contacts.json` alias → E.164), the send pipeline, search-result scoring, panel detection, send
   verification. Holds a module-level `backend = get_backend()` and calls only its semantic methods.
@@ -148,7 +177,7 @@ Status:
 
 | Platform | Backend | State |
 |----------|---------|-------|
-| macOS | `backends/macos.py` (`MacBackend`) | ✅ implemented, mostly background (AX to locate/read/type/press, Vision OCR, posted characters, files pasted; real input with a brief front hand-off for clicks on non-controls, scrolling and named keys; stops while another app is full screen) |
+| macOS | `backends/macos.py` (`MacBackend`) | ✅ implemented, mostly background (AX to locate/read/type/press, Vision OCR, posted characters, files pasted; real input with a brief front hand-off for clicks on non-controls, scrolling and named keys; stops while another app is full screen; `macos_selftest.py`) |
 | Windows | `backends/windows.py` (`WindowsBackend`) | ✅ implemented, background (PrintWindow + Windows.Media.Ocr, UIA to locate, posted messages for input; `windows_selftest.py`) |
 | Linux | — | ❌ not started |
 

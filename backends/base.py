@@ -24,6 +24,17 @@ class OCRError(Exception):
     """Raised when the Viber window can't be found, captured, or OCR'd."""
 
 
+_UPDATER_WORDS = ("setup", "update", "install")
+
+
+def looks_like_updater(process_name: str) -> bool:
+    """A process that installs or updates Viber (ViberSetup.exe, a "Viber Updater"), by name:
+    it has "viber" and an installer word in it. Viber itself and this server don't."""
+    name = process_name.lower()
+    return ("viber" in name and "mcp" not in name
+            and any(word in name for word in _UPDATER_WORDS))
+
+
 class Backend(ABC):
     """Everything platform-specific needed to drive Viber Desktop."""
 
@@ -49,6 +60,27 @@ class Backend(ABC):
     @abstractmethod
     def app_running(self) -> bool:
         """True if the Viber desktop app process is alive."""
+
+    def launch_app(self) -> None:
+        """Start Viber (it isn't running), without taking the user's foreground. Returns once
+        the OS has started it; viber_app waits for its main screen."""
+        self._unsupported("Starting Viber")
+
+    def quit_app(self, timeout: float) -> bool:
+        """Quit Viber: politely where the OS can ask it to, then by force once `timeout`
+        seconds pass. Returns True if it had to be forced."""
+        self._unsupported("Quitting Viber")
+
+    def app_responding(self) -> bool:
+        """False while Viber's window has stopped answering (frozen). True when the backend
+        can't tell."""
+        return True
+
+    def updater_running(self) -> str | None:
+        """The name of an installer/updater that is replacing Viber right now, else None. It
+        quits Viber and starts it again itself, so Viber shouldn't be launched or quit
+        meanwhile."""
+        return None
 
     @abstractmethod
     def focus(self) -> None:

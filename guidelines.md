@@ -426,6 +426,13 @@ each GC created and each template skipped or failed (with the reason).
   so `current_chat` first. If something landed in the wrong chat, unsend it there and report it.
 - **Viber minimized or closed to tray:** tools say "search box not found" / "No chat is open" and
   `screenshot` is a small black image. Ask the staff member to restore the Viber window; don't retry.
+- **Viber crashed, frozen or updating:** tools start Viber on their own when it isn't running and
+  restart it when it has stopped responding. If a tool still fails with Viber "didn't answer" or
+  "window not found", call `restart_viber` once, check where things stand (`current_chat`), then
+  carry on; if that fails too, report it. A restart closes the open chat — never restart in the
+  middle of a send, and re-open the chat (with `expect_chat` on the writer) before continuing.
+  `restart_viber` also applies a Viber update that asks for a restart. While Viber is being
+  updated, wait (`start_viber` says when it's back). `quit_viber` only when the user asks.
 - **Sponsored ad in the sidebar** (a video "Sponsored" box) can make tools report "No chat is
   open" while a chat is visibly open; close the ad's ✕ (`screenshot` → `click`) and continue.
 - **`send_listing` fails mid-text** ("Could not enter the text"): the text may be left unsent in
