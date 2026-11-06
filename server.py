@@ -470,7 +470,8 @@ def find_listings(query: str = "", category: str = "", deal: str = "") -> dict:
 def get_listing(folder_id: str, include_internal: bool = False) -> dict:
     """Read a listing: the client-facing details (the doc's text ABOVE the dashed line) and its
     photos/videos. The part below the line is internal and withheld unless include_internal=True —
-    and even then it must NEVER be sent to a client."""
+    and even then it must NEVER be sent to a client. With include_internal=True it also returns
+    `doc_revision`, which update_listing_doc needs."""
     return viber_drive.get_listing(folder_id, include_internal)
 
 
@@ -559,10 +560,13 @@ def drive_upload_files(folder_id: str, paths: list[str], start: int = 1) -> dict
 
 
 @mcp.tool()
-def update_listing_doc(folder_id: str, text: str) -> dict:
+def update_listing_doc(folder_id: str, text: str, doc_revision: str) -> dict:
     """Replace the whole text of a listing folder's Google Doc (e.g. to reformat it to the
-    listing template). The doc keeps its link. The text must have the dashed separator."""
-    return viber_drive.update_listing_doc(folder_id, text)
+    listing template). The doc keeps its link. The text must have the dashed separator.
+    doc_revision: from get_listing(folder_id, include_internal=True), read right before. The edit
+    is refused if the doc changed since (a coworker's edit, a recorded availability check): read
+    it again and redo the edit on the new text."""
+    return viber_drive.update_listing_doc(folder_id, text, doc_revision)
 
 
 @mcp.tool()

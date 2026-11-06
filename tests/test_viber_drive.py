@@ -243,7 +243,7 @@ class _FakeDocs:
     def documents(self):
         return self
 
-    def get(self, documentId):
+    def get(self, documentId, **kw):
         return _Call(self.doc)
 
     def batchUpdate(self, documentId, body):
@@ -272,6 +272,45 @@ def test_record_availability_edits_in_place_with_revision_guard(monkeypatch):
     assert doc_id == "doc1" and body["writeControl"] == {"requiredRevisionId": "rev-1"}
     with pytest.raises(viber_drive.DriveError, match="status"):
         viber_drive.record_availability("f1", " ")
+
+
+def test_update_listing_doc_replaces_the_text_only_if_the_doc_is_as_it_was_read(monkeypatch):
+    # D5 (state-machine hunt 2026-11-06; decided: edit through the Docs API). update_listing_doc
+    # rewrote the whole doc through Drive with no check, so a coworker's edit or a recorded
+    # availability line made after get_listing read the doc was silently lost.
+    docs = _FakeDocs(_doc_content("TITLE\n", "-----\n", "Owner: X\n"))
+    monkeypatch.setattr(viber_drive, "_docs", lambda: docs)
+    monkeypatch.setattr(viber_drive, "_saved_creds", lambda *a: object())  # the upload account is signed in
+    monkeypatch.setattr(viber_drive, "_writer", lambda: pytest.fail("rewrote the doc through Drive"))
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "doc1", "name": "*Cavite, 1890 Silang", "mimeType": viber_drive.GDOC}])
+    monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "TITLE\n-----\nOwner: X")
+    read = viber_drive.get_listing("f1", include_internal=True)
+    assert read["doc_revision"] == "rev-1"
+    assert "doc_revision" not in viber_drive.get_listing("f1")  # only with the internal part
+    docs.doc["revisionId"] = "rev-2"  # a coworker edited it, or an availability check was recorded
+    new = "TITLE\nFloor Area: 25 sqm\n-----\nOwner: X"
+    with pytest.raises(viber_drive.DriveError, match="changed since"):
+        viber_drive.update_listing_doc("f1", new, read["doc_revision"])
+    with pytest.raises(viber_drive.DriveError, match="doc_revision"):
+        viber_drive.update_listing_doc("f1", new, "")
+    assert docs.updates == []
+    end = docs.doc["body"]["content"][-1]["endIndex"]
+    viber_drive.update_listing_doc("f1", new, "rev-2")  # read again: the edit goes in
+    (doc_id, body), = docs.updates
+    assert doc_id == "doc1" and body["writeControl"] == {"requiredRevisionId": "rev-2"}
+    assert body["requests"] == [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end - 1}}},
+                                {"insertText": {"location": {"index": 1}, "text": new}}]
+
+
+def test_a_revision_is_only_read_for_a_signed_in_upload_account(monkeypatch):
+    # A revision id only holds for the account that read it, and update_listing_doc writes as the
+    # upload account. Without that sign-in get_listing says nothing, and never opens a sign-in page.
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "doc1", "name": "*Cavite, 1890 Silang", "mimeType": viber_drive.GDOC}])
+    monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "TITLE\n-----\nOwner: X")
+    monkeypatch.setattr(viber_drive, "_docs", lambda: pytest.fail("signed in for a read"))
+    assert viber_drive.get_listing("f1", include_internal=True)["doc_revision"] is None
 
 
 def test_listing_photos_are_shrunk_and_counted(monkeypatch, tmp_path):

@@ -484,6 +484,8 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
         starred = [d for d in docs if d["name"].startswith("*")]
         docs = starred or docs
     doc = docs[0]
+    # Read before the text, so an edit between the two reads fails the update instead of passing it.
+    revision = _doc_revision(doc["id"]) if include_internal and doc["mimeType"] == GDOC else None
     public, internal = split_listing(_doc_text(doc))
     photos = [f for f in files if f["mimeType"].startswith("image/")]
     videos = [f for f in files if f["mimeType"].startswith("video/")]
@@ -497,7 +499,21 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
     }
     if include_internal:
         result["internal_part"] = "INTERNAL — FOR STAFF ONLY, NEVER SEND:\n" + internal
+        result["doc_revision"] = revision  # for update_listing_doc
     return result
+
+
+def _doc_revision(doc_id: str) -> str | None:
+    """The doc's Docs API revision as the upload account reads it: update_listing_doc writes as
+    that account, and a revision id only holds for the account that read it. None when that
+    account isn't signed in (a read never opens Google's sign-in page) or the read fails."""
+    if not _saved_creds(WRITE_SCOPES, WRITE_TOKEN_FILE):
+        return None
+    try:
+        return _docs().documents().get(documentId=doc_id, fields="revisionId").execute(
+            num_retries=RETRIES)["revisionId"]
+    except Exception:  # noqa: BLE001 — the read itself still works; only an update needs this
+        return None
 
 
 def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = True,
@@ -616,24 +632,40 @@ def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
         path += f" / {parent['name']}"
     clash = [p for p in _property_folders()
              if listing_key(p["name"]) == listing_key(folder_name)]
+    reuse = None
     if allow_existing:
+        # This listing's folder in this parent is reused, under whatever name it has (a
+        # hand-made "Quezon City, 860 Brgy. Apolonio Samson" for "Quezon City, 860 Apolonio
+        # Samson"): uploading by the exact "*<name>" made a second folder beside it.
+        here = [p for p in clash if p.get("parent_id") == parent["id"]]
         clash = [p for p in clash if p.get("parent_id") != parent["id"]]
+        starred = [p for p in here if p["name"].strip() == f"*{folder_name}"]
+        if len(starred) == 1 or len(here) == 1:
+            reuse = (starred or here)[0]
+        elif here:
+            raise DriveError(f"{len(here)} folders in {path} are this listing "
+                             f"({', '.join(p['name'] for p in here)}). Merge them in Drive first.")
     if clash:
         raise DriveError(f"A listing folder named '{folder_name}' already exists "
                          f"({clash[0]['category']} / {clash[0]['deal']}) — it may already be posted. "
                          "Check before adding it again.")
-    return {"parent_id": parent["id"], "path": path,
+    plan = {"parent_id": parent["id"], "path": path,
             "folder_name": folder_name, "photos": [str(p) for p in photos]}
+    if reuse:
+        plan["existing_folder"] = {"id": reuse["folder_id"], "name": reuse["name"]}
+    return plan
 
 
 def drive_upload_plan(text: str, plan: dict, added: str) -> dict:
     """What to create in Drive (with the Drive connector — this server never uploads): the folder,
     the listing doc and the photos, named the way staff name them. New listings get the '*'
     identifier on the folder as well as the doc."""
+    existing = plan.get("existing_folder")
     return {
         "parent_folder_id": plan["parent_id"],
         "parent_path": plan["path"],
-        "folder_name": f"*{plan['folder_name']}",
+        **({"folder_id": existing["id"]} if existing else {}),  # reused as it is
+        "folder_name": existing["name"] if existing else f"*{plan['folder_name']}",
         "doc_title": f"*{plan['folder_name']}",
         "doc_text": listing_doc_text(text, added),
         "photos": [{"path": p, "name": f"AlphaPremier_Photo_{i:02d}{Path(p).suffix.lower() or '.jpg'}"}
@@ -683,7 +715,10 @@ def upload_listing(upload: dict) -> dict:
     global _tree_cache
     svc = _writer()
     name = upload["folder_name"]
-    folder = _find_child(svc, upload["parent_folder_id"], name, FOLDER)
+    if upload.get("folder_id"):  # the listing's existing folder (_check_new_listing found it)
+        folder = {"id": upload["folder_id"], "name": name}
+    else:
+        folder = _find_child(svc, upload["parent_folder_id"], name, FOLDER)
     created_folder = folder is None
     if folder is None:
         folder = svc.files().create(body={"name": name, "mimeType": FOLDER,
@@ -721,19 +756,48 @@ def _md5(path: str) -> str | None:
         return None  # upload_files reports the missing file
 
 
-def update_listing_doc(folder_id: str, text: str) -> dict:
-    """Replace the whole text of a listing folder's '*' Google Doc (e.g. to reformat it). The
-    doc keeps its id/link. Refuses text without the dashed separator."""
-    from googleapiclient.http import MediaInMemoryUpload
+_DOC_CHANGED = ("The doc changed since get_listing read it (a coworker's edit, or a recorded "
+                "availability check). Nothing was changed: read it again with get_listing(folder_id, "
+                "include_internal=True) and redo the edit on that text.")
+
+
+def replace_text_requests(content: list[dict], text: str) -> list[dict]:
+    """Docs batchUpdate requests that make a body's whole text `text` (its final newline can't
+    be deleted, so the text goes in before it)."""
+    end = content[-1]["endIndex"]
+    delete = [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end - 1}}}] if end - 1 > 1 else []
+    return delete + [{"insertText": {"location": {"index": 1}, "text": text}}]
+
+
+def update_listing_doc(folder_id: str, text: str, doc_revision: str = "") -> dict:
+    """Replace the whole text of a listing folder's '*' Google Doc (e.g. to reformat it), through
+    the Docs API: the doc keeps its id/link, and the edit only goes in if the doc is still at
+    `doc_revision`, the revision get_listing(include_internal=True) read. Rewriting it blind lost
+    whatever changed in between (a coworker's edit, a recorded availability check). Refuses text
+    without the dashed separator."""
+    from googleapiclient.errors import HttpError
 
     split_listing(text, strict=True)
-    svc = _writer()
+    if not doc_revision.strip():
+        raise DriveError("Pass the doc_revision get_listing(folder_id, include_internal=True) returned: "
+                         "the doc is only replaced if nobody changed it since it was read. (None there "
+                         "means the upload account isn't signed in: drive_sign_in(write=True).)")
     docs = [f for f in _children(folder_id) if f["mimeType"] == GDOC]
     if len(docs) != 1:
         raise DriveError(f"Expected one Google Doc in the folder, found {len(docs)}.")
-    media = MediaInMemoryUpload(text.strip().encode("utf-8"), mimetype="text/plain")
-    svc.files().update(fileId=docs[0]["id"], media_body=media,
-                       supportsAllDrives=True).execute(num_retries=RETRIES)
+    svc = _docs()
+    doc = svc.documents().get(documentId=docs[0]["id"]).execute(num_retries=RETRIES)
+    if doc["revisionId"] != doc_revision.strip():
+        raise DriveError(_DOC_CHANGED)
+    try:
+        svc.documents().batchUpdate(documentId=docs[0]["id"], body={
+            "requests": replace_text_requests(doc["body"]["content"], text.strip()),
+            "writeControl": {"requiredRevisionId": doc["revisionId"]},  # an edit since the read above
+        }).execute(num_retries=RETRIES)
+    except HttpError as exc:
+        if getattr(exc.resp, "status", None) == 400 and "revision" in str(exc).lower():
+            raise DriveError(_DOC_CHANGED) from exc
+        raise
     return {"updated": True, "doc_id": docs[0]["id"], "doc": docs[0]["name"]}
 
 
@@ -974,8 +1038,10 @@ def confirm_listing_in_drive(folder_name: str, photos: int) -> dict:
     global _tree_cache
     _tree_cache = None  # the folder was just created
     name = folder_name.strip().lstrip("*").strip()  # the folder itself is named "*<name>"
-    hits = [p for p in _property_folders()
-            if p["name"].strip().lstrip("*").strip().casefold() == name.casefold()]
+    folders = _property_folders()
+    hits = [p for p in folders if p["name"].strip().lstrip("*").strip().casefold() == name.casefold()]
+    if not hits:  # a hand-made folder add_listing_to_drive reused ("…, 860 Brgy. Apolonio Samson")
+        hits = [p for p in folders if listing_key(p["name"]) == listing_key(name)]
     if len(hits) != 1:
         raise DriveError(f"Expected one Drive folder named '{name}', found {len(hits)}. Nothing posted.")
     files = _children(hits[0]["folder_id"])

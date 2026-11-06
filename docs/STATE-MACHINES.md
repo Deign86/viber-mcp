@@ -96,11 +96,11 @@ folder/doc/photo count in Drive are the record.
 | Posted | upload_listing | | Uploaded | 963 |
 | Uploaded | confirm (≥ N photos, doc, one folder) | | Confirmed + "Added to Drive" quote-reply | 964 |
 | Posted/Uploaded | failure | | STOP "re-run add_listing_to_drive" | 965-967 |
-| STOP (Drive) | `add_listing_to_drive` | folder `*<name>` exists in the parent | reuses folder/doc, uploads only photos not there (md5) | 701-709 |
+| STOP (Drive) | `add_listing_to_drive` | the listing's folder (same `listing_key`) is in the parent | reuses it by id, the `*<name>` doc if there, uploads only photos not there (md5) | 701-709 |
 
 **Invariants:** a listing is posted once; the internal part reaches only the listings GC; a
 Drive re-run converges (no duplicate folder, doc or photo). Broken before I2 (internal text to
-another chat) and I5 (re-run duplicated photos); still open: D3 (a second folder).
+another chat), I5 (re-run duplicated photos) and I11 (a second folder).
 
 ## 6. Extension auto-update
 
@@ -291,21 +291,38 @@ invalid state before the fix.
   `test_paste_files_keeps_what_the_user_copied_while_viber_took_the_files`,
   `test_paste_files_gives_the_user_their_clipboard_back`.
 
+### I11. add_listing_to_drive made a second folder beside the listing's own (impact 2). Fixed.
+
+- The clash check matched the listing by `listing_key` (which ignores `*`, "Brgy." and
+  punctuation) and let a same-parent folder through as "it gets reused". The upload then looked
+  for the exact `*<name>`, so a hand-made "X" got a second folder "*X" beside it, and
+  `confirm_listing_in_drive` found 2 on every try.
+- **Fix (decided: reuse the folder):** `_check_new_listing` returns that folder
+  (`existing_folder`; a `*<name>` one wins if several, refused if still ambiguous).
+  `upload_listing` uploads into it by id, under its own name. `confirm_listing_in_drive` falls
+  back to `listing_key` when no folder has the exact name.
+- **Test:** `test_add_listing_to_drive_reuses_the_hand_made_folder_of_that_listing`.
+- Left as is: a reused folder that already holds a doc named differently gets the `*<name>`
+  doc beside it; `get_listing` prefers `*` docs.
+
+### I12. update_listing_doc overwrote edits made since the doc was read (impact 2). Fixed.
+
+- It rewrote the whole doc through Drive with no precondition. A coworker's edit, or
+  `record_availability`'s line, made after `get_listing` read the doc was lost.
+- **Fix (decided: edit through the Docs API):** `get_listing(include_internal=True)` returns
+  `doc_revision`, read as the upload account before the text (a revision id only holds for the
+  account that read it, and that's the account `update_listing_doc` writes with). Without that
+  sign-in it's None, and no sign-in page opens for a read.
+- `update_listing_doc(folder_id, text, doc_revision)` refuses when the doc is no longer at that
+  revision. Otherwise it replaces the text with `batchUpdate` and `requiredRevisionId`, so an
+  edit between its own read and write is refused too.
+- **Tests:** `test_update_listing_doc_replaces_the_text_only_if_the_doc_is_as_it_was_read`,
+  `test_a_revision_is_only_read_for_a_signed_in_upload_account`.
+
 ### Confirmed, still open
 
 The traces have been re-read against the code.
 
-- **D3 (Drive, impact 2, needs a decision).** The `add_listing_to_drive` clash check matches by `listing_key`,
-  which ignores `*`, "Brgy." and punctuation. Reuse, though, looks for the exact `*<name>`. A
-  hand-made "X" in the same parent gets a second folder "*X", and the confirm then reports
-  "found 2" every time.
-  - Fix needs a choice: reuse the hand-made folder under its own name (then `confirm` must
-    look it up by `listing_key`), or rename it to the `*` form.
-- **D5 (Drive, impact 2, needs a decision).** `update_listing_doc` rewrites the whole doc text
-  with no precondition (`viber_drive.py:724`). An edit made after `get_listing` read it (a
-  staff edit, or `record_availability`'s line) is lost.
-  - Fix needs an API choice: refuse when `modifiedTime` changed since the read, or edit
-    through the Docs API with `requiredRevisionId`.
 - **D7 (Drive, impact 3).** At start, `sign_in_at_start` holds `_SIGN_IN` for up to 300 s
   waiting on the write consent. A first read tool (no service-account key) then waits on the
   event loop, and afterwards opens a second, read-only consent, because `_browser_sign_in`

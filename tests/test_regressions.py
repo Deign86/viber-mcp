@@ -637,6 +637,39 @@ def test_new_listing_refuses_an_already_listed_folder(monkeypatch):
         viber_drive._check_new_listing(text, "commercial space", "lease", "las piñas, 60 almanza uno", [])
 
 
+def test_add_listing_to_drive_reuses_the_hand_made_folder_of_that_listing(monkeypatch, tmp_path):
+    # D3 (state-machine hunt 2026-11-06; decided: reuse the folder). The check let a hand-made
+    # folder of the same listing through ("Brgy.", no "*": same listing_key, same parent) as
+    # "it gets reused", but the upload looked for the exact "*<name>", made a second folder next
+    # to it, and confirm_listing_in_drive then found 2 on every try.
+    import viber_drive
+
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"x")
+    hand_made = {"folder_id": "F0", "name": "Quezon City, 860 Brgy. Apolonio Samson",
+                 "category": "WAREHOUSE", "deal": "For lease", "parent_id": "d"}
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "c", "name": "WAREHOUSE", "mimeType": viber_drive.FOLDER}] if fid == "root" else [
+        {"id": "d", "name": "For lease", "mimeType": viber_drive.FOLDER}])
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [hand_made])
+    w = _FakeWriter()
+    monkeypatch.setattr(viber_drive, "_writer", lambda: w)
+    out = viber_drive.add_listing_to_drive("WAREHOUSE FOR LEASE\n-----\nOwner: X", "warehouse", "lease",
+                                           "Quezon City, 860 Apolonio Samson", [str(photo)])
+    assert out["folder_id"] == "F0" and out["folder_created"] is False
+    assert [(b["name"], b["parents"]) for b in w.created] == [
+        ("*Quezon City, 860 Apolonio Samson", ["F0"]), ("AlphaPremier_Photo_01.jpg", ["F0"])]
+    # ...and the confirm finds that folder by the listing, not by its exact name.
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "D", "name": "*Quezon City, 860 Apolonio Samson", "mimeType": viber_drive.GDOC},
+        {"id": "P", "name": "AlphaPremier_Photo_01.jpg", "mimeType": "image/jpeg"}])
+    monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "WAREHOUSE FOR LEASE\n-----\nOwner: X")
+    monkeypatch.setattr(viber_drive, "_open_listings_gc", lambda: None)
+    monkeypatch.setattr(viber_drive, "_quote_reply_posted", lambda text, reply: None)
+    assert viber_drive.confirm_listing_in_drive("Quezon City, 860 Apolonio Samson", 1)["folder_id"] == "F0"
+
+
 def _plan(*_):
     return {"parent_id": "d", "path": "APR LISTING / WAREHOUSE / FOR LEASE/RENT",
             "folder_name": "Quezon City, 860 Apolonio Samson", "photos": ["C:/p/a.JPG", "C:/p/b.png"]}

@@ -474,8 +474,10 @@ Status:
   `Last availability check (Oct 22, 2026): STATUS. note` as the first line under the separator,
   replacing an earlier check line (`availability_requests`, pure, tested with fake Docs bodies), via
   the **Docs API** (`_docs()`, company account, `drive` scope; docs.googleapis.com was enabled in
-  `apg-viber-assistant` on 2026-10-24) with `requiredRevisionId`, so formatting and tabs survive —
-  unlike `update_listing_doc`'s whole-text rewrite.
+  `apg-viber-assistant` on 2026-10-24) with `requiredRevisionId`, so formatting and tabs survive.
+  `update_listing_doc` replaces the whole text through the Docs API too, and only at the
+  `doc_revision` that `get_listing(include_internal=True)` read (as the upload account: a revision
+  id only holds for the account that read it), so an edit made in between is never overwritten.
 - **Two Google identities.** Reads use the read-only service account
   (`viber-drive-reader@apg-viber-assistant.iam.gserviceaccount.com`, gcloud project
   `apg-viber-assistant`). Service accounts have 0 bytes of storage (uploads failed with
@@ -492,7 +494,8 @@ Status:
   test once opened the real consent page and hung.
 - `post_new_listing` (viber_drive.py) validates everything first (separator, photos,
   category/deal[/subfolder] via `pick_folder`, no existing folder of that name — compared by `listing_key`, which ignores `*`, "Brgy." and
-  punctuation), opens
+  punctuation; `add_listing_to_drive` reuses such a folder in the same parent by id, under its own
+  name, and `confirm_listing_in_drive` falls back to `listing_key`), opens
   `VIBER_MCP_LISTINGS_GC` (default `APR LISTING ONLY`; `is_listings_gc` tolerates OCR junk like a
   trailing "w"), refuses if the listing is already the latest post, posts the text, confirms it is
   on screen (`find_posted_message`, which strips Viber's U+2068/U+2069 isolate marks — `reply`'s

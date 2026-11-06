@@ -14,7 +14,7 @@ NON_TOOL_NAMES = {
     "folder_id", "photo_paths", "folder_name",
     "drive_upload", "drive_upload.parent_folder_id", "doc_title", "doc_text", "added_to_drive_reply",
     "expect_chat", "expect_current", "unread_only", "last_from", "existing_client", "is_group",
-    "to_fix",
+    "to_fix", "doc_revision",
 }
 SNAKE = re.compile(r"\b[a-z]+(?:_[a-z]+)+\b")
 

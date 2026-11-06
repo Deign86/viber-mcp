@@ -118,7 +118,9 @@ for anything that goes to a client. Never mix photos from a different listing.
   text reformatted to the listing template and the photo paths (Viber saves posted photos in
   `Documents\ViberDownloads`; match the post's time and look at them), then quote-reply its
   `added_to_drive_reply` to the staff post. `drive_upload_files` adds photos to an existing folder;
-  `update_listing_doc` rewrites a listing doc in place (same link); for an owner's availability
+  `update_listing_doc` rewrites a listing doc in place (same link): read it with
+  `get_listing(folder_id, include_internal=True)` right before and pass its `doc_revision`; if
+  it says the doc changed, read it again and redo the edit; for an owner's availability
   answer use `record_availability` instead (it changes one line and keeps the formatting). When
   an owner says a property is leased/sold/taken, `move_listing_to_sold(folder_id)` moves its
   folder to SOLD / SOLD <CATEGORY> (House/Lot Sold for condos/houses/lots).
