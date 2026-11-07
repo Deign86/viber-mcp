@@ -104,13 +104,36 @@ os.replace(tmp, path)
 PY
 echo "   registered in $CONFIG"
 
+echo "== Antigravity"
+for AGY_DIR in "$HOME/.gemini/config" "$HOME/.gemini/antigravity"; do
+    if [ -d "$AGY_DIR" ] || command -v agy >/dev/null 2>&1 || [ "$AGY_DIR" = "$HOME/.gemini/config" -a -d "$HOME/.gemini" ]; then
+        mkdir -p "$AGY_DIR"
+        AGY_CONFIG="$AGY_DIR/mcp_config.json"
+        [ -f "$AGY_CONFIG" ] && cp "$AGY_CONFIG" "$AGY_CONFIG.bak-viber-$(date +%Y%m%d%H%M%S)"
+        /usr/bin/python3 - "$AGY_CONFIG" "$EXE" <<'PY'
+import json, os, sys, tempfile
+path, exe = sys.argv[1], sys.argv[2]
+data = json.load(open(path)) if os.path.exists(path) else {}
+data.setdefault("mcpServers", {})["viber"] = {"command": exe, "args": []}
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+        echo "   registered in $AGY_CONFIG"
+    fi
+done
+
 cat <<EOF
 
 Done. Next:
-  1. Quit Claude completely (Cmd+Q) and reopen it. Claude Desktop rewrites its config while it
-     runs, so do this right away or the entry above can be lost.
-  2. The first time Claude uses Viber, macOS asks to allow "Viber MCP" for Accessibility and
-     Screen Recording (System Settings → Privacy & Security). Allow both, then restart Claude.
+  1. Quit Claude / Antigravity completely (Cmd+Q) and reopen it. Claude Desktop rewrites its config
+     while it runs, so do this right away or the entry above can be lost.
+  2. The first time Claude or Antigravity uses Viber, macOS asks to allow "Viber MCP" for
+     Accessibility and Screen Recording (System Settings → Privacy & Security). Allow both, then
+     restart the app.
   3. Put the Drive key at ~/viber-mcp/google_service_account.json, and for uploads
-     google_oauth_client.json in $REPO, then ask Claude to run drive_sign_in(write=True).
+     google_oauth_client.json in $REPO, then ask to run drive_sign_in(write=True).
 EOF

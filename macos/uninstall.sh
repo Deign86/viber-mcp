@@ -91,6 +91,29 @@ else
     echo "   no config file"
 fi
 
+echo "== Antigravity config"
+for AGY_CONFIG in "$HOME/.gemini/config/mcp_config.json" "$HOME/.gemini/antigravity/mcp_config.json"; do
+    if [ -f "$AGY_CONFIG" ]; then
+        /usr/bin/python3 - "$AGY_CONFIG" <<'PY'
+import json, os, shutil, sys, tempfile, time
+path = sys.argv[1]
+data = json.load(open(path))
+if "viber" not in data.get("mcpServers", {}):
+    print(f"   no viber entry in {path}")
+    sys.exit(0)
+shutil.copy2(path, f"{path}.bak-viber-{time.strftime('%Y%m%d%H%M%S')}")
+del data["mcpServers"]["viber"]
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+with os.fdopen(fd, "w") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+print(f"   removed the viber entry from {path} (backup saved next to it)")
+PY
+    fi
+done
+
 echo "== Launcher app and its permissions"
 if [ -d "$APP" ]; then
     rm -rf "$APP"
@@ -126,9 +149,10 @@ fi
 cat <<EOF
 
 Done. Next:
-  1. Open Claude Desktop and install the extension: double-click viber-mcp.mcpb
+  1. In Claude Desktop, install the extension: double-click viber-mcp.mcpb
      (https://github.com/Deign86/viber-mcp/releases/latest/download/viber-mcp.mcpb).
+     In Antigravity, install the plugin: agy plugin install https://github.com/Deign86/viber-mcp
   2. The first time it uses Viber, macOS asks again for Accessibility and Screen Recording, this
-     time for the program Claude Desktop starts (uv). Allow both, then restart Claude.
+     time for the program Claude Desktop or Antigravity starts (uv). Allow both, then restart.
   Claude Code no longer has the Viber tools (extensions are Claude Desktop only).
 EOF

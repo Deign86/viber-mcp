@@ -74,10 +74,36 @@ foreach ($dir in $cfgDirs) {
     $connected += "Claude Desktop ($cfgPath, backup saved as .bak)"
 }
 
+# --- Antigravity ---
+$agyDirs = @(
+    Join-Path $HOME ".gemini\config",
+    Join-Path $HOME ".gemini\antigravity"
+)
+if (Get-Command agy -ErrorAction SilentlyContinue) {
+    New-Item -ItemType Directory -Force $agyDirs[0] | Out-Null
+}
+foreach ($dir in $agyDirs) {
+    if (-not (Test-Path $dir)) { continue }
+    $cfgPath = Join-Path $dir "mcp_config.json"
+    $cfg = [pscustomobject]@{}
+    if (Test-Path $cfgPath) {
+        Copy-Item $cfgPath "$cfgPath.bak" -Force
+        $raw = Get-Content $cfgPath -Raw
+        if ($raw -and $raw.Trim()) { $cfg = $raw | ConvertFrom-Json }
+    }
+    if (-not $cfg.PSObject.Properties["mcpServers"]) {
+        $cfg | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{})
+    }
+    $entry = [pscustomobject]@{ command = $py; args = @($server) }
+    $cfg.mcpServers | Add-Member -NotePropertyName viber -NotePropertyValue $entry -Force
+    $cfg | ConvertTo-Json -Depth 10 | Set-Content $cfgPath -Encoding UTF8
+    $connected += "Antigravity ($cfgPath, backup saved as .bak)"
+}
+
 if ($connected.Count -eq 0) {
-    Write-Warning "Neither Claude Code nor Claude Desktop was found, so nothing was connected. Install one and rerun."
+    Write-Warning "Neither Claude Code, Claude Desktop, nor Antigravity was found, so nothing was connected. Install one and rerun."
 } else {
     Write-Host "`nConnected to: $($connected -join '; ')"
-    Write-Host "Fully QUIT and reopen Claude Desktop (tray icon > Quit) so it loads the viber server."
+    Write-Host "Fully QUIT and reopen Claude Desktop / Antigravity so it loads the viber server."
 }
 Write-Host "`nviber_capture.png shows what the server sees. It runs in the background - keep Viber open (it can be behind other windows)."

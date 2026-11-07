@@ -29,11 +29,16 @@ def env(name: str, default: str = "") -> str:
 
 def user_file(env_name: str, filename: str) -> Path:
     """A per-user file: the path in `env_name` when set, else `filename` next to server.py (a git
-    checkout) or in DATA_DIR, whichever exists first; next to server.py when neither does."""
+    checkout), in DATA_DIR, or in Antigravity's PLUGIN_DATA, whichever exists first; next to
+    server.py when none does."""
     configured = env(env_name)
     if configured:
         return Path(configured).expanduser()
-    for folder in (HERE, DATA_DIR):
+    folders = [HERE, DATA_DIR]
+    plugin_data = env("PLUGIN_DATA")
+    if plugin_data:
+        folders.append(Path(plugin_data).expanduser())
+    for folder in folders:
         if (folder / filename).exists():
             return folder / filename
     return HERE / filename

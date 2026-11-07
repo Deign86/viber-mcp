@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "viber": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--frozen",
+        "--directory",
+        "${PLUGIN_ROOT}",
+        "server.py"
+      ],
+      "env": {
+        "VIBER_MCP_AUTO_UPDATE": "true",
+        "VIBER_MCP_AUTO_START": "true"
+      }
+    }
+  }
+}

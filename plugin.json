@@ -1,0 +1,28 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "viber-mcp",
+  "displayName": "Viber",
+  "version": "0.1.0",
+  "description": "Read your Viber inbox, open chats, draft replies, send messages and share Google Drive property listings through Viber Desktop.",
+  "logo": "assets/icon.png",
+  "suggestedPrompts": [
+    "Check my Viber inbox and tell me who needs a reply",
+    "Make client group chats for pending APG CLIENTS templates",
+    "Check the Viber MCP setup and permissions"
+  ],
+  "author": {
+    "name": "Deign Lazaro, Wawi del Mundo",
+    "url": "https://github.com/Deign86"
+  },
+  "homepage": "https://github.com/Deign86/viber-mcp",
+  "repository": "https://github.com/Deign86/viber-mcp",
+  "license": "MIT",
+  "keywords": [
+    "viber",
+    "messaging",
+    "chat",
+    "inbox",
+    "automation",
+    "google-drive"
+  ]
+}

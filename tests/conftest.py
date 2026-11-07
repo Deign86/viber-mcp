@@ -57,6 +57,10 @@ class _NoRealBackend:
                              "backends._backend and viber_send.backend with a fake.")
 
 
+# Guard before test modules import viber_send (which calls get_backend() at import time).
+backends._backend = _NoRealBackend()
+
+
 @pytest.fixture(autouse=True)
 def no_real_backend(monkeypatch):
     import viber_send

@@ -62,13 +62,19 @@ def auto_update_on() -> bool:
 
 
 def installed_version() -> str | None:
-    """The running extension's version, or None when this isn't the extension."""
-    try:
-        data = json.loads((config.HERE / "manifest.json").read_text(encoding="utf-8"))
-        version = str(data.get("version", ""))
-    except (OSError, ValueError, AttributeError):
-        return None
-    return version if _VERSION.match(version) else None
+    """The running extension's or Antigravity plugin's version, or None in a git checkout."""
+    candidates = [config.HERE / "manifest.json"]
+    if config.env("PLUGIN_ROOT"):
+        candidates.append(config.HERE / "plugin.json")
+    for path in candidates:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            version = str(data.get("version", ""))
+        except (OSError, ValueError, AttributeError):
+            continue
+        if _VERSION.match(version):
+            return version
+    return None
 
 
 def _get(request: urllib.request.Request, context: ssl.SSLContext, timeout: float) -> bytes:
@@ -210,7 +216,7 @@ def install(bundle: zipfile.ZipFile, target: Path) -> None:
     names = _files(bundle)
     staged = []
     try:
-        for name in sorted(names, key=lambda n: n == "manifest.json"):
+        for name in sorted(names, key=lambda n: (n == "plugin.json", n == "manifest.json")):
             dst = target.joinpath(*PurePosixPath(name).parts)
             dst.parent.mkdir(parents=True, exist_ok=True)
             tmp = dst.with_name(dst.name + ".updating")
