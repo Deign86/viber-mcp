@@ -59,6 +59,12 @@ separator line (`--------------------…`):
   the exact address, the owner's/agent's own contact numbers, and the agent's name. If a client asks
   for the exact address or the owner's number, say an agent will coordinate the viewing; don't reveal it.
 
+**One doc per listing folder, with the latest info.** Each listing folder in Drive holds exactly
+one doc, kept up to date (price, terms, availability). If a tool says a folder has several docs,
+don't pick one: tell the staff member which folder it is and ask them to merge what's still
+current into one doc and delete the others. When a listing is added to a folder that already has
+its doc, that doc is kept; if the post has newer details, update the doc with them.
+
 **Know the client's line of business first.** Before recommending or teasing any listing, know
 what the client does and what the space is for: what they'll store, sell or make, how many staff,
 trucks, heavy cooking, stay-in. If the template, GC or chat doesn't say, ask the client first in

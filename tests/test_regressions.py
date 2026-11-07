@@ -3,6 +3,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import viber_gc_logic as logic  # noqa: E402
@@ -686,7 +688,7 @@ def test_a_reused_folder_keeps_its_own_listing_doc(monkeypatch, tmp_path):
     monkeypatch.setattr(viber_drive, "_property_folders", lambda: [
         {"folder_id": "F0", "name": "Quezon City, 860 Brgy. Apolonio Samson", "category": "WAREHOUSE",
          "deal": "For lease", "parent_id": "d"}])
-    w = _FakeWriter()
+    w = _FakeWriter(existing={("F0", own_doc["name"], own_doc["mimeType"]): "D0"})
     monkeypatch.setattr(viber_drive, "_writer", lambda: w)
     out = viber_drive.add_listing_to_drive("WAREHOUSE FOR LEASE\n-----\nOwner: X", "warehouse", "lease",
                                            "Quezon City, 860 Apolonio Samson", [str(photo)])
@@ -698,6 +700,60 @@ def test_a_reused_folder_keeps_its_own_listing_doc(monkeypatch, tmp_path):
     monkeypatch.setattr(viber_drive, "_open_listings_gc", lambda: None)
     monkeypatch.setattr(viber_drive, "_quote_reply_posted", lambda text, reply: None)
     assert viber_drive.confirm_listing_in_drive("Quezon City, 860 Apolonio Samson", 1)["folder_id"] == "F0"
+
+
+@pytest.mark.parametrize("own", ["Quezon City, 860 Brgy. Apolonio Samson", "Listing details.docx"])
+def test_an_existing_folder_keeps_its_one_doc_whatever_its_name(monkeypatch, tmp_path, own):
+    # A listing folder has one doc, with the latest info. Only a "*" doc was reused, so a
+    # hand-made folder whose doc had no "*" got a second one, and get_listing then refused it.
+    import viber_drive
+
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"x")
+    mime = viber_drive.DOCX if own.endswith(".docx") else viber_drive.GDOC
+    own_doc = {"id": "D0", "name": own, "mimeType": mime}
+    monkeypatch.setattr(viber_drive, "_listings_root", lambda: "root")
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: {
+        "root": [{"id": "c", "name": "WAREHOUSE", "mimeType": viber_drive.FOLDER}],
+        "c": [{"id": "d", "name": "For lease", "mimeType": viber_drive.FOLDER}],
+        "F0": [own_doc]}.get(fid, []))
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [
+        {"folder_id": "F0", "name": "Quezon City, 860 Brgy. Apolonio Samson", "category": "WAREHOUSE",
+         "deal": "For lease", "parent_id": "d"}])
+    w = _FakeWriter(existing={("F0", own, mime): "D0"})
+    monkeypatch.setattr(viber_drive, "_writer", lambda: w)
+    out = viber_drive.add_listing_to_drive("WAREHOUSE FOR LEASE\n-----\nOwner: X", "warehouse", "lease",
+                                           "Quezon City, 860 Apolonio Samson", [str(photo)])
+    assert out["doc_id"] == "D0" and out["doc_created"] is False and "update_listing_doc" in out["note"]
+    assert [b["name"] for b in w.created] == ["AlphaPremier_Photo_01.jpg"]
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        own_doc, {"id": "P", "name": "AlphaPremier_Photo_01.jpg", "mimeType": "image/jpeg"}])
+    monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "WAREHOUSE FOR LEASE\n-----\nOwner: X")
+    monkeypatch.setattr(viber_drive, "_open_listings_gc", lambda: None)
+    monkeypatch.setattr(viber_drive, "_quote_reply_posted", lambda text, reply: None)
+    assert viber_drive.confirm_listing_in_drive("Quezon City, 860 Apolonio Samson", 1)["folder_id"] == "F0"
+
+
+def test_an_existing_folder_with_several_docs_gets_nothing_added(monkeypatch, tmp_path):
+    import pytest
+    import viber_drive
+
+    photo = tmp_path / "a.jpg"
+    photo.write_bytes(b"x")
+    w = _FakeWriter(existing={("P", "*X, 1 Y", viber_drive.FOLDER): "F1", ("F1", "X, 1 Y", viber_drive.GDOC): "a",
+                              ("F1", "X, 1 Y (copy)", viber_drive.GDOC): "b"})
+    monkeypatch.setattr(viber_drive, "_writer", lambda: w)
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "a", "name": "X, 1 Y", "mimeType": viber_drive.GDOC},
+        {"id": "b", "name": "X, 1 Y (copy)", "mimeType": viber_drive.GDOC}])
+    with pytest.raises(viber_drive.DriveError, match="one doc"):
+        viber_drive.upload_listing({"parent_folder_id": "P", "folder_name": "*X, 1 Y", "doc_title": "*X, 1 Y",
+                                    "doc_text": "a", "photos": [{"path": str(photo), "name": "x"}]})
+    assert w.created == []  # no doc, no photos
+    monkeypatch.setattr(viber_drive, "_property_folders", lambda: [
+        {"folder_id": "F1", "name": "*X, 1 Y", "category": "WAREHOUSE", "deal": "For lease", "parent_id": "P"}])
+    with pytest.raises(viber_drive.DriveError, match="one doc"):
+        viber_drive.confirm_listing_in_drive("X, 1 Y", 0)
 
 
 def test_a_create_whose_answer_was_lost_isnt_made_twice(monkeypatch, tmp_path):
@@ -850,6 +906,9 @@ class _FakeWriter:
         if "mimeType contains 'image/'" in q:
             return _Exec({"files": [{"id": f"img{i}", **({"md5Checksum": self.md5s[i]} if i < len(self.md5s) else {})}
                                     for i in range(self.images)]})
+        if "name = '" not in q:  # the folder's listing docs, any name
+            return _Exec({"files": [{"id": v, "name": n, "mimeType": m} for (p, n, m), v in self.existing.items()
+                                    if f"'{p}' in parents" in q and f"'{m}'" in q]})
         hit = [v for (p, n, m), v in self.existing.items() if f"'{p}' in parents" in q
                and f"name = '{n}'" in q and m in q]
         return _Exec({"files": [{"id": hit[0], "name": "x"}] if hit else []})

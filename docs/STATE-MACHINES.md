@@ -309,8 +309,7 @@ invalid state before the fix.
   `upload_listing` uploads into it by id, under its own name. `confirm_listing_in_drive` falls
   back to `listing_key` when no folder has the exact name.
 - **Test:** `test_add_listing_to_drive_reuses_the_hand_made_folder_of_that_listing`.
-- Left as is: a reused folder that already holds a doc named differently gets the `*<name>`
-  doc beside it; `get_listing` prefers `*` docs.
+- A reused (or any existing) folder keeps its one doc, whatever it's named; see I18.
 
 ### I12. update_listing_doc overwrote edits made since the doc was read (impact 2). Fixed.
 
@@ -354,10 +353,9 @@ invalid state before the fix.
 - **Tree cache:** the duplicate check used a tree up to 5 minutes old, so a listing another PC
   just added could be posted twice. It now reads the tree fresh. A move (or an upload) that
   failed after Drive had done it kept the old tree; it's now forgotten whatever happens.
-- **Listing doc, impact 1:** with several docs and not exactly one starred, `get_listing` took
-  the first by name, so an internal-notes doc could be split and its "client part" sent. It now
-  refuses and asks for exactly one `*`. A reused folder keeps its own `*` doc
-  (`upload_listing`), and `confirm_listing_in_drive` accepts the folder's only `*` doc.
+- **Listing doc, impact 1:** with several docs, `get_listing` took the first by name, so an
+  internal-notes doc could be split and its "client part" sent. It now refuses (I18: one doc
+  per listing folder).
 - **Retried creates:** `execute(num_retries=3)` re-sent a create blind after a 500 or a
   dropped connection, and Drive may already have made the file, so a second folder, doc or
   photo appeared. `_create_once` looks for the file before sending again.
@@ -411,16 +409,39 @@ invalid state before the fix.
   `test_a_hung_ocr_read_is_abandoned_for_a_fresh_thread`,
   `test_an_abandoned_worker_never_holds_up_the_servers_exit`.
 
-### Still suspected
+### I18. One doc per listing folder, with the latest info (staff rule). Fixed.
 
-- **macOS, `foreground()` uses window order.** Clicking the desktop makes Finder active with
-  Viber's window still topmost, so `foreground()` would say Viber is in front. A real key
-  (Escape, Return) would then go to Finder; clicks still land on Viber's window.
-  - Not changed blind: the window-order read was chosen because `frontmostApplication()` goes
-    stale in this process (CLAUDE.md), and switching to `AXFrontmost` unverified could stop
-    every macOS click.
-  - Confirm: click the desktop, then compare `foreground()` with Viber's `AXFrontmost`.
-  - If they disagree, require both before real input.
+- A listing folder holds exactly one doc, and that doc carries the latest info. The code didn't
+  follow that rule:
+  - `get_listing` chose among several docs by a `*` (which may well be an old copy).
+  - `upload_listing` added a `*<name>` doc beside an existing folder's doc when that doc wasn't
+    starred, so the folder then had two.
+  - `update_listing_doc` and `record_availability` counted Google Docs only, so a Google Doc
+    plus a `.docx` passed and the Google Doc got edited.
+- **Fix:** `_listing_doc` is the one rule: exactly one doc (any name); with several, nothing is
+  picked, and the message asks staff to merge what's current into one. `upload_listing` keeps an
+  existing folder's doc, whatever it's named, and says so (`note`: update it if the post is
+  newer). It adds nothing to a folder that already has several docs. `confirm_listing_in_drive`
+  checks for that one doc. In-place edits (`_editable_doc`) need it to be a Google Doc.
+- **Tests:** `test_a_listing_folder_has_one_doc_and_more_are_refused`,
+  `test_doc_edits_follow_the_one_doc_rule`,
+  `test_an_existing_folder_keeps_its_one_doc_whatever_its_name`,
+  `test_an_existing_folder_with_several_docs_gets_nothing_added`.
+
+### I19. macOS: a real key went to Finder after a click on the desktop (impact 2). Fixed.
+
+- `foreground()` read window order only. A click on the desktop makes Finder active while
+  Viber's window stays topmost, so it said Viber (measured 2026-11-07: Viber's `AXFrontmost`
+  False, Finder's True). `_with_viber_front` then skipped bringing Viber forward and its real
+  key (Escape, Return) went to Finder.
+- **Fix:** `foreground()` is the active app: the first window owner, topmost first, whose
+  `AXFrontmost` is True (else another regular app's, else the topmost window's owner).
+  `_with_viber_front` requires both before real input (`_viber_in_front`: Viber owns the
+  topmost window and is active) and hands the front back to the app that was active.
+  Checked live: from the desktop-click state the hand-off made Viber active, then Finder got
+  the front back.
+- **Tests:** `test_the_front_app_is_the_active_one_not_the_topmost_window`,
+  `test_a_hand_off_needs_viber_active_not_just_its_window_on_top`.
 
 ### Checked, not bugs
 

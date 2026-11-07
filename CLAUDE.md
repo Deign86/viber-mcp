@@ -269,8 +269,9 @@ Status:
     input would land in the user's app); `hold_foreground` only acts while it can take that
     lock, and only when Viber itself took the front (`_keep_viber_behind`).
   - `NSWorkspace.frontmostApplication()` goes stale in this run-loop-less process and the
-    system-wide AX focused app is empty for Electron apps: `foreground()` reads the owner of the
-    topmost layer-0 window.
+    system-wide AX focused app is empty for Electron apps: `foreground()` asks the window owners
+    (topmost first) for `AXFrontmost`. Window order alone is wrong after a click on the desktop
+    (Finder active, Viber's window still on top), so real input needs both (`_viber_in_front`, I19).
   - All synthetic input comes from a HID event source with zeroed modifier flags (a leftover Cmd
     turns "M" into Cmd+M = minimize).
   - Vision misses a lone white digit in the purple unread badge: `badge_boxes` finds the badges by
@@ -463,8 +464,11 @@ Status:
   `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`
   (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / [group, e.g.
   `LOT` — a comma-less folder with subfolders, `_is_subfolder_group`] / `City, sqm Area`
-  folder with one Google Doc (title starts with `*`) plus JPGs (`_listing_doc` refuses to guess
-  between several docs without exactly one `*`). Drive calls use
+  folder with ONE doc holding the latest info (new ones are named `*<folder>`) plus JPGs. One doc
+  per listing folder is the staff rule: `_listing_doc` refuses a folder with several (never
+  picks one), `upload_listing` keeps an existing folder's doc whatever it's named (and notes
+  it), `confirm_listing_in_drive` checks for that one doc, and in-place edits need it to be a
+  Google Doc (`_editable_doc`). Drive calls use
   `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common;
   creates go through `_create_once` instead (it looks for the file before sending again: a
   blind retry of a create Drive had done made a second folder/doc/photo). Doc

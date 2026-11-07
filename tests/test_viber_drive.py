@@ -488,16 +488,33 @@ def test_a_move_that_fails_forgets_the_folder_tree(monkeypatch):
     assert viber_drive._tree_cache is None
 
 
-@pytest.mark.parametrize("names", [["Owner notes", "Listing"], ["*Listing", "*Listing (old)"]])
-def test_get_listing_refuses_to_guess_which_doc_is_the_listing(monkeypatch, names):
-    # With several docs and not exactly one marked "*", it took the first by name: an
-    # internal-notes doc sorting first would have been split and its "client part" sent.
+@pytest.mark.parametrize("names", [["Owner notes", "Listing"], ["*Listing", "*Listing (old)"],
+                                   ["*Listing", "Owner notes"]])
+def test_a_listing_folder_has_one_doc_and_more_are_refused(monkeypatch, names):
+    # A listing folder keeps exactly one doc, the one with the latest info (staff rule). With
+    # several, the first by name was taken (an internal-notes doc's "client part" could be
+    # sent), and then the "*" one — which needn't be the latest either. Neither is guessed.
     monkeypatch.setattr(viber_drive, "_children", lambda fid: [
         {"id": n, "name": n, "mimeType": viber_drive.GDOC} for n in names])
     monkeypatch.setattr(viber_drive, "_doc_text", lambda f: "TITLE\n-----\nOwner: X")
-    with pytest.raises(viber_drive.DriveError, match="Which one is the listing"):
+    with pytest.raises(viber_drive.DriveError, match="one doc"):
         viber_drive.get_listing("f1")
     monkeypatch.setattr(viber_drive, "_children", lambda fid: [
-        {"id": "a", "name": "*Listing", "mimeType": viber_drive.GDOC},
-        {"id": "b", "name": "Owner notes", "mimeType": viber_drive.GDOC}])
-    assert viber_drive.get_listing("f1")["doc"] == "*Listing"
+        {"id": "a", "name": "Pasig, 1 Ugong", "mimeType": viber_drive.GDOC},  # no "*" needed
+        {"id": "p", "name": "1.jpg", "mimeType": "image/jpeg"}])
+    assert viber_drive.get_listing("f1")["doc"] == "Pasig, 1 Ugong"
+
+
+def test_doc_edits_follow_the_one_doc_rule(monkeypatch):
+    # update_listing_doc / record_availability counted Google Docs only: a folder with a Google
+    # Doc and a .docx passed, and the Google Doc was edited while get_listing refused the folder.
+    docs = _FakeDocs(_doc_content("TITLE\n", "-----\n", "Owner: X\n"))
+    monkeypatch.setattr(viber_drive, "_docs", lambda: docs)
+    monkeypatch.setattr(viber_drive, "_children", lambda fid: [
+        {"id": "doc1", "name": "*Cavite, 1890 Silang", "mimeType": viber_drive.GDOC},
+        {"id": "doc2", "name": "Cavite, 1890 Silang (old).docx", "mimeType": viber_drive.DOCX}])
+    with pytest.raises(viber_drive.DriveError, match="one doc"):
+        viber_drive.record_availability("f1", "available")
+    with pytest.raises(viber_drive.DriveError, match="one doc"):
+        viber_drive.update_listing_doc("f1", "TITLE\n-----\nOwner: X", "rev-1")
+    assert docs.updates == []
