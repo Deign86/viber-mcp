@@ -174,4 +174,49 @@ def test_release_build_stamps_its_version(tmp_path):
     assert target.name == "viber-mcp-0.1.123.mcpb"
     with zipfile.ZipFile(target) as zf:
         assert json.loads(zf.read("manifest.json"))["version"] == "0.1.123"
+        assert json.loads(zf.read("plugin.json"))["version"] == "0.1.123"
         assert "viber_update.py" in zf.namelist()
+
+
+def test_antigravity_plugin_manifest_and_components():
+    plugin = json.loads((ROOT / "plugin.json").read_text(encoding="utf-8"))
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert plugin["$schema"] == "https://antigravity.google/schemas/v1/plugin.json"
+    assert plugin["name"] == "viber-mcp"
+    assert plugin["displayName"] == "Viber"
+    assert plugin["version"] == project["version"]
+    assert 1 <= len(plugin["suggestedPrompts"]) <= 3
+    assert (ROOT / plugin["logo"]).is_file()
+    assert (ROOT / plugin["logo"]).read_bytes() == (ROOT / "extension" / MANIFEST["icon"]).read_bytes()
+    assert (ROOT / "rules" / "AGENTS.md").is_file()
+
+    mcp_cfg = json.loads((ROOT / "mcp_config.json").read_text(encoding="utf-8"))
+    viber_srv = mcp_cfg["mcpServers"]["viber"]
+    assert viber_srv["command"] == "uv"
+    assert viber_srv["args"] == ["run", "--frozen", "--directory", "${PLUGIN_ROOT}", "server.py"]
+
+    expected_skills = {"inbox-triage", "draft-reply", "unsend", "property-details", "client-gc"}
+    skill_dirs = {p.parent.name for p in (ROOT / "skills").glob("*/SKILL.md")}
+    assert skill_dirs == expected_skills
+    for name in expected_skills:
+        text = (ROOT / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+        assert text.startswith("---\n")
+        frontmatter = text.split("---\n", 2)[1]
+        assert f"name: {name}\n" in frontmatter
+        assert "description: " in frontmatter
+
+
+def test_user_file_checks_antigravity_plugin_data_folder(monkeypatch, tmp_path):
+    code, data, pdata = tmp_path / "code", tmp_path / "data", tmp_path / "plugin_data"
+    code.mkdir()
+    data.mkdir()
+    pdata.mkdir()
+    monkeypatch.setattr(viber_config, "HERE", code)
+    monkeypatch.setattr(viber_config, "DATA_DIR", data)
+    monkeypatch.setenv("PLUGIN_DATA", str(pdata))
+    monkeypatch.delenv("VIBER_MCP_TEST", raising=False)
+
+    (pdata / "contacts.json").write_text("{}")
+    assert viber_config.user_file("VIBER_MCP_TEST", "contacts.json") == pdata / "contacts.json"
+    (data / "contacts.json").write_text("{}")
+    assert viber_config.user_file("VIBER_MCP_TEST", "contacts.json") == data / "contacts.json"

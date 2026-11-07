@@ -82,5 +82,6 @@ jobs:
             exit 0
           fi
           cp "dist/viber-mcp-$VERSION.mcpb" dist/viber-mcp.mcpb
-          gh release create "v$VERSION" dist/viber-mcp.mcpb --target "$GITHUB_SHA" \
+          cp "dist/viber-mcp-$VERSION.mcpb" dist/viber-mcp-plugin.zip
+          gh release create "v$VERSION" dist/viber-mcp.mcpb dist/viber-mcp-plugin.zip --target "$GITHUB_SHA" \
             --title "Viber MCP $VERSION" --generate-notes --latest

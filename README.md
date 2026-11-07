@@ -398,8 +398,8 @@ cd ~/Developer/viber-mcp
 ```
 
 `setup_macos.sh` installs the dependencies, builds `~/Applications/Viber MCP.app` (a small launcher,
-`macos/launcher.c`) and registers it as the `viber` server with Claude Code and Claude Desktop.
-Then **fully quit and reopen Claude** (Cmd+Q): Claude Desktop rewrites its config while it runs.
+`macos/launcher.c`) and registers it as the `viber` server with Claude Code, Claude Desktop, and Antigravity.
+Then **fully quit and reopen Claude / Antigravity** (Cmd+Q): Claude Desktop rewrites its config while it runs.
 
 The first time Claude uses Viber, macOS asks to allow **"Viber MCP"** for **Accessibility** and
 **Screen Recording** (System Settings → Privacy & Security). Allow both, then restart Claude. The
@@ -414,10 +414,10 @@ safe: it sends, types and clicks nothing, and doesn't bring Viber forward.
 The Drive key goes in `~/viber-mcp/google_service_account.json` (or point
 `VIBER_MCP_GOOGLE_SERVICE_ACCOUNT` at it); tokens and the download cache live in `~/viber-mcp/` too.
 
-**Switching to the Claude Desktop extension.** Quit Claude Desktop, then run
+**Switching to the Claude Desktop extension or Antigravity plugin.** Quit Claude Desktop, then run
 `bash macos/uninstall.sh`. It copies `contacts.json`, `gc_members.json` and
-`google_oauth_client.json` to `~/viber-mcp/` (where the extension finds them), removes the
-`viber` server from Claude Code and Claude Desktop, deletes `Viber MCP.app` and resets its
+`google_oauth_client.json` to `~/viber-mcp/` (where the extension and plugin find them), removes the
+`viber` server from Claude Code, Claude Desktop, and Antigravity, deletes `Viber MCP.app` and resets its
 permissions, and moves the checkout to the Trash, but only if it has no uncommitted, unpushed or
 stashed work (`--keep-checkout` keeps it). `~/viber-mcp/` is kept. Claude Code can't use the
 extension, so it has no Viber tools afterwards.
@@ -459,12 +459,13 @@ names the Windows backend uses, so the tools find controls by identity there too
 | `windows_selftest.py` | Safe Windows health check |
 | `macos_selftest.py` | Safe macOS health check |
 | `client.py` | Standalone test client |
-| `setup.ps1` | One-shot Windows setup and Claude registration |
+| `setup.ps1` | One-shot Windows setup and Claude / Antigravity registration |
 | `setup_macos.sh`, `macos/launcher.c` | One-shot macOS setup; the "Viber MCP" launcher app the permissions are granted to |
-| `macos/uninstall.sh` | Undoes `setup_macos.sh` when switching to the extension (keeps your files) |
+| `macos/uninstall.sh` | Undoes `setup_macos.sh` when switching to the extension or plugin (keeps your files) |
 | `extension/` | Claude Desktop extension: `manifest.json` (settings → `VIBER_MCP_*` variables), icon, `build.py` |
+| `plugin.json`, `mcp_config.json`, `rules/`, `skills/`, `assets/` | Antigravity plugin manifest, MCP config, rules, slash-command skills, and icon |
 | `viber_config.py` | Reads the `VIBER_MCP_*` settings and finds the per-user files |
-| `viber_update.py` | The extension's update check against the latest GitHub release |
+| `viber_update.py` | The extension and Antigravity plugin's update check against the latest GitHub release |
 | `contacts.example.json` | Template for `contacts.json` (git-ignored; holds real numbers) |
 
 ## Privacy

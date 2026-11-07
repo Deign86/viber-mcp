@@ -125,32 +125,39 @@ port-ready for Windows/Linux — see "Porting" below):
 - `client.py` — standalone MCP stdio client for testing.
 - `contacts.json` — name→E.164 map, **git-ignored (real numbers)**; ship `contacts.example.json`.
 - `viber_config.py` — `VIBER_MCP_*` settings. `env()` treats blank and the literal
-  `${user_config.<key>}` as unset (Claude Desktop passes an empty optional extension setting that
-  way); `user_file()` finds contacts.json / gc_members.json / google_oauth_client.json: the env
-  var, else next to server.py, else `DATA_DIR` (`%LOCALAPPDATA%\viber-mcp`, `~/viber-mcp` on macOS).
-- `extension/` — the Claude Desktop extension (MCPB, manifest 0.4, `server.type = "uv"`: Claude
-  Desktop runs `uv run --frozen --directory ${__dirname} server.py` from the bundled
-  pyproject.toml + uv.lock). Each `user_config` setting maps to one `VIBER_MCP_*` env var
-  (`test_extension.py` checks each is read somewhere). `build.py` ships only its `BUNDLE`
-  allow-list — never `mcpb pack` the repo root: it would zip contacts.json and the OAuth client
-  (that's why the manifest isn't at the root). It fills `tools` from server.py's `@mcp.tool()`s.
-  Its `version` must equal pyproject's (bump both) and is what local builds get.
+  `${user_config.<key>}` / `${PLUGIN_*}` as unset (Claude Desktop / Antigravity pass unexpanded
+  placeholders that way); `user_file()` finds contacts.json / gc_members.json / google_oauth_client.json:
+  the env var, else next to server.py, else `DATA_DIR` (`%LOCALAPPDATA%\viber-mcp`, `~/viber-mcp` on
+  macOS), else `PLUGIN_DATA` (Antigravity's per-plugin persistent data dir).
+- `extension/` & Antigravity plugin (`plugin.json`, `mcp_config.json`, `rules/AGENTS.md`,
+  `skills/<name>/SKILL.md`, `assets/icon.png`) — the Claude Desktop extension (MCPB, manifest 0.4,
+  `server.type = "uv"`: Claude Desktop runs `uv run --frozen --directory ${__dirname} server.py`
+  from the bundled pyproject.toml + uv.lock) and the Antigravity plugin (`mcp_config.json` runs
+  `uv run --frozen --directory ${PLUGIN_ROOT} server.py`). Each `user_config` setting maps to one
+  `VIBER_MCP_*` env var (`test_extension.py` checks each is read somewhere). `build.py` ships only
+  its `BUNDLE` allow-list — never `mcpb pack` the repo root: it would zip contacts.json and the
+  OAuth client (that's why `extension/manifest.json` isn't at the root). It fills `tools` from
+  server.py's `@mcp.tool()`s. `plugin.json`'s and `extension/manifest.json`'s `version` must equal
+  pyproject's (bump all three) and is what local builds get.
   **Releases:** every push to main that passes `pytest` + `extension` runs the `release` job:
-  `build.py --release` stamps `<major>.<minor>.<git rev-list --count HEAD>` (refuses a shallow
-  clone) and `gh release create v<version>` attaches it as `viber-mcp.mcpb`, so
-  `releases/latest/download/viber-mcp.mcpb` is always the newest. Only the commit still at the tip
-  of main publishes (two quick merges: the newer run releases both). **Auto-update**
-  (`viber_update.py`): a `manifest.json` next to server.py means "running as the extension".
+  `build.py --release` stamps `<major>.<minor>.<git rev-list --count HEAD>` into both manifests
+  (refuses a shallow clone) and `gh release create v<version>` attaches it as both `viber-mcp.mcpb`
+  and `viber-mcp-plugin.zip`, so `releases/latest/download/viber-mcp.mcpb` is always the newest.
+  Only the commit still at the tip of main publishes (two quick merges: the newer run releases both).
+  **Auto-update** (`viber_update.py`): a `manifest.json` next to server.py (Claude Desktop extension)
+  or `PLUGIN_ROOT` set with `plugin.json` next to server.py (installed Antigravity plugin; git
+  checkouts don't set `PLUGIN_ROOT` so dev checkouts don't self-update) means "running as an
+  installed package".
   server.py runs `update_and_restart()` under `__main__` before its heavy imports: it compares that
   version with GitHub's latest release (cached 1 h in `DATA_DIR/update_check.json`, failures too;
   2 s timeout; system CAs, then certifi), downloads that tag's asset, checks it (`_bundle`: name,
   version, required files, no unsafe paths), `install`s it over `config.HERE` (all or nothing: every file
   staged as `.updating` first, then `os.replace` each with the old bytes kept, rolled back if a
-  rename fails, manifest.json last so a killed install is redone; deletes only the .py
-  files the release dropped; `.venv` stays), then runs the new server as a child on the same stdio
-  via `$UV run --frozen` (installs new deps; `VIBER_MCP_UPDATED` stops a second check), forwarding
-  SIGTERM/SIGINT. Not `os.execv`: on Windows that ends the process and Claude Desktop sees the
-  server exit. Any failure → the old version runs and `notice()` gives Claude the link. Setting
+  rename fails, `plugin.json` and `manifest.json` last so a killed install is redone; deletes only
+  the .py files the release dropped; `.venv` stays), then runs the new server as a child on the same
+  stdio via `$UV run --frozen` (installs new deps; `VIBER_MCP_UPDATED` stops a second check),
+  forwarding SIGTERM/SIGINT. Not `os.execv`: on Windows that ends the process and Claude Desktop sees
+  the server exit. Any failure → the old version runs and `notice()` gives Claude the link. Setting
   "Update automatically" = `VIBER_MCP_AUTO_UPDATE`. conftest makes `_fetch`/`_download`/`_restart`
   fail any test that reaches them. **Access** (`viber_setup.py`, like flow-mcp's session check): at
   start a thread runs `request_access()`: `backend.access(ask=True)` (base `{}`; macOS: the AX and
@@ -163,10 +170,11 @@ port-ready for Windows/Linux — see "Porting" below):
   stream. `check_setup` = `viber_setup.status()` with `to_fix`.
   On macOS the TCC grant goes to `uv`, not "Viber MCP" (README says so;
   `setup_macos.sh` stays the scoped route). `macos/uninstall.sh` undoes setup_macos.sh to switch
-  to the extension: copies the per-user files to `~/viber-mcp`, removes both registrations, the
-  app and its TCC grants, and trashes the checkout only when clean, pushed and stash-free (it
-  finds the checkout from the app's `command` file, else its own path — don't run it from a
-  checkout you want to keep without `--keep-checkout`). Refuses while Claude Desktop runs.
+  to the extension or Antigravity plugin: copies the per-user files to `~/viber-mcp`, removes all
+  registrations (Claude Code, Claude Desktop, and Antigravity), the app and its TCC grants, and
+  trashes the checkout only when clean, pushed and stash-free (it finds the checkout from the app's
+  `command` file, else its own path — don't run it from a checkout you want to keep without
+  `--keep-checkout`). Refuses while Claude Desktop runs.
 
 Data flow for a send: resolve recipient → `backend.open_url("viber://chat?number=…")` → poll
 `backend.observe()` until the chat is confirmed → `click_compose` → `select_all`+`delete` → `paste`

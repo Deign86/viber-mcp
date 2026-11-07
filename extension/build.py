@@ -44,6 +44,11 @@ BUNDLE = [
     ".python-version",
     "contacts.example.json",
     "gc_members.example.json",
+    "plugin.json",
+    "mcp_config.json",
+    "assets/icon.png",
+    "rules/AGENTS.md",
+    "skills/*/SKILL.md",
     "LICENSE",
     "README.md",
 ]
@@ -114,9 +119,22 @@ def manifest(root: Path = ROOT, version: str | None = None) -> dict:
     return data
 
 
+def plugin_manifest(root: Path = ROOT, version: str | None = None) -> dict:
+    """plugin.json (Antigravity plugin manifest); its version must be pyproject's, which
+    `version` (a release's) then replaces."""
+    data = json.loads((root / "plugin.json").read_text(encoding="utf-8"))
+    if data["version"] != project_version(root):
+        raise SystemExit(f"build: plugin.json version {data['version']} != "
+                         f"pyproject.toml version {project_version(root)}; bump both together.")
+    if version:
+        data["version"] = version
+    return data
+
+
 def build(out_dir: Path = ROOT / "dist", version: str | None = None) -> Path:
     """Stage the bundle in <out_dir>/viber-mcp/ and zip it to <out_dir>/viber-mcp-<version>.mcpb."""
     info = manifest(version=version)
+    plugin_info = plugin_manifest(version=version)
     stage = out_dir / "viber-mcp"
     if stage.exists():
         shutil.rmtree(stage)
@@ -125,6 +143,8 @@ def build(out_dir: Path = ROOT / "dist", version: str | None = None) -> Path:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
     shutil.copy2(HERE / info["icon"], stage / info["icon"])
+    (stage / "plugin.json").write_text(json.dumps(plugin_info, indent=2, ensure_ascii=False) + "\n",
+                                       encoding="utf-8")
     (stage / "manifest.json").write_text(json.dumps(info, indent=2, ensure_ascii=False) + "\n",
                                          encoding="utf-8")
 

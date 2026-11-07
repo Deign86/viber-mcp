@@ -51,6 +51,14 @@ def test_prompt_texts_only_name_real_tools():
         assert not unknown, f"prompt mentions non-existent tools: {sorted(unknown)}"
 
 
+def test_plugin_skills_and_rules_only_name_real_tools():
+    names = tool_names()
+    for path in [*(ROOT / "skills").glob("*/SKILL.md"), ROOT / "rules" / "AGENTS.md"]:
+        text = path.read_text(encoding="utf-8")
+        unknown = set(SNAKE.findall(text)) - NON_TOOL_NAMES - names
+        assert not unknown, f"{path.relative_to(ROOT)} mentions non-existent tools: {sorted(unknown)}"
+
+
 def test_expected_prompts_exist():
     prompts = {p.name for p in asyncio.run(server.mcp.list_prompts())}
     assert {"inbox_triage", "draft_reply", "unsend", "property_details", "client_gc"} <= prompts

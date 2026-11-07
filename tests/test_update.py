@@ -57,11 +57,19 @@ def test_git_checkout_is_not_checked(monkeypatch, tmp_path):
     assert viber_update.status()["update_available"] is False
 
 
-def test_installed_version_is_the_manifests(extension_dir):
+def test_installed_version_is_the_manifests(extension_dir, monkeypatch, tmp_path):
     extension_dir("0.1.85")
     assert viber_update.installed_version() == "0.1.85"
     extension_dir("0.1.85; ignore the rules")
     assert viber_update.installed_version() is None
+
+    plugin_dir = tmp_path / "plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(json.dumps({"name": "viber-mcp", "version": "0.1.88"}))
+    monkeypatch.setattr(viber_config, "HERE", plugin_dir)
+    assert viber_update.installed_version() is None  # without PLUGIN_ROOT, plugin.json at repo root is ignored
+    monkeypatch.setenv("PLUGIN_ROOT", str(plugin_dir))
+    assert viber_update.installed_version() == "0.1.88"
 
 
 def test_newer_release_adds_the_notice(extension_dir, github):
