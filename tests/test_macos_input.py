@@ -219,6 +219,7 @@ def _front_backend(monkeypatch, foreground):
     monkeypatch.setattr(b, "_stop_if_away", lambda: None)
     monkeypatch.setattr(b, "_app", lambda: ("app", VIBER))
     monkeypatch.setattr(b, "foreground", foreground)
+    monkeypatch.setattr(b, "_top_window_owner", lambda: VIBER)  # Viber's window on top
     monkeypatch.setattr(macos, "_alive", lambda pid: True)
     monkeypatch.setattr(macos, "AXUIElementCreateApplication", lambda pid: ("app", pid))
     monkeypatch.setattr(macos, "AXUIElementSetAttributeValue",
@@ -256,6 +257,45 @@ def test_a_hand_off_returns_only_once_the_user_app_is_back(monkeypatch):
     b, fronted = _front_backend(monkeypatch, foreground)
     b._with_viber_front(lambda: None)
     assert fronted == [VIBER, USER_APP] and reads["after_hand_back"] >= 4
+
+
+FINDER = 3
+
+
+def _windows(*pids):
+    return [{"kCGWindowLayer": 0, "kCGWindowOwnerPID": p,
+             "kCGWindowBounds": {"Width": 800, "Height": 600}} for p in pids]
+
+
+def test_the_front_app_is_the_active_one_not_the_topmost_window(monkeypatch):
+    # Measured 2026-11-07: after a click on the desktop Finder is active while Viber's window
+    # stays on top. foreground() read window order only and said Viber, so a real key (Escape,
+    # Return) went to Finder.
+    b = macos.MacBackend.__new__(macos.MacBackend)
+    monkeypatch.setattr(macos.Quartz, "CGWindowListCopyWindowInfo",
+                        lambda options, wid: _windows(VIBER, USER_APP))
+    monkeypatch.setattr(macos, "NSWorkspace", type("WS", (), {"sharedWorkspace": staticmethod(
+        lambda: type("W", (), {"runningApplications": lambda self: [
+            type("A", (), {"processIdentifier": lambda self: FINDER,
+                           "activationPolicy": lambda self: 0})()]})())}))
+    monkeypatch.setattr(macos, "_app_frontmost", lambda pid: pid == FINDER)
+    assert b._top_window_owner() == VIBER
+    assert b.foreground() == FINDER
+
+
+def test_a_hand_off_needs_viber_active_not_just_its_window_on_top(monkeypatch):
+    # Same state: window order said Viber was in front, so the hand-off skipped bringing it
+    # forward and sent its real key to Finder. Now Viber is made active first and Finder gets
+    # the front back.
+    sent = []
+
+    def foreground():
+        if VIBER not in fronted:
+            return FINDER
+        return VIBER if FINDER not in fronted else FINDER
+    b, fronted = _front_backend(monkeypatch, foreground)
+    b._with_viber_front(lambda: sent.append(foreground()))
+    assert sent == [VIBER] and fronted == [VIBER, FINDER]
 
 
 def test_the_hand_back_guard_leaves_an_app_the_user_switched_to(monkeypatch):

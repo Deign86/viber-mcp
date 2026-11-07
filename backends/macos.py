@@ -104,6 +104,17 @@ def _frame(pos, size):
     return (pt.x, pt.y, sz.width, sz.height)
 
 
+def _app_frontmost(pid: int) -> bool:
+    """The app's own AXFrontmost; a short timeout so a hung app can't stall a hand-off."""
+    app = AXUIElementCreateApplication(pid)
+    if _set_messaging_timeout is not None:
+        try:
+            _set_messaging_timeout(app, 0.5)
+        except Exception:
+            pass
+    return _get(app, "AXFrontmost") is True
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -1002,16 +1013,16 @@ class MacBackend(Backend):
             prev_pid = self.foreground() or None
             cursor = Quartz.CGEventGetLocation(Quartz.CGEventCreate(None))
             app = self._app()
-            asked = prev_pid != self._pid
+            asked = prev_pid != self._pid or not self._viber_in_front()
             try:
                 if asked:
                     AXUIElementSetAttributeValue(app, "AXFrontmost", True)
                     for _ in range(50):
-                        if self.foreground() == self._pid:
+                        if self._viber_in_front():
                             break
                         time.sleep(0.02)
                     time.sleep(0.05)
-                if self.foreground() != self._pid:
+                if not self._viber_in_front():
                     raise OCRError("Couldn't bring Viber to the front for a click; nothing was sent.")
                 action()
             finally:
@@ -1020,7 +1031,7 @@ class MacBackend(Backend):
                 time.sleep(0.1)
                 Quartz.CGWarpMouseCursorPosition(cursor)
                 Quartz.CGAssociateMouseAndMouseCursorPosition(True)
-                if prev_pid is not None and asked:
+                if prev_pid is not None and prev_pid != self._pid and asked:
                     AXUIElementSetAttributeValue(AXUIElementCreateApplication(prev_pid), "AXFrontmost", True)
                     # Until it's back: the next hand-off (Down then Tab in a mention) read
                     # Viber as the front app, skipped bringing it forward, and its key went to
@@ -1216,17 +1227,49 @@ class MacBackend(Backend):
             time.sleep(0.05)
 
     # --- focus protection ------------------------------------------------------------
-    def foreground(self) -> int:
-        """Pid of the front app: the owner of the topmost normal window. (NSWorkspace's answer
-        goes stale in a process without a run loop, like this server, and the system-wide AX
-        focus is empty for some apps.)"""
+    def _window_owners(self) -> list[int]:
+        """Pids owning on-screen normal windows, topmost first."""
         options = Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements
+        owners: list[int] = []
         for w in Quartz.CGWindowListCopyWindowInfo(options, Quartz.kCGNullWindowID) or []:
             b = w.get("kCGWindowBounds", {})
             if w.get("kCGWindowLayer") == 0 and w.get("kCGWindowAlpha", 1) > 0 \
                     and float(b.get("Width", 0)) > 50 and float(b.get("Height", 0)) > 50:
-                return int(w.get("kCGWindowOwnerPID", 0))
-        return 0
+                pid = int(w.get("kCGWindowOwnerPID", 0))
+                if pid and pid not in owners:
+                    owners.append(pid)
+        return owners
+
+    def _top_window_owner(self) -> int:
+        """Pid owning the topmost normal window: where a real click lands."""
+        owners = self._window_owners()
+        return owners[0] if owners else 0
+
+    def foreground(self) -> int:
+        """Pid of the active app (the one real keys go to): the first window owner, topmost
+        first, that answers AXFrontmost, else another regular app that does, else the topmost
+        window's owner. Window order alone was wrong after a click on the desktop: Finder is
+        then active while Viber's window stays on top (measured 2026-11-07). NSWorkspace's
+        answer goes stale in a process without a run loop, like this server, and the
+        system-wide AX focus is empty for some apps."""
+        owners = self._window_owners()
+        for pid in owners:
+            if _app_frontmost(pid):
+                return pid
+        try:
+            others = [int(a.processIdentifier()) for a in NSWorkspace.sharedWorkspace().runningApplications()
+                      if a.activationPolicy() == 0]  # NSApplicationActivationPolicyRegular
+        except Exception:
+            others = []
+        for pid in others:
+            if pid not in owners and _app_frontmost(pid):
+                return pid
+        return owners[0] if owners else 0
+
+    def _viber_in_front(self) -> bool:
+        """Viber both owns the topmost window (clicks land on it) and is the active app (keys
+        go to it). Either alone isn't enough."""
+        return self._top_window_owner() == self._pid and self.foreground() == self._pid
 
     def hold_foreground(self, prev: int, seconds: float) -> None:
         """For `seconds`, hand the front back to `prev` (a pid) whenever Viber takes it. An app

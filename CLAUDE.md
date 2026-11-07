@@ -269,8 +269,9 @@ Status:
     input would land in the user's app); `hold_foreground` only acts while it can take that
     lock, and only when Viber itself took the front (`_keep_viber_behind`).
   - `NSWorkspace.frontmostApplication()` goes stale in this run-loop-less process and the
-    system-wide AX focused app is empty for Electron apps: `foreground()` reads the owner of the
-    topmost layer-0 window.
+    system-wide AX focused app is empty for Electron apps: `foreground()` asks the window owners
+    (topmost first) for `AXFrontmost`. Window order alone is wrong after a click on the desktop
+    (Finder active, Viber's window still on top), so real input needs both (`_viber_in_front`, I19).
   - All synthetic input comes from a HID event source with zeroed modifier flags (a leftover Cmd
     turns "M" into Cmd+M = minimize).
   - Vision misses a lone white digit in the purple unread badge: `badge_boxes` finds the badges by

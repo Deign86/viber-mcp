@@ -428,16 +428,20 @@ invalid state before the fix.
   `test_an_existing_folder_keeps_its_one_doc_whatever_its_name`,
   `test_an_existing_folder_with_several_docs_gets_nothing_added`.
 
-### Still suspected
+### I19. macOS: a real key went to Finder after a click on the desktop (impact 2). Fixed.
 
-- **macOS, `foreground()` uses window order.** Clicking the desktop makes Finder active with
-  Viber's window still topmost, so `foreground()` would say Viber is in front. A real key
-  (Escape, Return) would then go to Finder; clicks still land on Viber's window.
-  - Not changed blind: the window-order read was chosen because `frontmostApplication()` goes
-    stale in this process (CLAUDE.md), and switching to `AXFrontmost` unverified could stop
-    every macOS click.
-  - Confirm: click the desktop, then compare `foreground()` with Viber's `AXFrontmost`.
-  - If they disagree, require both before real input.
+- `foreground()` read window order only. A click on the desktop makes Finder active while
+  Viber's window stays topmost, so it said Viber (measured 2026-11-07: Viber's `AXFrontmost`
+  False, Finder's True). `_with_viber_front` then skipped bringing Viber forward and its real
+  key (Escape, Return) went to Finder.
+- **Fix:** `foreground()` is the active app: the first window owner, topmost first, whose
+  `AXFrontmost` is True (else another regular app's, else the topmost window's owner).
+  `_with_viber_front` requires both before real input (`_viber_in_front`: Viber owns the
+  topmost window and is active) and hands the front back to the app that was active.
+  Checked live: from the desktop-click state the hand-off made Viber active, then Finder got
+  the front back.
+- **Tests:** `test_the_front_app_is_the_active_one_not_the_topmost_window`,
+  `test_a_hand_off_needs_viber_active_not_just_its_window_on_top`.
 
 ### Checked, not bugs
 
