@@ -7,7 +7,9 @@
 # with Claude Code and Claude Desktop. Starting the server through the app makes macOS ask for
 # Accessibility and Screen Recording for "Viber MCP" only (started directly, the grant would go to
 # `uv`, and with it to every script uv runs). Re-run after moving the repo; the app is only
-# rebuilt when it's missing or the launcher changed, so existing permissions are kept.
+# rebuilt (and re-signed, which needs the permissions granted again) when it's missing, the
+# launcher or the checkout's path changed, or its signature is broken — otherwise nothing in it
+# is touched, so existing permissions are kept.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
@@ -23,13 +25,30 @@ echo "== Dependencies"
 "$UV" --directory "$REPO" sync
 
 echo "== Launcher app: $APP"
+# Nothing may be written into the bundle after it's signed: that voids the signature, and macOS
+# then no longer matches the app to its Accessibility grant, so Claude Desktop asks for it again
+# on every start although "Viber MCP" is allowed in System Settings. So the bundle is only touched
+# when it has to be rebuilt, and then signed last.
 EXE="$APP/Contents/MacOS/viber-mcp"
-STAMP="$APP/Contents/Resources/launcher.sha256"
+RES="$APP/Contents/Resources"
+STAMP="$RES/launcher.sha256"
+CMDFILE="$RES/command"
 SUM="$(shasum -a 256 "$REPO/macos/launcher.c" | cut -d' ' -f1)"
-if [ ! -x "$EXE" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$SUM" ]; then
-    mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-    rm -f "$APP/Icon"$'\r' && xattr -c "$APP"  # a Finder custom icon (below) breaks codesign
-    cp "$REPO/macos/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+CMD="$(printf '%s\n' "$UV" "--directory" "$REPO" "run" "server.py")"
+WHY=""
+if [ ! -x "$EXE" ]; then
+    WHY="new"
+elif [ "$(cat "$STAMP" 2>/dev/null)" != "$SUM" ]; then
+    WHY="the launcher changed"
+elif [ "$(cat "$CMDFILE" 2>/dev/null)" != "$CMD" ]; then
+    WHY="the checkout or uv moved"
+elif ! codesign --verify "$APP" >/dev/null 2>&1; then
+    WHY="its signature was broken (an older setup_macos.sh wrote into it after signing)"
+fi
+if [ -n "$WHY" ]; then
+    mkdir -p "$APP/Contents/MacOS" "$RES"
+    rm -f "$APP/Icon"$'\r' && xattr -c "$APP"  # a Finder custom icon breaks codesign
+    cp "$REPO/macos/AppIcon.icns" "$RES/AppIcon.icns"
     cc -O2 -o "$EXE" "$REPO/macos/launcher.c"
     cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -47,30 +66,14 @@ if [ ! -x "$EXE" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$SUM" ]; then
 </dict>
 </plist>
 PLIST
+    printf '%s\n' "$CMD" > "$CMDFILE"
     echo "$SUM" > "$STAMP"
-    REBUILT=1
-else
-    REBUILT=0
-fi
-printf '%s\n' "$UV" "--directory" "$REPO" "run" "server.py" > "$APP/Contents/Resources/command"
-if [ "$REBUILT" = 1 ]; then
-    codesign --force --sign - "$APP"  # ad-hoc: macOS keys the permissions to this signature
-    echo "   built and signed (a rebuild needs the permissions granted again)"
+    codesign --force --sign - "$APP"  # ad-hoc, last: macOS keys the permissions to this signature
+    echo "   built and signed ($WHY)"
+    echo "   macOS asks for Accessibility and Screen Recording once more: allow \"Viber MCP\" again"
+    echo "   (if it's already listed in System Settings, remove it with − first, then allow it)"
 else
     echo "   up to date (permissions kept)"
-    if [ ! -f "$APP/Contents/Resources/AppIcon.icns" ] && [ ! -f "$APP/Icon"$'\r' ]; then
-        # Built before it had an icon: set it as a Finder custom icon, which leaves the signed
-        # files (and with them the granted permissions) untouched.
-        osascript -l JavaScript - "$REPO/macos/AppIcon.icns" "$APP" >/dev/null <<'JS'
-ObjC.import("AppKit")
-function run(argv) {
-    const img = $.NSImage.alloc.initWithContentsOfFile(argv[0])
-    return $.NSWorkspace.sharedWorkspace.setIconForFileOptions(img, argv[1], 0)
-}
-JS
-        killall Dock 2>/dev/null || true  # Launchpad picks the icon up on restart
-        echo "   icon set"
-    fi
 fi
 
 echo "== Claude Code"

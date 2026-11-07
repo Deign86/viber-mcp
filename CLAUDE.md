@@ -382,7 +382,11 @@ Status:
   server's *responsible app*. Claude spawns MCP servers with responsibility disclaimed, so the
   first binary of the command is what macOS asks about: register `~/Applications/Viber MCP.app`
   (`setup_macos.sh`, `macos/launcher.c`, which spawns the server as its child) so the grant is
-  "Viber MCP" and not `uv`. `client.py`/tests run from a terminal or Claude Code's shell use that
+  "Viber MCP" and not `uv`. **Nothing may write into that bundle after `codesign`** (a write voids
+  the ad-hoc signature, macOS no longer matches the app to its grant, and Claude Desktop asked for
+  Accessibility on every start): setup_macos.sh writes `Contents/Resources/command` before
+  signing and only rebuilds when the launcher, the command or `codesign --verify` say so
+  (`tests/test_setup_macos.py`). `client.py`/tests run from a terminal or Claude Code's shell use that
   app's grants instead. `MacBackend` calls `AXIsProcessTrustedWithOptions(prompt)` /
   `CGRequestScreenCaptureAccess()` once per run when missing, so the app shows up in Settings. A stuck grant shows error 1002 ("not allowed
   to send keystrokes") despite the toggle being on — fix with
