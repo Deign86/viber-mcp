@@ -405,8 +405,12 @@ The first time Claude uses Viber, macOS asks to allow **"Viber MCP"** for **Acce
 **Screen Recording** (System Settings → Privacy & Security). Allow both, then restart Claude. The
 launcher exists for this: Claude starts MCP servers as their own "responsible app", so without it
 macOS would ask about `uv`, and allowing that would let every script run through uv control the
-Mac. Re-running the script keeps the permissions unless `macos/launcher.c` changed (a rebuilt app
-has a new signature and must be allowed again).
+Mac. Re-running the script leaves the app untouched and keeps the permissions, unless
+`macos/launcher.c` changed, the checkout (or `uv`) moved, or the app's signature is broken; then it
+rebuilds and re-signs it, and the new signature must be allowed again (remove the old "Viber MCP"
+entry with − first). **If Claude asks for Accessibility on every start although "Viber MCP" is
+allowed**, the app was set up by an older `setup_macos.sh`, which wrote into it after signing: run
+`./setup_macos.sh` once more and allow it again.
 
 To check the setup, run `uv run macos_selftest.py` from a terminal that has both permissions. It's
 safe: it sends, types and clicks nothing, and doesn't bring Viber forward.
