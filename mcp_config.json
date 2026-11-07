@@ -10,6 +10,7 @@
         "server.py"
       ],
       "env": {
+        "PLUGIN_ROOT": "${PLUGIN_ROOT}",
         "VIBER_MCP_AUTO_UPDATE": "true",
         "VIBER_MCP_AUTO_START": "true"
       }

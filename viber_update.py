@@ -18,6 +18,7 @@ import io
 import json
 import os
 import re
+import shutil
 import signal
 import ssl
 import subprocess
@@ -143,21 +144,29 @@ def _key(version: str) -> tuple[int, ...]:
 def status(force: bool = False) -> dict:
     """installed / latest / update_available / auto_update, and what to do about an update."""
     installed = installed_version()
+    is_antigrav = bool(config.env("PLUGIN_ROOT"))
     if installed is None:
         return {"installed": None, "latest": None, "update_available": False,
-                "note": "Not running as the Claude Desktop extension (a git checkout): "
+                "note": "Not running as an installed extension or plugin (a git checkout): "
                         "update with git pull."}
     latest = latest_version(force)
     result = {"installed": installed, "latest": latest, "auto_update": auto_update_on(),
               "update_available": latest is not None and _key(latest) > _key(installed)}
     if result["update_available"]:
+        target_app = "Antigravity" if is_antigrav else "Claude Desktop"
         if result["auto_update"]:
-            result["how"] = ("It installs itself the next time Claude Desktop starts the "
-                             "extension: quit Claude Desktop and open it again.")
+            result["how"] = (f"It installs itself the next time {target_app} starts the "
+                             f"server: quit {target_app} and open it again.")
         else:
-            result["download"] = DOWNLOAD_URL
-            result["how"] = ("Download the file, double-click it and confirm in Claude Desktop. "
-                             "contacts.json, the Drive key etc. live outside the extension and stay.")
+            download_url = (f"https://github.com/{REPO}/releases/latest/download/viber-mcp-plugin.zip"
+                            if is_antigrav else DOWNLOAD_URL)
+            result["download"] = download_url
+            result["how"] = (
+                "Download the plugin zip, extract it into ~/.gemini/config/plugins/viber, "
+                "and restart Antigravity." if is_antigrav else
+                "Download the file, double-click it and confirm in Claude Desktop. "
+                "contacts.json, the Drive key etc. live outside the extension and stay."
+            )
     return result
 
 
@@ -171,12 +180,16 @@ def notice() -> str:
         return ""
     why = ("couldn't update itself" if info["auto_update"]
            else "has automatic updates turned off")
+    is_antigrav = bool(config.env("PLUGIN_ROOT"))
+    if is_antigrav:
+        how = ("restart Antigravity" if info["auto_update"]
+               else f"download {info.get('download', DOWNLOAD_URL)}, extract to ~/.gemini/config/plugins/viber, then restart Antigravity")
+    else:
+        how = f"download {DOWNLOAD_URL}, double-click it and confirm in Claude Desktop, then start a new chat"
     return (
         "\n\n## Update available\n\n"
         f"Viber MCP {info['latest']} is out; this computer runs {info['installed']} and {why}. "
-        "Tell the user once in this conversation, in one line at the end of your first reply: "
-        f"download {DOWNLOAD_URL}, double-click it and confirm in Claude Desktop, then start a "
-        "new chat.\n"
+        f"Tell the user once in this conversation, in one line at the end of your first reply: {how}.\n"
     )
 
 
@@ -269,7 +282,11 @@ def _restart() -> None:
     Desktop's connection), through uv so a new dependency is installed first; exit with its
     status. Not os.execv: on Windows that starts a new process and ends this one, and Claude
     Desktop would see the server exit."""
-    uv = os.environ.get("UV")  # set by `uv run`
+    uv = os.environ.get("UV") or shutil.which("uv")
+    if not uv:
+        home_uv = Path.home() / ".local" / "bin" / "uv"
+        if home_uv.is_file():
+            uv = str(home_uv)
     command = ([uv, "run", "--frozen", "--directory", str(config.HERE), "server.py"] if uv
                else [sys.executable, str(config.HERE / "server.py")])
     child = subprocess.Popen(command, env={**os.environ, RESTARTED: "1"})

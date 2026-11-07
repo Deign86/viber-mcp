@@ -90,6 +90,25 @@ def test_with_automatic_updates_off_the_link_is_given(extension_dir, github, mon
     assert "turned off" in viber_update.notice()
 
 
+def test_antigravity_plugin_notice_and_status(tmp_path, github, monkeypatch):
+    plugin_dir = tmp_path / "viber"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(json.dumps({"name": "viber", "version": "0.1.85"}))
+    monkeypatch.setattr(viber_config, "HERE", plugin_dir)
+    monkeypatch.setenv("PLUGIN_ROOT", str(plugin_dir))
+
+    info = viber_update.status()
+    assert info["update_available"] and info["latest"] == "0.1.90"
+    assert "Antigravity" in info["how"]
+    text = viber_update.notice()
+    assert "restart Antigravity" in text
+
+    monkeypatch.setenv("VIBER_MCP_AUTO_UPDATE", "false")
+    info_manual = viber_update.status()
+    assert "viber-mcp-plugin.zip" in info_manual["download"]
+    assert "viber-mcp-plugin.zip" in viber_update.notice()
+
+
 @pytest.mark.parametrize("tag", ["v0.1.85", "v0.1.80", "0.1.85"])
 def test_same_or_older_release_says_nothing(extension_dir, github, tag):
     extension_dir("0.1.85")
