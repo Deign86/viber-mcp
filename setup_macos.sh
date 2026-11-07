@@ -7,9 +7,9 @@
 # with Claude Code and Claude Desktop. Starting the server through the app makes macOS ask for
 # Accessibility and Screen Recording for "Viber MCP" only (started directly, the grant would go to
 # `uv`, and with it to every script uv runs). Re-run after moving the repo; the app is only
-# rebuilt (and re-signed, which needs the permissions granted again) when it's missing, the
-# launcher or the checkout's path changed, or its signature is broken — otherwise nothing in it
-# is touched, so existing permissions are kept.
+# rebuilt when it's missing, the launcher or the checkout's path changed, or its signature is
+# broken or of the old kind — otherwise nothing in it is touched. Its signature says "any build
+# with this bundle id", so a rebuild keeps the permissions too.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
@@ -29,6 +29,18 @@ echo "== Launcher app: $APP"
 # then no longer matches the app to its Accessibility grant, so Claude Desktop asks for it again
 # on every start although "Viber MCP" is allowed in System Settings. So the bundle is only touched
 # when it has to be rebuilt, and then signed last.
+#
+# The ad-hoc signature's designated requirement is the bundle id alone. macOS stores that
+# requirement with each grant and checks the app against it, so a rebuild (new launcher, moved
+# checkout) keeps Accessibility and Screen Recording. A default ad-hoc signature's requirement is
+# its exact hash: every rebuild was a new app that had to be allowed again, with the old entry
+# still shown as on. Trade-off: another program signed with this id would match the grant too.
+BUNDLE_ID="com.alphapremier.viber-mcp"
+REQ="designated => identifier \"$BUNDLE_ID\""
+stable_signature() {  # not a pipe into grep -q: under pipefail codesign's SIGPIPE would fail it
+    case "$(codesign -d -r- "$APP" 2>&1)" in *"$REQ"*) return 0 ;; esac
+    return 1
+}
 EXE="$APP/Contents/MacOS/viber-mcp"
 RES="$APP/Contents/Resources"
 STAMP="$RES/launcher.sha256"
@@ -44,18 +56,22 @@ elif [ "$(cat "$CMDFILE" 2>/dev/null)" != "$CMD" ]; then
     WHY="the checkout or uv moved"
 elif ! codesign --verify "$APP" >/dev/null 2>&1; then
     WHY="its signature was broken (an older setup_macos.sh wrote into it after signing)"
+elif ! stable_signature; then
+    WHY="it was signed the old way, which tied the permissions to that one build"
 fi
 if [ -n "$WHY" ]; then
+    KEPT=0
+    [ -x "$EXE" ] && stable_signature && KEPT=1  # the grants match any build with this id
     mkdir -p "$APP/Contents/MacOS" "$RES"
     rm -f "$APP/Icon"$'\r' && xattr -c "$APP"  # a Finder custom icon breaks codesign
     cp "$REPO/macos/AppIcon.icns" "$RES/AppIcon.icns"
     cc -O2 -o "$EXE" "$REPO/macos/launcher.c"
-    cat > "$APP/Contents/Info.plist" <<'PLIST'
+    sed "s/BUNDLE_ID/$BUNDLE_ID/" > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key><string>com.alphapremier.viber-mcp</string>
+    <key>CFBundleIdentifier</key><string>BUNDLE_ID</string>
     <key>CFBundleName</key><string>Viber MCP</string>
     <key>CFBundleDisplayName</key><string>Viber MCP</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
@@ -68,10 +84,17 @@ if [ -n "$WHY" ]; then
 PLIST
     printf '%s\n' "$CMD" > "$CMDFILE"
     echo "$SUM" > "$STAMP"
-    codesign --force --sign - "$APP"  # ad-hoc, last: macOS keys the permissions to this signature
+    codesign --force --sign - --requirements "=$REQ" "$APP"  # last: nothing may follow it
     echo "   built and signed ($WHY)"
-    echo "   macOS asks for Accessibility and Screen Recording once more: allow \"Viber MCP\" again"
-    echo "   (if it's already listed in System Settings, remove it with − first, then allow it)"
+    if [ "$KEPT" = 1 ]; then
+        echo "   permissions kept (they're tied to the bundle id, not to this build)"
+    else
+        # The grants macOS has are for the old build: clear them so the new one is asked once.
+        tccutil reset Accessibility "$BUNDLE_ID" >/dev/null 2>&1 || true
+        tccutil reset ScreenCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
+        echo "   macOS asks for Accessibility and Screen Recording one last time: allow \"Viber MCP\""
+        echo "   (later rebuilds keep the permissions)"
+    fi
 else
     echo "   up to date (permissions kept)"
 fi

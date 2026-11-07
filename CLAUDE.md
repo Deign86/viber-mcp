@@ -386,7 +386,11 @@ Status:
   the ad-hoc signature, macOS no longer matches the app to its grant, and Claude Desktop asked for
   Accessibility on every start): setup_macos.sh writes `Contents/Resources/command` before
   signing and only rebuilds when the launcher, the command or `codesign --verify` say so
-  (`tests/test_setup_macos.py`). `client.py`/tests run from a terminal or Claude Code's shell use that
+  (`tests/test_setup_macos.py`). It signs with `--requirements '=designated => identifier
+  "com.alphapremier.viber-mcp"'`: TCC stores the designated requirement with a grant, and the
+  default ad-hoc one is the cdhash, so every rebuild was a new app (Screen Recording kept asking
+  with the old entry shown on). An app still signed by hash is re-signed once and its stale
+  grants cleared with `tccutil reset`. `client.py`/tests run from a terminal or Claude Code's shell use that
   app's grants instead. `MacBackend` calls `AXIsProcessTrustedWithOptions(prompt)` /
   `CGRequestScreenCaptureAccess()` once per run when missing, so the app shows up in Settings. A stuck grant shows error 1002 ("not allowed
   to send keystrokes") despite the toggle being on — fix with
