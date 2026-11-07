@@ -517,3 +517,33 @@ def test_files_are_pasted_in_one_go_without_the_picker(monkeypatch, tmp_path):
     out = viber_ui.send_files([str(p) for p in photos], expect_chat="My Notes")
     assert fake.pasted == [[str(p.resolve()) for p in photos]]
     assert len(fake.clicks) == 1 and out["sent"] and out["verified"]
+
+
+def test_same_or_ancestor_resolves_parent_chains_in_memory():
+    els = [
+        _el("Window", "", (0, 0, 1085, 788), parent=None),
+        _el("Group", "StackView", (300, 68, 784, 788), parent=0),
+        _el("Button", "SendToolbarButton", (740, 740, 770, 770), parent=1),
+        _el("Text", "", (745, 745, 765, 765), parent=2),
+        _el("Group", "Other", (0, 0, 100, 100), parent=0),
+    ]
+    assert ml.same_or_ancestor(els, 2, 2)
+    assert ml.same_or_ancestor(els, 2, 3)
+    assert ml.same_or_ancestor(els, 1, 3)
+    assert ml.same_or_ancestor(els, 0, 3)
+    assert not ml.same_or_ancestor(els, 2, 1)
+    assert not ml.same_or_ancestor(els, 2, 4)
+    assert not ml.same_or_ancestor(els, 2, None)
+    assert not ml.same_or_ancestor(els, 2, 99)
+
+
+def test_win_size_prefers_window_size_over_screenshot():
+    class FastBackend:
+        def window_size(self):
+            return (1085, 788)
+
+        def screenshot(self):
+            pytest.fail("screenshot() should not be called when window_size() exists")
+
+    assert viber_ocr._win_size(FastBackend()) == (1085, 788)
+

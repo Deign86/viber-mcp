@@ -183,3 +183,64 @@ def test_settle_and_resend_presses_resend_until_banner_clears(monkeypatch, fixes
     report = viber_ui._settle_and_resend(3)
     assert report == {"attempts": attempts, "still_unsent": unsent, "uploading": False}
     assert fake.clicks == attempts
+
+
+def test_diff_elements_and_click_element_report_ui_changes(monkeypatch):
+    import backends
+
+    before = [
+        el("Window", "", [0, 0, 1000, 800]),
+        el("Button", "IconButton", [100, 100, 140, 140], parent=0, name="More"),
+    ]
+    after = [
+        el("Window", "", [0, 0, 1000, 800]),
+        el("Button", "IconButton", [100, 100, 140, 140], parent=0, name="More"),
+        el("MenuItem", "ActionDelegate", [100, 150, 220, 180], parent=0, name="Pin"),
+    ]
+    diff = viber_ui.diff_elements(before, after)
+    assert diff["added"] == ["MenuItem ActionDelegate name='Pin'"]
+    assert diff["removed"] == []
+
+    class DiffBackend:
+        def __init__(self):
+            self.clicked = False
+
+        def elements(self):
+            return after if self.clicked else before
+
+        def click_at(self, x, y, button="left", double=False):
+            self.clicked = True
+
+        def wait_still(self, timeout=1.0):
+            return 0.0
+
+    monkeypatch.setattr(backends, "_backend", DiffBackend())
+    monkeypatch.setattr(viber_ui.time, "sleep", lambda s: None)
+    viber_ui.list_elements()
+    res = viber_ui.click_element(1)
+    assert res["clicked_element"] == 1 and res["name"] == "More"
+    assert res["changes"]["added"] == ["MenuItem ActionDelegate name='Pin'"]
+
+
+def test_backread_until_on_first_screen_skips_scrolling_and_reports_matched_until(monkeypatch):
+    import backends
+
+    class AnchorBackend:
+        def __init__(self):
+            self.scrolls = []
+
+        def elements(self):
+            return wrapped_chat()
+
+        def scroll(self, area, notches):
+            self.scrolls.append((area, notches))
+
+    fake = AnchorBackend()
+    monkeypatch.setattr(backends, "_backend", fake)
+    monkeypatch.setattr(viber_ui.time, "sleep", lambda s: None)
+    out = viber_ui.backread(until="from me")
+    assert out["matched_until"] is True
+    # Only the initial jump_to_latest() (-60) ran; no upward scroll ("chat", 10) or second jump_to_latest().
+    assert fake.scrolls == [("chat", -60)]
+
+

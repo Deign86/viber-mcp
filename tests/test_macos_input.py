@@ -330,3 +330,84 @@ def test_a_revoked_accessibility_grant_is_noticed(monkeypatch):
     monkeypatch.setattr(macos, "AXIsProcessTrusted", lambda: False)
     with pytest.raises(OCRError, match="Accessibility"):
         b._app()
+
+
+def test_click_at_walks_up_from_inner_label_to_press_button_in_background(monkeypatch):
+    # Clicking the center of a button or menu item can hit its inner AXStaticText/AXImage child.
+    # Walking up AXParent to the enclosing AXButton lets AXPress run in the background without
+    # stealing foreground focus via _with_viber_front.
+    b = macos.MacBackend.__new__(macos.MacBackend)
+    b._focus_el = None
+    pressed = []
+    parents = {"inner_label": "send_btn", "send_btn": "toolbar"}
+    roles = {"inner_label": "AXStaticText", "send_btn": "AXButton", "toolbar": "AXGroup"}
+    monkeypatch.setattr(b, "_to_screen", lambda x, y: (x, y))
+    monkeypatch.setattr(b, "_hit", lambda sx, sy: "inner_label")
+    monkeypatch.setattr(macos, "_get", lambda el, attr: (
+        roles.get(el) if attr == "AXRole" else parents.get(el) if attr == "AXParent" else None))
+    monkeypatch.setattr(macos, "_actions", lambda el: ["AXPress"] if el == "send_btn" else [])
+    monkeypatch.setattr(macos, "AXUIElementPerformAction",
+                        lambda el, action: (pressed.append((el, action)), 0)[1])
+    monkeypatch.setattr(b, "_with_viber_front", lambda action: pytest.fail("stole focus"))
+    b.click_at(500, 500)
+    assert pressed == [("send_btn", "AXPress")]
+
+
+def test_visible_caches_hit_tests_and_resolves_ancestors_in_memory(monkeypatch):
+    b = macos.MacBackend.__new__(macos.MacBackend)
+    els = [
+        {"type": "Window", "name": "", "class": "", "text": "", "parent": None,
+         "rect": [0, 0, 1000, 800], "_frame": (0.0, 0.0, 1000.0, 800.0)},
+        {"type": "Button", "name": "Send", "class": "SendToolbarButton", "text": "", "parent": 0,
+         "rect": [700, 700, 740, 740], "_frame": (700.0, 700.0, 40.0, 40.0)},
+        {"type": "Text", "name": "Send", "class": "", "text": "Send", "parent": 1,
+         "rect": [700, 700, 740, 740], "_frame": (700.0, 700.0, 40.0, 40.0)},
+    ]
+    refs = ["win_ref", "btn_ref", "txt_ref"]
+    index_of = {hash(r): [(r, i)] for i, r in enumerate(refs)}
+    hit_calls = []
+
+    def fake_hit(app, x, y, _out):
+        hit_calls.append((x, y))
+        return 0, "txt_ref"
+
+    monkeypatch.setattr(macos, "CFHash", hash)
+    monkeypatch.setattr(macos, "CFEqual", lambda a, b: a == b)
+    monkeypatch.setattr(macos, "AXUIElementCopyElementAtPosition", fake_hit)
+    monkeypatch.setattr(macos, "_get", lambda el, attr: pytest.fail("AXParent IPC should not be called"))
+    vis = b._visible("app", els, refs, index_of, (0.0, 0.0, 1000.0, 800.0))
+    vis_els, vis_refs = b._reindex(els, refs, vis)
+    # Both Button and Text share center (720, 720): only 1 hit-test IPC call for that point,
+    # and Button sees that "txt_ref" (index 2) is its descendant in memory without AXParent IPC.
+    assert hit_calls.count((720.0, 720.0)) == 1
+    assert [e["type"] for e in vis_els] == ["Window", "Button", "Text"]
+    assert vis_refs == ["win_ref", "btn_ref", "txt_ref"]
+
+
+def test_visible_only_if_skips_hit_testing_non_matching_elements(monkeypatch):
+    b = macos.MacBackend.__new__(macos.MacBackend)
+    els = [
+        {"type": "Window", "name": "", "class": "", "text": "", "parent": None,
+         "rect": [0, 0, 1000, 800], "_frame": (0.0, 0.0, 1000.0, 800.0)},
+        {"type": "Text", "name": "Other", "class": "", "text": "Other", "parent": 0,
+         "rect": [100, 100, 200, 120], "_frame": (100.0, 100.0, 100.0, 20.0)},
+        {"type": "Button", "name": "Send", "class": "SendToolbarButton", "text": "", "parent": 0,
+         "rect": [700, 700, 740, 740], "_frame": (700.0, 700.0, 40.0, 40.0)},
+    ]
+    refs = ["win_ref", "txt_ref", "btn_ref"]
+    index_of = {hash(r): [(r, i)] for i, r in enumerate(refs)}
+    hit_calls = []
+
+    def fake_hit(app, x, y, _out):
+        hit_calls.append((x, y))
+        return 0, "btn_ref"
+
+    monkeypatch.setattr(macos, "CFHash", hash)
+    monkeypatch.setattr(macos, "CFEqual", lambda a, b: a == b)
+    monkeypatch.setattr(macos, "AXUIElementCopyElementAtPosition", fake_hit)
+    vis = b._visible("app", els, refs, index_of, (0.0, 0.0, 1000.0, 800.0),
+                     only_if=macos.ml.is_send)
+    vis_els, _ = b._reindex(els, refs, vis)
+    assert hit_calls == [(720.0, 720.0)]
+    assert [e["class"] for e in vis_els] == ["SendToolbarButton"]
+

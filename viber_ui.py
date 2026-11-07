@@ -111,14 +111,52 @@ def list_elements(query: str | None = None) -> str:
     return "\n".join(rows)
 
 
+def _el_sig(el: dict) -> tuple[str, str, str, str]:
+    """Compact identity of a visible element for post-action tree diffing."""
+    return (el.get("type", ""), el.get("class", ""), el.get("name", ""),
+            (el.get("text") or "")[:80])
+
+
+def diff_elements(before: list[dict], after: list[dict]) -> dict:
+    """Summarize what appeared or vanished between two `elements()` snapshots (`added`, `removed`).
+    Pure helper so computer-use actions can report new menus, dialogs, or controls immediately."""
+    def relevant(els):
+        out = []
+        for e in els:
+            if (e.get("name") or e.get("text")) or e.get("type") in _INTERACTIVE:
+                sig = _el_sig(e)
+                if sig not in out:
+                    out.append(sig)
+        return out
+
+    bef, aft = relevant(before), relevant(after)
+    bef_set, aft_set = set(bef), set(aft)
+    fmt = lambda s: f"{s[0]} {s[1]}" + (f" name={s[2]!r}" if s[2] else "") + (f" text={s[3]!r}" if s[3] else "")  # noqa: E731
+    return {
+        "added": [fmt(s) for s in aft if s not in bef_set],
+        "removed": [fmt(s) for s in bef if s not in aft_set],
+    }
+
+
 def click_element(element_id: int, button: str = "left", double: bool = False) -> dict:
+    global _last_elements
     if not 0 <= element_id < len(_last_elements):
         raise UIError("Unknown element id — call list_elements first (ids change as the UI changes).")
+    before = list(_last_elements)
     el = _last_elements[element_id]
     cx, cy = _center(el["rect"])
     click(cx, cy, button=button, double=double)
-    return {"clicked_element": element_id, "type": el["type"], "name": el["name"],
-            "text": el["text"][:120], "button": button}
+    out = {"clicked_element": element_id, "type": el["type"], "name": el["name"],
+           "text": el["text"][:120], "button": button}
+    try:
+        after = _backend().elements()
+        _last_elements = after
+        diff = diff_elements(before, after)
+        if diff["added"] or diff["removed"]:
+            out["changes"] = diff
+    except (NotImplementedError, AttributeError, OCRError):
+        pass
+    return out
 
 
 # ------------------------------------------------------------------- message actions
@@ -241,16 +279,23 @@ def backread(screens: int = 40, until: str = "") -> dict:
     b = _backend()
     want = until.strip().lower()
     jump_to_latest()
-    acc = [_row(m) for m in _messages(b.elements())]
-    gaps, stalls, reached_top = 0, 0, False
+    screen = [_row(m) for m in _messages(b.elements())]
+    acc = list(screen)
+    gaps, stalls, reached_top, scrolled, matched_until = 0, 0, False, False, False
     for _ in range(max(1, int(screens))):
         if want and any(want in m["text"].lower() for m in acc):
+            matched_until = True
             break
-        before = [_row(m) for m in _messages(b.elements())]
+        before = screen
         b.scroll("chat", 10)
-        # Viber renders older history in chunks a moment after the wheel.
-        _poll(lambda: [_row(m) for m in _messages(b.elements())] != before, timeout=2.0, first=0.15)
-        merged, overlapped = _merge_older(acc, [_row(m) for m in _messages(b.elements())])
+        scrolled = True
+        # Viber renders older history in chunks a moment after the wheel; keep the polled screen
+        # so we don't walk the UIA/AX tree two extra times per scroll step.
+        polled = _poll(
+            lambda: s if (s := [_row(m) for m in _messages(b.elements())]) != before else None,
+            timeout=2.0, first=0.15)
+        screen = polled if polled is not None else [_row(m) for m in _messages(b.elements())]
+        merged, overlapped = _merge_older(acc, screen)
         if len(merged) == len(acc):
             stalls += 1
             if stalls >= 2:  # twice nothing older: this is the start of the chat
@@ -260,11 +305,15 @@ def backread(screens: int = 40, until: str = "") -> dict:
         stalls = 0
         gaps += not overlapped
         acc = merged
-    jump_to_latest()
+    if not matched_until and want and any(want in m["text"].lower() for m in acc):
+        matched_until = True
+    if scrolled:
+        jump_to_latest()
     return {
         "count": len(acc),
         "last_from": acc[-1]["from"] if acc else None,
         "reached_top": reached_top,
+        "matched_until": matched_until,
         "gaps": gaps,
         "note": "Oldest first. reached_top=false: older messages exist (raise screens). gaps>0: a "
                 "scroll skipped past some messages without overlap.",
@@ -658,15 +707,16 @@ def _sidebar_right(elements: list[dict], width: float) -> float:
 _SB_CACHE: dict = {}  # (backend, window size) -> sidebar right edge: fixed while the window is
 
 
-def _sidebar_right_cached(b, img) -> float:
+def _sidebar_right_cached(b, size_or_img) -> float:
     """`_sidebar_right` without a UIA walk per read (that walk was most of an `_ocr_px` call).
     Only a found pane is cached: it can be missing from the tree while the Sponsored ad shows."""
-    key = (id(b), img.width, img.height)
+    w, h = size_or_img if isinstance(size_or_img, tuple) else (size_or_img.width, size_or_img.height)
+    key = (id(b), w, h)
     if key not in _SB_CACHE:
         import viber_ocr
         pane = viber_ocr._chat_pane(b.elements())
         if pane is None:
-            return img.width * 0.28
+            return w * 0.28
         _SB_CACHE.clear()
         _SB_CACHE[key] = pane["rect"][0]
     return _SB_CACHE[key]
@@ -676,20 +726,21 @@ def _ocr_px(region_px=None) -> list[dict]:
     """OCR observations with pixel rects (screenshot coordinates). Each carries SB, the sidebar's
     right edge, so sidebar text can be told apart from the chat pane's. `region_px` = (l, t, r, b)
     in screenshot pixels (r/b None = the edge) limits the OCR to that part — a hint, so filter."""
+    import viber_ocr
     b = _backend()
-    img = b.screenshot()
-    sidebar_right = _sidebar_right_cached(b, img)
+    w, h = viber_ocr._win_size(b)
+    sidebar_right = _sidebar_right_cached(b, (w, h))
     region = None
     if region_px is not None:
         l, t, r, bt = region_px
-        region = (max(0, l) / img.width, max(0, t) / img.height,
-                  (img.width if r is None else r) / img.width,
-                  (img.height if bt is None else bt) / img.height)
+        region = (max(0, l) / w, max(0, t) / h,
+                  (w if r is None else r) / w,
+                  (h if bt is None else bt) / h)
     out = []
     for o in b.observe(region):
-        out.append({"text": o["text"].strip(), "x": o["x"] * img.width, "y": o["y"] * img.height,
-                    "w": o["w"] * img.width, "h": o["h"] * img.height, "W": img.width,
-                    "H": img.height, "SB": sidebar_right})
+        out.append({"text": o["text"].strip(), "x": o["x"] * w, "y": o["y"] * h,
+                    "w": o["w"] * w, "h": o["h"] * h, "W": w,
+                    "H": h, "SB": sidebar_right})
     return out
 
 
@@ -1134,9 +1185,9 @@ def _close_sidebar_menu(menu) -> None:
     label = next((o for o in viber_ocr.observe(region=(0, 0, 0.34, 0.25))
                   if o["y"] < 0.2 and o["x"] < 0.1 and o["text"].strip().lower() == "chats"), None)
     if label is not None:
-        img = b.screenshot()
-        b.click_at((label["x"] + label.get("w", 0.03) / 2) * img.width,
-                   (label["y"] + label.get("h", 0.01) / 2) * img.height)
+        w, h = viber_ocr._win_size(b)
+        b.click_at((label["x"] + label.get("w", 0.03) / 2) * w,
+                   (label["y"] + label.get("h", 0.01) / 2) * h)
     else:
         b.press_key("escape")
     _poll(lambda: not menu(), timeout=1.5, first=0.1)
@@ -1163,8 +1214,8 @@ def mark_as_read(name: str) -> dict:
         raise UIError(f"Several visible chats match '{name}': {', '.join(r['name'] for r in hits)}. "
                       "Give the full name.")
     row = hits[0]
-    img = b.screenshot()
-    b.click_at(sidebar / 2 * img.width, (row["y"] + 0.01) * img.height, button="right")
+    w, h = viber_ocr._win_size(b)
+    b.click_at(sidebar / 2 * w, (row["y"] + 0.01) * h, button="right")
 
     def menu():
         return [e for e in b.elements() if e["type"] == "MenuItem" and e["name"].strip()]

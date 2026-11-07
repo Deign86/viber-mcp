@@ -163,6 +163,12 @@ class Backend(ABC):
         """The Viber window as a PIL image."""
         self._unsupported("Screenshots")
 
+    def window_size(self) -> tuple[int, int]:
+        """(width, height) of the Viber window in screenshot coordinates, without a full capture
+        where the backend can read window bounds directly."""
+        img = self.screenshot()
+        return img.width, img.height
+
     def click_at(self, x: float, y: float, button: str = "left", double: bool = False) -> None:
         self._unsupported("Clicking by coordinates")
 
