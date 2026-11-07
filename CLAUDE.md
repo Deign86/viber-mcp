@@ -40,6 +40,9 @@ naming, `pending_templates`, `choose_listing`) and pure helpers in `viber_ui.py`
 `_preview`, `find_number_row`, ...) so it can be tested with fixture data; UI-structure tests inject a
 fake backend via `backends._backend` (no module mocking). **Every bug found on the live app gets a
 regression test** in `tests/test_regressions.py` (or the matching test file) before/with the fix.
+`docs/STATE-MACHINES.md` models the stateful flows (chat confirmation, GC run, listing post,
+update, sign-in, backends): their invariants, transitions and the open/suspected issues — update
+it when a fix changes a transition.
 Flows that poll (`_poll`) are tested with stateful fakes (`ChatBackend`, `PickerBackend`,
 `PanelBackend`, `GroupFlowBackend` in `test_regressions.py`) that change state after N reads; a
 fake that must make a poll time out uses `_use(..., fast_clock=True)` so the deadline is virtual.
@@ -141,8 +144,9 @@ port-ready for Windows/Linux — see "Porting" below):
   server.py runs `update_and_restart()` under `__main__` before its heavy imports: it compares that
   version with GitHub's latest release (cached 1 h in `DATA_DIR/update_check.json`, failures too;
   2 s timeout; system CAs, then certifi), downloads that tag's asset, checks it (`_bundle`: name,
-  version, required files, no unsafe paths), `install`s it over `config.HERE` (temp file +
-  `os.replace` each, manifest.json last so a cut-short install is redone; deletes only the .py
+  version, required files, no unsafe paths), `install`s it over `config.HERE` (all or nothing: every file
+  staged as `.updating` first, then `os.replace` each with the old bytes kept, rolled back if a
+  rename fails, manifest.json last so a killed install is redone; deletes only the .py
   files the release dropped; `.venv` stays), then runs the new server as a child on the same stdio
   via `$UV run --frozen` (installs new deps; `VIBER_MCP_UPDATED` stops a second check), forwarding
   SIGTERM/SIGINT. Not `os.execv`: on Windows that ends the process and Claude Desktop sees the
@@ -153,7 +157,8 @@ port-ready for Windows/Linux — see "Porting" below):
   Screen Recording prompts, once per run), then `viber_drive.sign_in_at_start()`: Google's sign-in
   page when the OAuth client is here and no upload sign-in works (at most every 12 h,
   `SIGN_IN_ASKED_FILE`). One sign-in: reads without the service account key use the upload token.
-  `_browser_sign_in` holds `_SIGN_IN` and re-checks the token (start-up and a tool can race), and
+  `_browser_sign_in` holds `_SIGN_IN` and re-checks the token (start-up and a tool can race; for a
+  read the upload token counts too, so the start-up sign-in doesn't lead to a second page), and
   passes `authorization_prompt_message=None`: the library prints it to stdout, which is the MCP
   stream. `check_setup` = `viber_setup.status()` with `to_fix`.
   On macOS the TCC grant goes to `uv`, not "Viber MCP" (README says so;
@@ -191,6 +196,8 @@ Status:
 - **Posted `WM_CHAR` drops non-BMP chars** (surrogate pairs, e.g. 😀; `WM_UNICHAR` is ignored
   too) and Enter may send, so those texts fall back to UIA `SetValue` + `_restore_foreground`
   (AttachThreadInput trick; activation arrives asynchronously, so wait for it before restoring).
+  `type_into_focus` takes that field from Viber's own tree under the last click (never
+  `ControlFromPoint`: with Viber covered that's the user's window).
 - **Search-result UIA delegates are whole sections**, not rows — click the OCR'd row position.
 - Capture with `PrintWindow(..., PW_RENDERFULLCONTENT)`; it works while Viber is covered.
 - **Speed (profiled 2026-10-21 on the live app).** OCR takes the raw BGRA pixels straight into a
@@ -214,7 +221,13 @@ Status:
   or changes a panel, call `backend.wait_still()` (two identical PrintWindow captures) and
   then walk once; `_levels` also fetches two levels per call (children + cached grandchildren)
   to halve the round trips. A UIA call that doesn't return in 30 s leaves its thread stuck, so
-  `_on_uia` abandons that thread, starts a fresh one and raises `OCRError` ("try again").
+  `_on_uia` abandons that thread, starts a fresh one and raises `OCRError` ("try again"); the
+  guarded write (`_uia_write_keeping_focus`) has the same deadline, and the UIA thread never
+  stores shared state (`_value` returns the node; the caller keeps it). OCR is abandoned the
+  same way after 40 s (`_ocr_lines`). Both are `_Worker`s, one daemon thread each:
+  ThreadPoolExecutor's threads are joined at exit, so an abandoned stuck one kept the server
+  process alive. `_restore_foreground` only takes the foreground back from a Viber.exe window
+  (`_is_viber_window`): an app the user switched to is left be.
   **UIA has no text for the chat list rows, the search result rows or the chat header** (they
   are unnamed `ListViewDelegateLoader`s), so those stay OCR; `_await_results` hands over to the
   open-first-result fallback after two reads with the results header up and no readable row.
@@ -250,9 +263,11 @@ Status:
     characters posted with `CGEventPostToPid`. Ignored in the background: posted mouse clicks
     (even with the window-number fields), posted wheel events, posted Escape to the image viewer.
     Those go through `_with_viber_front`: Viber made frontmost via `AXFrontmost`, real HID events,
-    then the cursor and the previous front app are restored (~0.6 s). It holds `_handoff`, and it
-    sends nothing unless Viber really is in front (the input would land in the user's app);
-    `hold_foreground` only acts while it can take that lock.
+    then the cursor and the previous front app are restored (~0.6 s) — on every path, and it
+    returns only once that app is back (a next hand-off read too early sent its key to the
+    user's app). It holds `_handoff`, and it sends nothing unless Viber really is in front (the
+    input would land in the user's app); `hold_foreground` only acts while it can take that
+    lock, and only when Viber itself took the front (`_keep_viber_behind`).
   - `NSWorkspace.frontmostApplication()` goes stale in this run-loop-less process and the
     system-wide AX focused app is empty for Electron apps: `foreground()` reads the owner of the
     topmost layer-0 window.
@@ -269,7 +284,9 @@ Status:
     front back for 4 s in a thread (like the Windows backend).
   - **Files are pasted, not picked** (`paste_files`): file URLs on the general pasteboard, the
     message box focused through AX, Cmd+V posted to Viber's pid → one preview with all of them,
-    fully in the background; the user's clipboard is restored once the preview shows. The
+    fully in the background; the user's clipboard is restored once the preview shows (unless
+    they copied something meanwhile: `changeCount`). `focus()` never starts Viber (`open -b`
+    would): that's `viber_app`'s, under "Start Viber automatically". The
     "send a file" picker (an `AXSheet`) needed Cmd+Shift+G and Return as real keys, so Viber came
     to the front for every file (a 12-photo listing took over the screen 12 times and timed out).
     Viber's Edit menu has no Paste item, so it's the posted shortcut.
@@ -298,7 +315,8 @@ Status:
     AXFocused on another field doesn't always take, and Viber hands focus back to the message
     box when a search closes. `type_into_focus` therefore posts nothing unless the field last
     focused by `click_at`/`click_compose`/`click_search` still has the focus (`_check_focus`,
-    `typing_target_ok`). Search text goes in via AXValue on the box itself, and
+    `typing_target_ok`); a real click that puts the focus in a text field makes that the field,
+    and a field that's gone (no AX role: the page was rebuilt) is refused, for edit keys too. Search text goes in via AXValue on the box itself, and
     `viber_send.type_search_query` checks the message box didn't change (puts it back, raises).
   - With Viber's search already open the hit test can miss the search box; `click_search`
     falls back to the unfiltered tree (`sidebar_search_box`: a TextFieldItem in the sidebar's
@@ -314,7 +332,9 @@ Status:
   the unsaved-number banner, or the title matching the name) — never from the sidebar, the compose
   placeholder or message text, which all belong to whatever chat was open before (that sent
   messages to the wrong person). Without strong proof a chat is accepted after a 4 s settle only
-  if its header differs from the one captured before `open_url`. It also errors "isn't on Viber"
+  if its title (`header_title_key`: the title row only, not the "Active"/"Last seen …" line)
+  differs from the one captured before `open_url`; when that couldn't be read (OCR error,
+  blank), only strong proof counts. It also errors "isn't on Viber"
   for non-users and "cannot add yourself" for the user's own number (My Notes is separate).
 - **Every open-chat writer takes `expect_chat`** (`reply`, `paste_into_open_chat`,
   `reply_to_message`, `send_files`, `send_listing` — passed through to each step):
@@ -435,14 +455,19 @@ Status:
   token at `%LOCALAPPDATA%\viber-mcp\google_token.json`; downloads go to
   `%LOCALAPPDATA%\viber-mcp\drive-cache` (fetched in parallel, `DOWNLOAD_THREADS`, each thread
   with its own Drive service — httplib2 isn't thread-safe; written as `.part` then renamed, so a
-  file under its final name is whole and is reused without a metadata call) and are kept ~3 days, then pruned by `prune_downloads` (after every download, every send_listing and at server start; a reused cached file counts as fresh)
+  file under its final name is whole and is reused without a metadata call; each id once per
+  download; reuse and prune share `_CACHE_LOCK`; .docx listing text is read straight from Drive,
+  never from this cache) and are kept ~3 days, then pruned by `prune_downloads` (after every download, every send_listing and at server start; a reused cached file counts as fresh)
   (`VIBER_MCP_KEEP_DOWNLOADS_DAYS`; never delete right after sending — that raced Viber's upload and
   left photos "not sent"). `remove_downloads` /
   `clear_downloads`, which never delete outside that folder); root folder name from `VIBER_MCP_LISTINGS_FOLDER`
   (default `APR LISTING`). Layout: root / CATEGORY / `FOR LEASE/RENT` or `FOR SALE` / [group, e.g.
   `LOT` — a comma-less folder with subfolders, `_is_subfolder_group`] / `City, sqm Area`
-  folder with one Google Doc (title starts with `*`) plus JPGs. Drive calls use
-  `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common. Doc
+  folder with one Google Doc (title starts with `*`) plus JPGs (`_listing_doc` refuses to guess
+  between several docs without exactly one `*`). Drive calls use
+  `execute(num_retries=RETRIES)` — 500s and dropped connections (WinError 10053) are common;
+  creates go through `_create_once` instead (it looks for the file before sending again: a
+  blind retry of a create Drive had done made a second folder/doc/photo). Doc
   text is read via `_plain_export`: Drive's text/plain export uses \r\n and two breaks per empty
   paragraph, so without it a get_listing → update_listing_doc round trip doubled every gap. The doc is split at the typed dashed
   line: text above is client-facing, below is INTERNAL (address, owner/agent numbers) and withheld in
@@ -462,8 +487,10 @@ Status:
   `Last availability check (Oct 22, 2026): STATUS. note` as the first line under the separator,
   replacing an earlier check line (`availability_requests`, pure, tested with fake Docs bodies), via
   the **Docs API** (`_docs()`, company account, `drive` scope; docs.googleapis.com was enabled in
-  `apg-viber-assistant` on 2026-10-24) with `requiredRevisionId`, so formatting and tabs survive —
-  unlike `update_listing_doc`'s whole-text rewrite.
+  `apg-viber-assistant` on 2026-10-24) with `requiredRevisionId`, so formatting and tabs survive.
+  `update_listing_doc` replaces the whole text through the Docs API too, and only at the
+  `doc_revision` that `get_listing(include_internal=True)` read (as the upload account: a revision
+  id only holds for the account that read it), so an edit made in between is never overwritten.
 - **Two Google identities.** Reads use the read-only service account
   (`viber-drive-reader@apg-viber-assistant.iam.gserviceaccount.com`, gcloud project
   `apg-viber-assistant`). Service accounts have 0 bytes of storage (uploads failed with
@@ -473,13 +500,15 @@ Status:
   write into the existing APR LISTING folders); token in `%LOCALAPPDATA%\viber-mcp\google_token_write.json`.
   `drive_sign_in(write=True)` does the one-time browser consent. While the consent screen is in
   "Testing" the refresh token expires after 7 days and the next upload reopens the browser.
-  `upload_listing` reuses an existing `*<name>` folder/doc and numbers photos after the ones
-  already there. Without the client file, `post_new_listing` falls back to returning the plan for
+  `upload_listing` reuses an existing `*<name>` folder/doc, skips photos already there (same
+  md5Checksum, so the prescribed re-run doesn't duplicate them) and numbers new ones after them.
+  Cached Drive/Docs services are rebuilt when their sign-in can't be refreshed (`_still_signed_in`). Without the client file, `post_new_listing` falls back to returning the plan for
   the Drive connector. Tests patch `CLIENT_FILE`/`WRITE_TOKEN_FILE` away (conftest autouse) — a
   test once opened the real consent page and hung.
 - `post_new_listing` (viber_drive.py) validates everything first (separator, photos,
   category/deal[/subfolder] via `pick_folder`, no existing folder of that name — compared by `listing_key`, which ignores `*`, "Brgy." and
-  punctuation), opens
+  punctuation; `add_listing_to_drive` reuses such a folder in the same parent by id, under its own
+  name, and `confirm_listing_in_drive` falls back to `listing_key`), opens
   `VIBER_MCP_LISTINGS_GC` (default `APR LISTING ONLY`; `is_listings_gc` tolerates OCR junk like a
   trailing "w"), refuses if the listing is already the latest post, posts the text, confirms it is
   on screen (`find_posted_message`, which strips Viber's U+2068/U+2069 isolate marks — `reply`'s

@@ -200,27 +200,58 @@ def _bundle(data: bytes, version: str) -> zipfile.ZipFile:
 
 
 def install(bundle: zipfile.ZipFile, target: Path) -> None:
-    """Write the release over the extension in `target`: each file to a temporary name, then
-    renamed over the old one, manifest.json last, so an install cut short still reads as the old
-    version and is redone at the next start. Then the .py files the release dropped are deleted
-    (only those: uv's .venv and the caches stay)."""
+    """Write the release over the extension in `target`, all or nothing: every file is first
+    written next to its old one (`.updating`; a full disk or a corrupt download stops here, with
+    nothing changed), then each is renamed over the old one, manifest.json last. A rename that
+    fails puts back the files already replaced, so the server that goes on running (and imports
+    the rest of its modules from this folder) is never part old, part new; a process killed
+    mid-way still reads as the old version and installs again at the next start. Then the .py
+    files the release dropped are deleted (only those: uv's .venv and the caches stay)."""
     names = _files(bundle)
-    for name in sorted(names, key=lambda n: n == "manifest.json"):
-        dst = target.joinpath(*PurePosixPath(name).parts)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dst.with_name(dst.name + ".updating")
-        tmp.write_bytes(bundle.read(name))
-        os.replace(tmp, dst)
+    staged = []
+    try:
+        for name in sorted(names, key=lambda n: n == "manifest.json"):
+            dst = target.joinpath(*PurePosixPath(name).parts)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dst.with_name(dst.name + ".updating")
+            staged.append((tmp, dst))
+            tmp.write_bytes(bundle.read(name))
+        replaced = []  # (path, its old bytes or None when it's new)
+        try:
+            for tmp, dst in staged:
+                old = dst.read_bytes() if dst.exists() else None
+                os.replace(tmp, dst)
+                replaced.append((dst, old))
+        except OSError:
+            _put_back(replaced)
+            raise
+    finally:
+        for tmp, _dst in staged:
+            tmp.unlink(missing_ok=True)
     shipped = set(names)
     for old in [*target.glob("*.py"), *target.glob("backends/*.py")]:
         if old.relative_to(target).as_posix() not in shipped:
             old.unlink()
 
 
+def _put_back(replaced: list[tuple[Path, bytes | None]]) -> None:
+    """Undo the renames of a failed install, newest first (best effort: it logs what it can't)."""
+    for dst, old in reversed(replaced):
+        try:
+            if old is None:
+                dst.unlink(missing_ok=True)
+            else:
+                back = dst.with_name(dst.name + ".previous")
+                back.write_bytes(old)
+                os.replace(back, dst)
+        except OSError as exc:
+            _log(f"couldn't put back {dst.name}: {exc}")
+
+
 def _install_latest(version: str) -> bool:
     try:
         install(_bundle(_download(version), version), config.HERE)
-    except (OSError, ValueError, http.client.HTTPException, UpdateError) as exc:
+    except (OSError, ValueError, http.client.HTTPException, zipfile.BadZipFile, UpdateError) as exc:
         _log(f"couldn't install {version}: {exc}")
         return False
     _log(f"installed {version}")

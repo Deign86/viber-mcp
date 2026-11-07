@@ -560,3 +560,201 @@ def test_updater_running_sees_viber_exe_being_replaced(monkeypatch, tmp_path):
     assert bw.WindowsBackend().updater_running() == "Viber.exe (being replaced)"
     exe.write_bytes(b"MZ")
     assert bw.WindowsBackend().updater_running() is None
+
+
+# --- State-machine hunt 2026-11-06 ----------------------------------------------------------
+
+
+def test_emoji_typing_writes_into_vibers_field_not_whatever_window_covers_it(monkeypatch):
+    # type_into_focus's UIA path took the element at the last click's SCREEN point
+    # (ControlFromPoint): with Viber covered — the usual case — the user's own window, whose
+    # field was rewritten. Now the field comes from Viber's tree.
+    b = bw.WindowsBackend()
+    _posted(monkeypatch, b)
+    other, caption = FakeNode(""), FakeNode("")
+    other.ControlTypeName, other.rect = "EditControl", (100, 100, 400, 140)
+    caption.ControlTypeName, caption.rect = "EditControl", (100, 600, 400, 640)
+    monkeypatch.setattr(bw.auto, "ControlFromPoint", lambda x, y: pytest.fail("asked the desktop"),
+                        raising=False)
+    monkeypatch.setattr(bw, "_find_desc", lambda hwnd, pred, max_depth=6:
+                        next((n for n in (other, caption) if pred(n)), None))
+    monkeypatch.setattr(bw, "_uia_write_keeping_focus", lambda fn: fn())
+    b.click_at(250, 620)
+    b.type_into_focus("Nice 😀")
+    assert caption.set_calls == ["Nice 😀"] and other.set_calls == []
+    b._post_click(150, 120)  # click_compose / click_search click through here
+    assert b._last_click == (150, 120)
+
+
+def test_another_windows_users_viber_doesnt_count_as_running(monkeypatch):
+    # _viber_pids counted every user's Viber.exe: another signed-in user's made app_running
+    # true, so start_viber waited 60 s for a window this desktop can't see and restart_viber
+    # failed "still running after it was quit".
+    class P:
+        def __init__(self, pid, user):
+            self.pid, self.info = pid, {"name": "Viber.exe", "username": user}
+    me = bw.psutil.Process().username()
+    b = bw.WindowsBackend()
+    b._exe = "C:/Viber/Viber.exe"
+    procs = [P(10, "OFFICE\\someone-else"), P(11, None)]  # None: psutil couldn't read it
+    monkeypatch.setattr(bw.psutil, "process_iter", lambda attrs=None: list(procs))
+    assert b.app_running() is False
+    procs.append(P(12, me))
+    assert b.app_running() is True and b._viber_pids() == {12}
+
+
+def test_a_uia_write_viber_never_answers_gives_up_after_30_s(monkeypatch):
+    # _uia_write_keeping_focus waited for the write with no deadline: a frozen Viber kept the
+    # tool, and so the whole server (tools run on its event loop), stuck for good.
+    class Never:
+        def done(self):
+            return False
+
+    class StuckPool:
+        def __init__(self):
+            self.shutdowns = []
+
+        def submit(self, fn, *args):
+            return Never()
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            self.shutdowns.append((wait, cancel_futures))
+    stuck = StuckPool()
+    monkeypatch.setattr(bw, "_uia_pool", stuck)
+    monkeypatch.setattr(win32gui, "GetForegroundWindow", lambda: 5)
+    clock = [0.0]
+
+    def sleep(s):
+        clock[0] += s
+        if clock[0] > 120:
+            raise AssertionError("the write was waited for with no end")
+    monkeypatch.setattr(bw.time, "sleep", sleep)
+    monkeypatch.setattr(bw.time, "time", lambda: clock[0])
+    try:
+        with pytest.raises(OCRError, match="didn't answer"):
+            bw._uia_write_keeping_focus(lambda: None)
+        assert stuck.shutdowns == [(False, True)] and 30 <= clock[0] < 31
+    finally:
+        if bw._uia_pool is not stuck:
+            bw._uia_pool.shutdown(wait=False)
+
+
+def test_an_abandoned_uia_read_never_replaces_the_field_a_later_call_located(monkeypatch):
+    # The UIA worker stored self._target_node itself: one abandoned after 30 s could finish later
+    # and swap the message box a newer click_compose located for the search box.
+    import concurrent.futures
+    import threading
+
+    b = bw.WindowsBackend()
+    monkeypatch.setattr(b, "_hwnd", lambda: 1)
+    release = threading.Event()
+    search = FakeNode("query")
+
+    def slow_find(hwnd, pred, max_depth=6):
+        release.wait(5)
+        return search
+    monkeypatch.setattr(bw, "_find_desc", slow_find)
+
+    class Abandoning:
+        """Runs the job on its own thread, like the UIA worker, and times out at once."""
+        def __init__(self):
+            self.threads = []
+
+        def submit(self, fn, *args):
+            t = threading.Thread(target=fn, args=args)
+            t.start()
+            self.threads.append(t)
+
+            class Late:
+                def result(self, timeout=None):
+                    raise concurrent.futures.TimeoutError()
+            return Late()
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            pass
+    pool = Abandoning()
+    monkeypatch.setattr(bw, "_uia_pool", pool)
+    try:
+        b._target, b._target_node = bw._is_search, None
+        with pytest.raises(OCRError):
+            b._value()
+        compose = FakeNode("draft")
+        b._target, b._target_node = bw._is_compose, compose  # a newer click_compose
+        release.set()
+        pool.threads[0].join(5)
+        assert b._target_node is compose
+    finally:
+        release.set()
+        if bw._uia_pool is not pool:
+            bw._uia_pool.shutdown(wait=False)
+
+
+def test_the_foreground_guards_only_take_it_back_from_viber(monkeypatch):
+    # _restore_foreground (open_url's guard, hold_foreground, the guarded UIA write) handed the
+    # foreground back whatever had taken it: a window the user Alt-Tabbed to was pulled away.
+    restored, fg = [], [0]
+    names = {4000: "Viber.exe", 5000: "WINWORD.EXE"}
+    monkeypatch.setattr(win32gui, "GetForegroundWindow", lambda: fg[0])
+    monkeypatch.setattr(win32gui, "IsWindow", lambda hwnd: True)
+    monkeypatch.setattr(bw.win32process, "GetWindowThreadProcessId", lambda hwnd: (1, {100: 4000, 200: 5000}[hwnd]))
+    monkeypatch.setattr(bw.psutil, "Process", lambda pid: type("P", (), {"name": lambda self: names[pid]})())
+
+    class User32:
+        def AttachThreadInput(self, *args):
+            return 1
+
+        def SetForegroundWindow(self, hwnd):
+            restored.append(hwnd)
+    kernel32 = type("K", (), {"GetCurrentThreadId": staticmethod(lambda: 1)})()
+    monkeypatch.setattr(bw.ctypes, "windll", type("W", (), {"user32": User32(), "kernel32": kernel32})())
+    fg[0] = 200  # the user switched to Word
+    bw._restore_foreground(300)
+    fg[0] = 100  # Viber took the foreground
+    bw._restore_foreground(300)
+    assert restored == [300]
+
+
+def test_a_hung_ocr_read_is_abandoned_for_a_fresh_thread(monkeypatch):
+    # observe's OCR had a 40 s timeout but kept its one thread: a WinRT call that never returned
+    # made every later read queue behind it and time out too.
+    import concurrent.futures
+
+    class Stuck:
+        def __init__(self):
+            self.shutdowns = 0
+
+        def submit(self, fn, *args):
+            class Never:
+                def result(self, timeout=None):
+                    raise concurrent.futures.TimeoutError()
+            return Never()
+
+        def shutdown(self, wait=False, cancel_futures=False):
+            self.shutdowns += 1
+    stuck = Stuck()
+    monkeypatch.setattr(bw, "_ocr_pool", stuck)
+    monkeypatch.setattr(bw, "_engine", "the stuck thread's engine")
+    try:
+        with pytest.raises(OCRError, match="didn't answer"):
+            bw._ocr_lines(Image.new("RGB", (10, 10)))
+        assert stuck.shutdowns == 1 and bw._ocr_pool is not stuck and bw._engine is None
+    finally:
+        if bw._ocr_pool is not stuck:
+            bw._ocr_pool.shutdown()
+
+
+def test_an_abandoned_worker_never_holds_up_the_servers_exit(monkeypatch):
+    # ThreadPoolExecutor's threads are joined when the interpreter exits: one abandoned while
+    # stuck in a COM call kept the server process from ending. And the fresh thread mustn't use
+    # the cache request the stuck one made.
+    import threading
+
+    monkeypatch.setattr(bw, "_uia_pool", bw._new_uia_pool())
+    monkeypatch.setattr(bw, "_uia_cache", {"request": "made on the stuck thread"})
+    err = bw._abandon_uia_thread()
+    try:
+        assert isinstance(err, OCRError) and bw._uia_cache == {}
+        workers = [t for t in threading.enumerate() if t.name in ("viber-uia", "viber-ocr")]
+        assert workers and all(t.daemon for t in workers)
+    finally:
+        bw._uia_pool.shutdown()

@@ -17,6 +17,7 @@ internal and is never returned unless explicitly requested for staff eyes.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
@@ -59,6 +60,9 @@ _SEPARATOR = re.compile(r"^\s*[-_—–=─━]{3,}\s*$")  # a lone "—" (signa
 _ALL = {"supportsAllDrives": True, "includeItemsFromAllDrives": True, "corpora": "allDrives"}
 
 _local = threading.local()  # one Drive service per thread: httplib2 isn't thread-safe
+# Taken by _fetch's reuse of a cached file and by prune_downloads per file: a prune that read a
+# file's age before a send reused it deleted it under that send.
+_CACHE_LOCK = threading.Lock()
 _SIGN_IN = threading.Lock()  # one browser sign-in at a time
 SIGN_IN_TIMEOUT = 300  # seconds the sign-in page waits for the user
 SIGN_IN_ASK_HOURS = 12  # the automatic sign-in at start asks at most this often
@@ -74,8 +78,16 @@ class DriveError(Exception):
 
 
 def _save(creds, token_file: Path) -> None:
+    """Write the sign-in whole or not at all: rewritten in place, a write cut short (or two of
+    the parallel download threads saving a refresh at once) left a token that no longer parses,
+    which reads as "not signed in"."""
     token_file.parent.mkdir(parents=True, exist_ok=True)
-    token_file.write_text(creds.to_json(), encoding="utf-8")
+    tmp = token_file.with_name(f"{token_file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(creds.to_json(), encoding="utf-8")
+        os.replace(tmp, token_file)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _saved_creds(scopes: list[str], token_file: Path):
@@ -106,6 +118,10 @@ def _browser_sign_in(scopes: list[str], token_file: Path):
     """Google's sign-in page in the browser (one at a time: the start-up sign-in and a tool can
     both want one); the sign-in is remembered in `token_file`."""
     if not CLIENT_FILE.exists():
+        if token_file.exists():
+            raise DriveError(
+                f"The Google sign-in saved in {token_file} has expired or was revoked, and renewing "
+                f"it needs the OAuth client file {CLIENT_FILE} (see README → Google Drive).")
         raise DriveError(
             "Google Drive isn't set up on this PC. Ask the admin for the service account key "
             f"and save it as {SERVICE_ACCOUNT_FILE} (or run setup.ps1 -ServiceAccountKey <path>, "
@@ -113,7 +129,10 @@ def _browser_sign_in(scopes: list[str], token_file: Path):
             f"{CLIENT_FILE} (see README → Google Drive)."
         )
     with _SIGN_IN:
-        creds = _saved_creds(scopes, token_file)  # signed in while this one waited
+        # Signed in while this one waited — for a read, the upload sign-in counts too (the
+        # start-up thread asks for that one; a read used to open a second page after it).
+        creds = _saved_creds(scopes, token_file) or (
+            token_file == TOKEN_FILE and _saved_creds(WRITE_SCOPES, WRITE_TOKEN_FILE))
         if creds:
             return creds
         from google_auth_oauthlib.flow import InstalledAppFlow
@@ -144,12 +163,34 @@ def _creds(scopes: list[str] = SCOPES, token_file: Path = TOKEN_FILE,
     return _saved_creds(scopes, token_file) or _browser_sign_in(scopes, token_file)
 
 
+def _still_signed_in(service) -> bool:
+    """Can a cached service still be used? Its sign-in is refreshed here once its access token
+    has expired; a refresh that fails (revoked, or the refresh token's 7 days while the consent
+    screen is "Testing") means it can't: the caller builds a new one, signing in again, instead
+    of the service failing every call until the server restarts."""
+    creds = getattr(service, "_viber_creds", None)
+    if creds is None or creds.valid or not getattr(creds, "expired", False):
+        return True
+    from google.auth.transport.requests import Request
+    try:
+        creds.refresh(Request())
+    except Exception:  # noqa: BLE001 — RefreshError, or no network: sign in again / fail there
+        return False
+    return True
+
+
+def _build(api: str, version: str, creds):
+    from googleapiclient.discovery import build
+    service = build(api, version, credentials=creds, cache_discovery=False)
+    service._viber_creds = creds  # for _still_signed_in
+    return service
+
+
 def _drive():
     """The read-only Drive service for the calling thread (downloads run in parallel threads)."""
     service = getattr(_local, "service", None)
-    if service is None:
-        from googleapiclient.discovery import build
-        service = _local.service = build("drive", "v3", credentials=_creds(), cache_discovery=False)
+    if service is None or not _still_signed_in(service):
+        service = _local.service = _build("drive", "v3", _creds())
     return service
 
 
@@ -160,12 +201,10 @@ def _writer():
     """Drive service that can create files: the company Google account via the OAuth client
     (browser sign-in once; the token is kept in WRITE_TOKEN_FILE)."""
     global _writer_service
-    if _writer_service is None:
+    if _writer_service is None or not _still_signed_in(_writer_service):
         if not CLIENT_FILE.exists() and not WRITE_TOKEN_FILE.exists():
             raise DriveError(f"Drive uploads aren't set up: the OAuth client file {CLIENT_FILE} is missing.")
-        from googleapiclient.discovery import build
-        creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False)
-        _writer_service = build("drive", "v3", credentials=creds, cache_discovery=False)
+        _writer_service = _build("drive", "v3", _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False))
     return _writer_service
 
 
@@ -176,10 +215,8 @@ def _docs():
     """Google Docs API as the company account, for in-place edits that keep a doc's formatting
     and link (docs.googleapis.com is enabled in the apg-viber-assistant project)."""
     global _docs_service
-    if _docs_service is None:
-        from googleapiclient.discovery import build
-        creds = _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False)
-        _docs_service = build("docs", "v1", credentials=creds, cache_discovery=False)
+    if _docs_service is None or not _still_signed_in(_docs_service):
+        _docs_service = _build("docs", "v1", _creds(WRITE_SCOPES, WRITE_TOKEN_FILE, service_account_ok=False))
     return _docs_service
 
 
@@ -282,10 +319,11 @@ def _cached_download(fid: str) -> Path | None:
 def _fetch(fid: str) -> str:
     from googleapiclient.http import MediaIoBaseDownload
 
-    cached = _cached_download(fid)
-    if cached is not None:
-        os.utime(cached)  # in use again: the age-based prune must not take it before it's sent
-        return str(cached)  # no metadata round trip for a photo we already have
+    with _CACHE_LOCK:
+        cached = _cached_download(fid)
+        if cached is not None:
+            os.utime(cached)  # in use again: the age-based prune must not take it before it's sent
+            return str(cached)  # no metadata round trip for a photo we already have
     meta = _drive().files().get(fileId=fid, fields="id,name,size,mimeType",
                                 supportsAllDrives=True).execute(num_retries=RETRIES)
     if meta["mimeType"].startswith("application/vnd.google-apps"):
@@ -304,6 +342,17 @@ def _fetch(fid: str) -> str:
     return str(path)
 
 
+def _media_bytes(fid: str) -> bytes:
+    from googleapiclient.http import MediaIoBaseDownload
+
+    buf = io.BytesIO()
+    dl = MediaIoBaseDownload(buf, _drive().files().get_media(fileId=fid, supportsAllDrives=True))
+    done = False
+    while not done:
+        _, done = dl.next_chunk(num_retries=RETRIES)
+    return buf.getvalue()
+
+
 def download(file_ids: list[str]) -> list[str]:
     """Download Drive files to the local cache in parallel; returns their paths in order (cached
     files are reused). A listing's 20 photos used to be 40 sequential round trips."""
@@ -312,8 +361,11 @@ def download(file_ids: list[str]) -> list[str]:
     if not file_ids:
         return []
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    with ThreadPoolExecutor(max_workers=min(DOWNLOAD_THREADS, len(file_ids))) as pool:
-        paths = list(pool.map(_fetch, file_ids))
+    # Each id once: two threads fetching the same one wrote the same ".part".
+    unique = list(dict.fromkeys(file_ids))
+    with ThreadPoolExecutor(max_workers=min(DOWNLOAD_THREADS, len(unique))) as pool:
+        fetched = dict(zip(unique, pool.map(_fetch, unique)))
+    paths = [fetched[fid] for fid in file_ids]
     # Every download also drops what's gone stale (view_listing_photos / drive_download used to
     # leave photos behind until the next send_listing). The ones just fetched are fresh.
     prune_downloads()
@@ -400,8 +452,9 @@ def _doc_text(f: dict) -> str:
     if f["mimeType"] == DOCX:
         import docx
 
-        path = download([f["id"]])[0]
-        return "\n".join(p.text for p in docx.Document(path).paragraphs)
+        # Straight from Drive, not the photo cache: that's keyed by file id and an edited .docx
+        # keeps its id, so its old text was read on and on.
+        return "\n".join(p.text for p in docx.Document(io.BytesIO(_media_bytes(f["id"]))).paragraphs)
     raise DriveError(f"Unsupported listing document type: {f['mimeType']}")
 
 
@@ -457,14 +510,9 @@ def split_listing(text: str, strict: bool = False) -> tuple[str, str]:
 def get_listing(folder_id: str, include_internal: bool = False) -> dict:
     """The listing in a property folder: client-facing text, and its photos (and videos)."""
     files = _children(folder_id)
-    docs = [f for f in files if f["mimeType"] in (GDOC, DOCX)]
-    if not docs:
-        raise DriveError("No listing document (Google Doc / .docx) in this folder.")
-    if len(docs) > 1:
-        # Listing docs are conventionally prefixed with '*'.
-        starred = [d for d in docs if d["name"].startswith("*")]
-        docs = starred or docs
-    doc = docs[0]
+    doc = _listing_doc(files)
+    # Read before the text, so an edit between the two reads fails the update instead of passing it.
+    revision = _doc_revision(doc["id"]) if include_internal and doc["mimeType"] == GDOC else None
     public, internal = split_listing(_doc_text(doc))
     photos = [f for f in files if f["mimeType"].startswith("image/")]
     videos = [f for f in files if f["mimeType"].startswith("video/")]
@@ -478,7 +526,37 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
     }
     if include_internal:
         result["internal_part"] = "INTERNAL — FOR STAFF ONLY, NEVER SEND:\n" + internal
+        result["doc_revision"] = revision  # for update_listing_doc
     return result
+
+
+def _listing_doc(files: list[dict]) -> dict:
+    """The folder's listing doc: its only doc, else its only "*" doc. Never a guess: the first
+    by name could be an internal-notes doc, whose "client part" would then be sent."""
+    docs = [f for f in files if f["mimeType"] in (GDOC, DOCX)]
+    if not docs:
+        raise DriveError("No listing document (Google Doc / .docx) in this folder.")
+    if len(docs) == 1:
+        return docs[0]
+    starred = [d for d in docs if d["name"].startswith("*")]
+    if len(starred) == 1:
+        return starred[0]
+    raise DriveError(f"This folder has {len(docs)} documents ({', '.join(d['name'] for d in docs)}) "
+                     f"and {'more than one' if starred else 'none'} marked '*'. Which one is the "
+                     "listing? Start only its name with '*' in Drive, then try again.")
+
+
+def _doc_revision(doc_id: str) -> str | None:
+    """The doc's Docs API revision as the upload account reads it: update_listing_doc writes as
+    that account, and a revision id only holds for the account that read it. None when that
+    account isn't signed in (a read never opens Google's sign-in page) or the read fails."""
+    if not _saved_creds(WRITE_SCOPES, WRITE_TOKEN_FILE):
+        return None
+    try:
+        return _docs().documents().get(documentId=doc_id, fields="revisionId").execute(
+            num_retries=RETRIES)["revisionId"]
+    except Exception:  # noqa: BLE001 — the read itself still works; only an update needs this
+        return None
 
 
 def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = True,
@@ -595,26 +673,44 @@ def _check_new_listing(text: str, category: str, deal: str, folder_name: str,
         parent = pick_folder([f for f in _children(parent["id"]) if f["mimeType"] == FOLDER],
                              subfolder, "subfolder")
         path += f" / {parent['name']}"
+    global _tree_cache
+    _tree_cache = None  # fresh: a listing another PC added in the last 5 minutes must count
     clash = [p for p in _property_folders()
              if listing_key(p["name"]) == listing_key(folder_name)]
+    reuse = None
     if allow_existing:
+        # This listing's folder in this parent is reused, under whatever name it has (a
+        # hand-made "Quezon City, 860 Brgy. Apolonio Samson" for "Quezon City, 860 Apolonio
+        # Samson"): uploading by the exact "*<name>" made a second folder beside it.
+        here = [p for p in clash if p.get("parent_id") == parent["id"]]
         clash = [p for p in clash if p.get("parent_id") != parent["id"]]
+        starred = [p for p in here if p["name"].strip() == f"*{folder_name}"]
+        if len(starred) == 1 or len(here) == 1:
+            reuse = (starred or here)[0]
+        elif here:
+            raise DriveError(f"{len(here)} folders in {path} are this listing "
+                             f"({', '.join(p['name'] for p in here)}). Merge them in Drive first.")
     if clash:
         raise DriveError(f"A listing folder named '{folder_name}' already exists "
                          f"({clash[0]['category']} / {clash[0]['deal']}) — it may already be posted. "
                          "Check before adding it again.")
-    return {"parent_id": parent["id"], "path": path,
+    plan = {"parent_id": parent["id"], "path": path,
             "folder_name": folder_name, "photos": [str(p) for p in photos]}
+    if reuse:
+        plan["existing_folder"] = {"id": reuse["folder_id"], "name": reuse["name"]}
+    return plan
 
 
 def drive_upload_plan(text: str, plan: dict, added: str) -> dict:
     """What to create in Drive (with the Drive connector — this server never uploads): the folder,
     the listing doc and the photos, named the way staff name them. New listings get the '*'
     identifier on the folder as well as the doc."""
+    existing = plan.get("existing_folder")
     return {
         "parent_folder_id": plan["parent_id"],
         "parent_path": plan["path"],
-        "folder_name": f"*{plan['folder_name']}",
+        **({"folder_id": existing["id"]} if existing else {}),  # reused as it is
+        "folder_name": existing["name"] if existing else f"*{plan['folder_name']}",
         "doc_title": f"*{plan['folder_name']}",
         "doc_text": listing_doc_text(text, added),
         "photos": [{"path": p, "name": f"AlphaPremier_Photo_{i:02d}{Path(p).suffix.lower() or '.jpg'}"}
@@ -648,11 +744,33 @@ def upload_files(folder_id: str, paths: list[str], start: int = 1) -> list[dict]
         ext = path.suffix.lower() or ".jpg"
         mime = _IMAGE_TYPES.get(ext, "application/octet-stream")
         media = MediaFileUpload(str(path), mimetype=mime, resumable=path.stat().st_size > 5_000_000)
-        f = svc.files().create(body={"name": f"AlphaPremier_Photo_{i:02d}{ext}", "parents": [folder_id]},
-                               media_body=media, fields="id,name",
-                               supportsAllDrives=True).execute(num_retries=RETRIES)
-        out.append(f)
+        name = f"AlphaPremier_Photo_{i:02d}{ext}"
+        out.append(_create_once(svc, lambda: _find_child(svc, folder_id, name, mime),
+                                body={"name": name, "parents": [folder_id]}, media_body=media))
     return out
+
+
+def _create_once(svc, find, **create) -> dict:
+    """files().create that never makes a second copy. Drive can commit a create whose answer is
+    lost (a 500, a dropped connection: WinError 10053 is common), and googleapiclient's
+    num_retries re-sent it blind. So no blind retry: after a failure `find()` looks for what
+    Drive made, and only if it isn't there is the create sent again."""
+    from googleapiclient.errors import HttpError
+
+    for attempt in range(RETRIES + 1):
+        try:
+            return svc.files().create(fields="id,name", supportsAllDrives=True, **create).execute()
+        except (HttpError, OSError) as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            if isinstance(exc, HttpError) and not (status == 429 or (status or 0) >= 500):
+                raise  # a real refusal (403, 404, …): retrying won't help
+            made = find()
+            if made is not None:
+                return made
+            if attempt == RETRIES:
+                raise
+            time.sleep(2 ** attempt)
+    raise AssertionError("unreachable")
 
 
 def upload_listing(upload: dict) -> dict:
@@ -664,45 +782,94 @@ def upload_listing(upload: dict) -> dict:
     global _tree_cache
     svc = _writer()
     name = upload["folder_name"]
-    folder = _find_child(svc, upload["parent_folder_id"], name, FOLDER)
+    if upload.get("folder_id"):  # the listing's existing folder (_check_new_listing found it)
+        folder = {"id": upload["folder_id"], "name": name}
+    else:
+        folder = _find_child(svc, upload["parent_folder_id"], name, FOLDER)
     created_folder = folder is None
     if folder is None:
-        folder = svc.files().create(body={"name": name, "mimeType": FOLDER,
-                                          "parents": [upload["parent_folder_id"]]},
-                                    fields="id,name", supportsAllDrives=True).execute(num_retries=RETRIES)
+        parent = upload["parent_folder_id"]
+        folder = _create_once(svc, lambda: _find_child(svc, parent, name, FOLDER),
+                              body={"name": name, "mimeType": FOLDER, "parents": [parent]})
     doc = _find_child(svc, folder["id"], upload["doc_title"], GDOC)
+    if doc is None and upload.get("folder_id"):
+        # The reused folder's own listing doc, however it's named: a second "*" doc beside it
+        # left get_listing two to choose from.
+        starred = [f for f in _children(folder["id"])
+                   if f["mimeType"] in (GDOC, DOCX) and f["name"].startswith("*")]
+        doc = starred[0] if len(starred) == 1 else None
     created_doc = doc is None
     if doc is None:
         media = MediaInMemoryUpload(upload["doc_text"].encode("utf-8"), mimetype="text/plain")
-        doc = svc.files().create(body={"name": upload["doc_title"], "mimeType": GDOC,
-                                       "parents": [folder["id"]]},
-                                 media_body=media, fields="id,name",
-                                 supportsAllDrives=True).execute(num_retries=RETRIES)
+        doc = _create_once(svc, lambda: _find_child(svc, folder["id"], upload["doc_title"], GDOC),
+                           body={"name": upload["doc_title"], "mimeType": GDOC, "parents": [folder["id"]]},
+                           media_body=media)
     existing = svc.files().list(
         q=f"'{folder['id']}' in parents and mimeType contains 'image/' and trashed = false",
-        fields="files(id)", supportsAllDrives=True,
+        fields="files(id,md5Checksum)", supportsAllDrives=True,
         includeItemsFromAllDrives=True).execute(num_retries=RETRIES).get("files", [])
-    photos = upload_files(folder["id"], [p["path"] for p in upload.get("photos", [])],
-                          start=len(existing) + 1) if upload.get("photos") else []
+    # A re-run (post_new_listing's STOP says to re-run add_listing_to_drive) must not upload a
+    # photo that an earlier run already put there: same bytes, same md5Checksum.
+    there = {f["md5Checksum"] for f in existing if f.get("md5Checksum")}
+    wanted = [p["path"] for p in upload.get("photos", [])]
+    todo = [p for p in wanted if _md5(p) not in there]
+    photos = upload_files(folder["id"], todo, start=len(existing) + 1) if todo else []
     _tree_cache = None
     return {"folder_id": folder["id"], "folder_created": created_folder,
             "doc_id": doc["id"], "doc_created": created_doc, "photos_uploaded": len(photos),
+            "photos_already_there": len(wanted) - len(todo),
             "folder_url": f"https://drive.google.com/drive/folders/{folder['id']}"}
 
 
-def update_listing_doc(folder_id: str, text: str) -> dict:
-    """Replace the whole text of a listing folder's '*' Google Doc (e.g. to reformat it). The
-    doc keeps its id/link. Refuses text without the dashed separator."""
-    from googleapiclient.http import MediaInMemoryUpload
+def _md5(path: str) -> str | None:
+    try:
+        return hashlib.md5(Path(path).expanduser().read_bytes()).hexdigest()
+    except OSError:
+        return None  # upload_files reports the missing file
+
+
+_DOC_CHANGED = ("The doc changed since get_listing read it (a coworker's edit, or a recorded "
+                "availability check). Nothing was changed: read it again with get_listing(folder_id, "
+                "include_internal=True) and redo the edit on that text.")
+
+
+def replace_text_requests(content: list[dict], text: str) -> list[dict]:
+    """Docs batchUpdate requests that make a body's whole text `text` (its final newline can't
+    be deleted, so the text goes in before it)."""
+    end = content[-1]["endIndex"]
+    delete = [{"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end - 1}}}] if end - 1 > 1 else []
+    return delete + [{"insertText": {"location": {"index": 1}, "text": text}}]
+
+
+def update_listing_doc(folder_id: str, text: str, doc_revision: str = "") -> dict:
+    """Replace the whole text of a listing folder's '*' Google Doc (e.g. to reformat it), through
+    the Docs API: the doc keeps its id/link, and the edit only goes in if the doc is still at
+    `doc_revision`, the revision get_listing(include_internal=True) read. Rewriting it blind lost
+    whatever changed in between (a coworker's edit, a recorded availability check). Refuses text
+    without the dashed separator."""
+    from googleapiclient.errors import HttpError
 
     split_listing(text, strict=True)
-    svc = _writer()
+    if not doc_revision.strip():
+        raise DriveError("Pass the doc_revision get_listing(folder_id, include_internal=True) returned: "
+                         "the doc is only replaced if nobody changed it since it was read. (None there "
+                         "means the upload account isn't signed in: drive_sign_in(write=True).)")
     docs = [f for f in _children(folder_id) if f["mimeType"] == GDOC]
     if len(docs) != 1:
         raise DriveError(f"Expected one Google Doc in the folder, found {len(docs)}.")
-    media = MediaInMemoryUpload(text.strip().encode("utf-8"), mimetype="text/plain")
-    svc.files().update(fileId=docs[0]["id"], media_body=media,
-                       supportsAllDrives=True).execute(num_retries=RETRIES)
+    svc = _docs()
+    doc = svc.documents().get(documentId=docs[0]["id"]).execute(num_retries=RETRIES)
+    if doc["revisionId"] != doc_revision.strip():
+        raise DriveError(_DOC_CHANGED)
+    try:
+        svc.documents().batchUpdate(documentId=docs[0]["id"], body={
+            "requests": replace_text_requests(doc["body"]["content"], text.strip()),
+            "writeControl": {"requiredRevisionId": doc["revisionId"]},  # an edit since the read above
+        }).execute(num_retries=RETRIES)
+    except HttpError as exc:
+        if getattr(exc.resp, "status", None) == 400 and "revision" in str(exc).lower():
+            raise DriveError(_DOC_CHANGED) from exc
+        raise
     return {"updated": True, "doc_id": docs[0]["id"], "doc": docs[0]["name"]}
 
 
@@ -823,9 +990,11 @@ def move_listing_to_sold(folder_id: str) -> dict:
     if sold is None:
         raise DriveError(f"Can't find the '{SOLD_FOLDER_NAME}' folder in {LISTINGS_ROOT_NAME}.")
     target = sold_target(listing["category"], [f for f in _children(sold["id"]) if f["mimeType"] == FOLDER]) or sold
-    _writer().files().update(fileId=folder_id, addParents=target["id"], removeParents=listing["parent_id"],
-                             fields="id,parents", supportsAllDrives=True).execute(num_retries=RETRIES)
-    _tree_cache = None
+    try:
+        _writer().files().update(fileId=folder_id, addParents=target["id"], removeParents=listing["parent_id"],
+                                 fields="id,parents", supportsAllDrives=True).execute(num_retries=RETRIES)
+    finally:
+        _tree_cache = None  # Drive may have moved it even when the answer was lost
     path = SOLD_FOLDER_NAME + ("" if target is sold else f" / {target['name']}")
     return {"moved": True, "listing": listing["name"], "from": f"{listing['category']} / {listing['deal']}",
             "to": f"{LISTINGS_ROOT_NAME} / {path}",
@@ -874,7 +1043,7 @@ def _quote_reply_posted(text: str, reply_text: str, tries: int = 8) -> dict:
     for _ in range(tries):
         n = find_posted_message(viber_ui.list_messages()["messages"], text)
         if n is not None:
-            return viber_ui.reply_to_message(n, reply_text)
+            return viber_ui.reply_to_message(n, reply_text, expect_chat=LISTINGS_GC)
         viber_ocr.scroll_and_read("chat", "up", 10)
     raise DriveError("Couldn't find the posted listing on screen to quote-reply to.")
 
@@ -904,16 +1073,19 @@ def post_new_listing(text: str, category: str, deal: str, folder_name: str,
     if find_posted_message(viber_ui.list_messages()["messages"], text) is not None:
         raise DriveError("This listing is already the latest post in the GC. Nothing sent.")
     done: dict = {"gc": LISTINGS_GC, "posted": False}
+    # Each post names the GC (expect_chat): the text carries the internal part (owner/agent
+    # numbers), and a new post can bring another chat to the front between two sends.
     try:
-        viber_send.reply(text.strip())
+        viber_send.reply(text.strip(), expect_chat=LISTINGS_GC)
         # reply's own 'verified' gives false negatives on long texts; look for the post itself.
         if find_posted_message(viber_ui.list_messages()["messages"], text) is None:
             raise DriveError("the listing text isn't showing in the GC after sending — check it "
                              "before posting the photos")
         done["text_posted"] = True
         if plan["photos"]:
-            done["photos_verified"] = viber_ui.send_files(plan["photos"]).get("verified")
-        viber_send.reply(GC_SEPARATOR)
+            done["photos_verified"] = viber_ui.send_files(plan["photos"], expect_chat=LISTINGS_GC
+                                                          ).get("verified")
+        viber_send.reply(GC_SEPARATOR, expect_chat=LISTINGS_GC)
         done["posted"] = True
     except Exception as e:
         done["STOP"] = (f"Stopped part-way: {e}. Everything listed above here is done — finish the "
@@ -940,12 +1112,17 @@ def confirm_listing_in_drive(folder_name: str, photos: int) -> dict:
     global _tree_cache
     _tree_cache = None  # the folder was just created
     name = folder_name.strip().lstrip("*").strip()  # the folder itself is named "*<name>"
-    hits = [p for p in _property_folders()
-            if p["name"].strip().lstrip("*").strip().casefold() == name.casefold()]
+    folders = _property_folders()
+    hits = [p for p in folders if p["name"].strip().lstrip("*").strip().casefold() == name.casefold()]
+    if not hits:  # a hand-made folder add_listing_to_drive reused ("…, 860 Brgy. Apolonio Samson")
+        hits = [p for p in folders if listing_key(p["name"]) == listing_key(name)]
     if len(hits) != 1:
         raise DriveError(f"Expected one Drive folder named '{name}', found {len(hits)}. Nothing posted.")
     files = _children(hits[0]["folder_id"])
     docs = [f for f in files if f["mimeType"] in (GDOC, DOCX) and f["name"].strip() == f"*{name}"]
+    if not docs:  # a reused folder keeps its own "*" doc, named after the folder
+        starred = [f for f in files if f["mimeType"] in (GDOC, DOCX) and f["name"].strip().startswith("*")]
+        docs = starred if len(starred) == 1 else []
     if not docs:
         raise DriveError(f"The folder has no listing doc '*{name}' yet. Nothing posted.")
     images = [f for f in files if f["mimeType"].startswith("image/")]
@@ -989,7 +1166,16 @@ def prune_downloads(cache_dir: Path | None = None, max_age_days: float | None = 
     days = KEEP_DOWNLOADS_DAYS if max_age_days is None else max_age_days
     cutoff = time.time() - days * 86400
     files = [f for f in root.iterdir() if f.is_file()] if root.exists() else []
-    old = [str(f) for f in files if f.stat().st_mtime < cutoff]
-    removed = remove_downloads(old, root)
+    removed = 0
+    for f in files:
+        # The age is read and the file deleted under the lock _fetch reuses files with, so one
+        # a send marks fresh in between is kept.
+        with _CACHE_LOCK:
+            try:
+                if f.stat().st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue  # gone meanwhile (a ".part" renamed into place)
+            removed += remove_downloads([str(f)], root)
     return {"removed": removed, "kept": len(files) - removed, "older_than_days": days,
             "folder": str(root)}
