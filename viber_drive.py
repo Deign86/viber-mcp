@@ -531,19 +531,31 @@ def get_listing(folder_id: str, include_internal: bool = False) -> dict:
 
 
 def _listing_doc(files: list[dict]) -> dict:
-    """The folder's listing doc: its only doc, else its only "*" doc. Never a guess: the first
-    by name could be an internal-notes doc, whose "client part" would then be sent."""
+    """The folder's listing doc. A listing folder has exactly one doc, holding the latest info
+    (staff rule). With several none is picked: the first by name could be internal notes (its
+    "client part" would be sent), a "*" one an old copy."""
     docs = [f for f in files if f["mimeType"] in (GDOC, DOCX)]
     if not docs:
         raise DriveError("No listing document (Google Doc / .docx) in this folder.")
-    if len(docs) == 1:
-        return docs[0]
-    starred = [d for d in docs if d["name"].startswith("*")]
-    if len(starred) == 1:
-        return starred[0]
-    raise DriveError(f"This folder has {len(docs)} documents ({', '.join(d['name'] for d in docs)}) "
-                     f"and {'more than one' if starred else 'none'} marked '*'. Which one is the "
-                     "listing? Start only its name with '*' in Drive, then try again.")
+    if len(docs) > 1:
+        raise DriveError(_several_docs(docs))
+    return docs[0]
+
+
+def _several_docs(docs: list[dict]) -> str:
+    return (f"This listing folder has {len(docs)} docs ({', '.join(d['name'] for d in docs)}); it "
+            "should have one doc, with the latest info. Merge what's still current into one, delete "
+            "the others in Drive, then try again.")
+
+
+def _editable_doc(folder_id: str) -> dict:
+    """The folder's one listing doc, for an in-place edit through the Docs API (Google Docs only)."""
+    doc = _listing_doc(_children(folder_id))
+    if doc["mimeType"] != GDOC:
+        raise DriveError(f"The listing doc '{doc['name']}' is a .docx, which can't be edited in place. "
+                         "In Drive open it with Google Docs and File → Save as Google Docs, delete the "
+                         ".docx (one doc per folder), then try again.")
+    return doc
 
 
 def _doc_revision(doc_id: str) -> str | None:
@@ -791,13 +803,19 @@ def upload_listing(upload: dict) -> dict:
         parent = upload["parent_folder_id"]
         folder = _create_once(svc, lambda: _find_child(svc, parent, name, FOLDER),
                               body={"name": name, "mimeType": FOLDER, "parents": [parent]})
-    doc = _find_child(svc, folder["id"], upload["doc_title"], GDOC)
-    if doc is None and upload.get("folder_id"):
-        # The reused folder's own listing doc, however it's named: a second "*" doc beside it
-        # left get_listing two to choose from.
-        starred = [f for f in _children(folder["id"])
-                   if f["mimeType"] in (GDOC, DOCX) and f["name"].startswith("*")]
-        doc = starred[0] if len(starred) == 1 else None
+    doc = None
+    if not created_folder:
+        # A listing folder has one doc, with the latest info: an existing folder's doc is kept,
+        # whatever it's named (a second one beside it left get_listing refusing the folder), and
+        # a folder that already has several gets nothing added.
+        docs = svc.files().list(
+            q=f"'{folder['id']}' in parents and trashed = false and "
+              f"(mimeType = '{GDOC}' or mimeType = '{DOCX}')",
+            fields="files(id,name,mimeType)", supportsAllDrives=True,
+            includeItemsFromAllDrives=True).execute(num_retries=RETRIES).get("files", [])
+        if len(docs) > 1:
+            raise DriveError(_several_docs(docs) + " Nothing was uploaded.")
+        doc = docs[0] if docs else None
     created_doc = doc is None
     if doc is None:
         media = MediaInMemoryUpload(upload["doc_text"].encode("utf-8"), mimetype="text/plain")
@@ -815,10 +833,15 @@ def upload_listing(upload: dict) -> dict:
     todo = [p for p in wanted if _md5(p) not in there]
     photos = upload_files(folder["id"], todo, start=len(existing) + 1) if todo else []
     _tree_cache = None
-    return {"folder_id": folder["id"], "folder_created": created_folder,
-            "doc_id": doc["id"], "doc_created": created_doc, "photos_uploaded": len(photos),
-            "photos_already_there": len(wanted) - len(todo),
-            "folder_url": f"https://drive.google.com/drive/folders/{folder['id']}"}
+    out = {"folder_id": folder["id"], "folder_created": created_folder,
+           "doc_id": doc["id"], "doc_created": created_doc, "photos_uploaded": len(photos),
+           "photos_already_there": len(wanted) - len(todo),
+           "folder_url": f"https://drive.google.com/drive/folders/{folder['id']}"}
+    if not created_doc:
+        out["note"] = (f"Kept the folder's doc '{doc['name']}' as it is (one doc per listing). If "
+                       "this post has newer details, put them in: get_listing(folder_id, "
+                       "include_internal=True), then update_listing_doc.")
+    return out
 
 
 def _md5(path: str) -> str | None:
@@ -854,9 +877,7 @@ def update_listing_doc(folder_id: str, text: str, doc_revision: str = "") -> dic
         raise DriveError("Pass the doc_revision get_listing(folder_id, include_internal=True) returned: "
                          "the doc is only replaced if nobody changed it since it was read. (None there "
                          "means the upload account isn't signed in: drive_sign_in(write=True).)")
-    docs = [f for f in _children(folder_id) if f["mimeType"] == GDOC]
-    if len(docs) != 1:
-        raise DriveError(f"Expected one Google Doc in the folder, found {len(docs)}.")
+    docs = [_editable_doc(folder_id)]
     svc = _docs()
     doc = svc.documents().get(documentId=docs[0]["id"]).execute(num_retries=RETRIES)
     if doc["revisionId"] != doc_revision.strip():
@@ -918,9 +939,7 @@ def record_availability(folder_id: str, status: str, note: str = "", checked_on:
     if not status.strip():
         raise DriveError("status is required, e.g. AVAILABLE, NOT AVAILABLE or UNDER NEGOTIATION.")
     line = availability_line(status, note, date.fromisoformat(checked_on) if checked_on else None)
-    docs = [f for f in _children(folder_id) if f["mimeType"] == GDOC]
-    if len(docs) != 1:
-        raise DriveError(f"Expected one Google Doc in the folder, found {len(docs)}.")
+    docs = [_editable_doc(folder_id)]
     svc = _docs()
     doc = svc.documents().get(documentId=docs[0]["id"]).execute(num_retries=RETRIES)
     requests = availability_requests(doc["body"]["content"], line)
@@ -1119,12 +1138,11 @@ def confirm_listing_in_drive(folder_name: str, photos: int) -> dict:
     if len(hits) != 1:
         raise DriveError(f"Expected one Drive folder named '{name}', found {len(hits)}. Nothing posted.")
     files = _children(hits[0]["folder_id"])
-    docs = [f for f in files if f["mimeType"] in (GDOC, DOCX) and f["name"].strip() == f"*{name}"]
-    if not docs:  # a reused folder keeps its own "*" doc, named after the folder
-        starred = [f for f in files if f["mimeType"] in (GDOC, DOCX) and f["name"].strip().startswith("*")]
-        docs = starred if len(starred) == 1 else []
+    docs = [f for f in files if f["mimeType"] in (GDOC, DOCX)]  # one per listing, any name
     if not docs:
-        raise DriveError(f"The folder has no listing doc '*{name}' yet. Nothing posted.")
+        raise DriveError(f"The folder has no listing doc yet ('*{name}'). Nothing posted.")
+    if len(docs) > 1:
+        raise DriveError(_several_docs(docs) + " Nothing posted.")
     images = [f for f in files if f["mimeType"].startswith("image/")]
     if len(images) < photos:
         raise DriveError(f"The folder has {len(images)} photo(s), expected {photos}. Nothing posted.")
