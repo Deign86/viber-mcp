@@ -801,6 +801,11 @@ class WindowsBackend(Backend):
             time.sleep(_WHEEL_GAP)
 
     # --- computer-use primitives (coordinates = pixels in the screenshot image) --------
+    def window_size(self) -> tuple[int, int]:
+        """Window (width, height) in pixels without rendering a full PrintWindow capture."""
+        l, t, r, b = win32gui.GetWindowRect(self._hwnd())
+        return r - l, b - t
+
     def screenshot(self):
         """The Viber window as a PIL image (rendered off-screen; Viber may be covered)."""
         return self.grab()[0]

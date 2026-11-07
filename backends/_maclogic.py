@@ -102,6 +102,18 @@ def visible_center(frame, window) -> tuple[float, float] | None:
     return (l + r) / 2, (t + b) / 2
 
 
+def same_or_ancestor(els: list[dict], ancestor: int, node: int | None) -> bool:
+    """Is `ancestor` equal to `node` or one of `node`'s ancestors in `els` (via `parent` index)?
+    Pure in-memory check so `_visible` stops calling AXParent IPC once a hit lands in `els`."""
+    cur, seen = node, 0
+    while cur is not None and 0 <= cur < len(els) and seen < len(els):
+        if cur == ancestor:
+            return True
+        cur = els[cur].get("parent")
+        seen += 1
+    return False
+
+
 def window_with_frame(windows: list[dict], frame) -> dict | None:
     """Viber's normal (layer 0) window whose bounds are `frame` (x, y, w, h), from a
     CGWindowListCopyWindowInfo list of all windows, on screen or not. The list also holds

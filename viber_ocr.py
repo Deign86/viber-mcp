@@ -217,13 +217,21 @@ def _chat_pane(elements: list[dict]):
             or next((e for e in elements if e["class"] == "StackView"), None))
 
 
+def _win_size(b) -> tuple[int, int]:
+    """(width, height) of the Viber window, using window_size() when available."""
+    if hasattr(b, "window_size"):
+        return b.window_size()
+    img = b.screenshot()
+    return img.width, img.height
+
+
 def _sidebar_fraction() -> float:
     """The sidebar's right edge as a fraction of the window, from the chat pane's UIA rect
     (the sidebar is a fixed pixel width); the usual fraction where UIA isn't available."""
     b = get_backend()
     try:
         pane = _chat_pane(b.elements())
-        width = b.screenshot().width
+        width, _ = _win_size(b)
     except (NotImplementedError, AttributeError, OCRError):
         return _SIDEBAR_MAX_X
     if pane is None or not width:
@@ -252,9 +260,9 @@ def _click_filter(label: str) -> None:
     if pill is None:
         raise OCRError(f"The chat list's '{label}' filter isn't on screen (is the chat list showing?).")
     b = get_backend()
-    img = b.screenshot()
-    b.click_at((pill["x"] + pill.get("w", 0.03) / 2) * img.width,
-               (pill["y"] + pill.get("h", 0.01) / 2) * img.height)
+    w, h = _win_size(b)
+    b.click_at((pill["x"] + pill.get("w", 0.03) / 2) * w,
+               (pill["y"] + pill.get("h", 0.01) / 2) * h)
     b.wait_still()
 
 

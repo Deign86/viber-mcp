@@ -113,7 +113,7 @@ def _header_band() -> tuple[float, float]:
     (the window's title bar height varies); window fractions where UIA isn't available."""
     try:
         pane = next((e for e in backend.elements() if e["class"] == "StackView"), None)
-        height = backend.screenshot().height
+        _, height = viber_ocr._win_size(backend)
     except (NotImplementedError, AttributeError, viber_ocr.OCRError):
         return _HEADER_TOP_DEFAULT, _HEADER_BOTTOM_DEFAULT
     if pane is None or not height:

@@ -553,13 +553,18 @@ class MacBackend(Backend):
         """The window at full resolution (2x on Retina)."""
         return self._pil(self._cgimage(), whole_window=True)
 
+    def window_size(self) -> tuple[int, int]:
+        """Window (width, height) in points without capturing pixels."""
+        _, _, w, h = self._wframe()
+        return round(w), round(h)
+
     def screenshot(self):
         """The Viber window as a PIL image in points (1 px = 1 pt, also on Retina), the
         coordinate space of elements() and click_at — viber_ui's pixel offsets assume it."""
         img = self.grab()
-        _, _, w, h = self._wframe()
-        if img.width != round(w):
-            img = img.resize((round(w), round(h)))
+        w, h = self.window_size()
+        if img.width != w:
+            img = img.resize((w, h))
         return img
 
     def observe(self, region=None) -> list[dict]:
@@ -719,10 +724,11 @@ class MacBackend(Backend):
             raise OCRError("Viber's window isn't in the accessibility tree.")
         return app, win
 
-    def _walk(self, hit_test: bool = True) -> tuple[list[dict], list]:
+    def _walk(self, hit_test: bool = True, only_if=None) -> tuple[list[dict], list]:
         """Visible elements (dicts like the Windows backend's) and their AX elements, BFS order,
         parents before children. hit_test=False keeps everything inside the window, drawn or
-        not (only for a fallback that checks what it picks)."""
+        not (only for a fallback that checks what it picks). `only_if` limits hit-testing to
+        elements matching a predicate (so `_find` only hit-tests candidate controls)."""
         app, win = self._ax_window()
         wframe = self._wframe()
         origin = wframe[:2]
@@ -763,7 +769,8 @@ class MacBackend(Backend):
                 index_of.setdefault(CFHash(el), []).append((el, idx))
             for kid in kids or []:
                 queue.append((kid, idx if idx is not None else parent))
-        visible = self._visible(app, out, refs, index_of, wframe) if hit_test else [True] * len(out)
+        visible = (self._visible(app, out, refs, index_of, wframe, only_if=only_if)
+                   if hit_test else [True] * len(out))
         return ml.nest_popups(*self._reindex(out, refs, visible))
 
     def _lookup(self, index_of, el) -> int | None:
@@ -772,40 +779,40 @@ class MacBackend(Backend):
                 return idx
         return None
 
-    def _visible(self, app, out, refs, index_of, wframe) -> list[bool]:
+    def _visible(self, app, out, refs, index_of, wframe, only_if=None) -> list[bool]:
         """Hit-test each element's visible centre: drawn iff the topmost element there is the
-        element itself, one of its descendants, or one of its ancestors."""
+        element itself, one of its descendants, or one of its ancestors. Stops walking AXParent
+        as soon as a node in `index_of` is reached (the rest of the ancestor chain is already in
+        `out`), and caches hit-tests at identical screen points."""
         visible = [True] * len(out)
+        hit_cache: dict[tuple[float, float], int | None] = {}
         for i, e in enumerate(out):
+            if only_if is not None and not only_if(e):
+                visible[i] = False
+                continue
             if e["parent"] is None and e["type"] == "Window":
                 continue
-            if e["parent"] is not None and not visible[e["parent"]]:
+            if only_if is None and e["parent"] is not None and not visible[e["parent"]]:
                 visible[i] = False  # inside a hidden container
                 continue
             cx, cy = ml.visible_center(e["_frame"], wframe)
-            err, hit = AXUIElementCopyElementAtPosition(app, cx, cy, None)
-            if err != 0 or hit is None:
-                visible[i] = False
-                continue
-            # Walk up from the hit: reaching i means hit is i or inside it.
-            ok, node, steps = False, hit, 0
-            hit_idx = None
-            while node is not None and steps < 40:
-                j = self._lookup(index_of, node)
-                if j is not None:
-                    hit_idx = j if hit_idx is None else hit_idx
-                    if j == i:
-                        ok = True
-                        break
-                node, steps = _get(node, "AXParent"), steps + 1
-            if not ok and hit_idx is not None:  # is the hit one of i's ancestors?
-                p = e["parent"]
-                while p is not None:
-                    if p == hit_idx:
-                        ok = True
-                        break
-                    p = out[p]["parent"]
-            visible[i] = ok
+            pt = (round(cx, 1), round(cy, 1))
+            if pt not in hit_cache:
+                err, hit = AXUIElementCopyElementAtPosition(app, cx, cy, None)
+                hit_idx = None
+                if err == 0 and hit is not None:
+                    node, steps = hit, 0
+                    while node is not None and steps < 40:
+                        j = self._lookup(index_of, node)
+                        if j is not None:
+                            hit_idx = j
+                            break
+                        node, steps = _get(node, "AXParent"), steps + 1
+                hit_cache[pt] = hit_idx
+            hit_idx = hit_cache[pt]
+            visible[i] = hit_idx is not None and (
+                ml.same_or_ancestor(out, i, hit_idx) or ml.same_or_ancestor(out, hit_idx, i)
+            )
         return visible
 
     @staticmethod
@@ -838,7 +845,7 @@ class MacBackend(Backend):
         return els
 
     def _find(self, predicate, what: str, required: bool = True):
-        els, refs = self._walk()
+        els, refs = self._walk(only_if=predicate)
         for e, el in zip(els, refs):
             if predicate(e):
                 return e, el
@@ -957,6 +964,22 @@ class MacBackend(Backend):
         err, hit = AXUIElementCopyElementAtPosition(self._app(), sx, sy, None)
         return hit if err == 0 else None
 
+    @staticmethod
+    def _actionable_hit(hit):
+        """Walk up at most 3 AXParent levels from `hit` so clicking the inner label/icon of a
+        button or menu item still triggers AXPress in the background instead of stealing focus."""
+        node = hit
+        for _ in range(4):
+            if node is None:
+                break
+            role = _get(node, "AXRole")
+            if role in ("AXTextField", "AXTextArea"):
+                return node, role
+            if role in ("AXButton", "AXCheckBox", "AXMenuItem", "AXRadioButton") and "AXPress" in _actions(node):
+                return node, role
+            node = _get(node, "AXParent")
+        return hit, (_get(hit, "AXRole") if hit is not None else None)
+
     def click_at(self, x: float, y: float, button: str = "left", double: bool = False) -> None:
         """Click at screenshot coordinates. A plain left click on a control is an AXPress (or
         focuses a text field) in the background; anything else is a real click."""
@@ -965,8 +988,7 @@ class MacBackend(Backend):
         self._target_el = None  # a click anywhere may navigate
         sx, sy = self._to_screen(x, y)
         if button == "left" and not double:
-            hit = self._hit(sx, sy)
-            role = _get(hit, "AXRole") if hit is not None else None
+            hit, role = self._actionable_hit(self._hit(sx, sy))
             if role in ("AXTextField", "AXTextArea"):
                 AXUIElementSetAttributeValue(hit, "AXFocused", True)
                 self._focus_el = hit

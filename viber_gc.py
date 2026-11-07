@@ -473,22 +473,25 @@ def _find_message(text: str, screens: int = 6):
     b = viber_ui._backend()
     want = logic_norm(text)
     viber_ui.jump_to_latest()
-    for _ in range(screens + 1):
-        msgs = viber_ui._messages(b.elements())
+    msgs = viber_ui._messages(b.elements())
+    for step in range(screens + 1):
         hit = next((m for m in reversed(msgs) if logic_norm(m["text"]) == want), None)
         if hit:
             return hit
-        _scroll_up_a_screen(b, msgs)
+        if step < screens:
+            msgs = _scroll_up_a_screen(b, msgs)
     return None
 
 
-def _scroll_up_a_screen(b, before: list[dict]) -> None:
+def _scroll_up_a_screen(b, before: list[dict]) -> list[dict]:
     """Scroll the open chat up and wait until older messages have rendered (the topmost visible
     message changes), at most ~1 s: Viber loads history in chunks (was a fixed 1 s)."""
     top = before[0]["text"] if before else None
     b.scroll("chat", 10)
-    viber_send._poll(lambda: (m := viber_ui._messages(b.elements())) and m[0]["text"] != top,
-                     timeout=1.2, first=0.15)
+    msgs = viber_send._poll(
+        lambda: m if (m := viber_ui._messages(b.elements())) and m[0]["text"] != top else None,
+        timeout=1.2, first=0.15)
+    return msgs if msgs is not None else viber_ui._messages(b.elements())
 
 
 def _collect_templates_chat(screens: int) -> list[str]:
@@ -497,12 +500,15 @@ def _collect_templates_chat(screens: int) -> list[str]:
     seen: list[str] = []
     # Start from the newest message, whatever the chat was scrolled to before.
     viber_ui.jump_to_latest()
-    for _ in range(screens):
-        msgs = viber_ui._messages(b.elements())
+    msgs = viber_ui._messages(b.elements())
+    for step in range(screens):
         for m in reversed(msgs):  # newest → oldest on screen
             if m["text"] and m["text"] not in seen:
                 seen.append(m["text"])
-        _scroll_up_a_screen(b, msgs)
+        if step < screens - 1:
+            msgs = _scroll_up_a_screen(b, msgs)
+        else:
+            _scroll_up_a_screen(b, msgs)
     viber_ui.jump_to_latest()
     return list(reversed(seen))
 
