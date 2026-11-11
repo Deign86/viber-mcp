@@ -255,6 +255,19 @@ each GC created and each template skipped or failed (with the reason).
 - **In the new GC only:** the client's template with ONLY the client fields (never the
   listing/intern/date lines), then the listing (text above the dashed line + photos + videos), then
   "Hello @client" so the client is notified. A template without a listing gets a GC without one.
+- **GCs are always website style (standing rule).** Whenever you make a client GC, the listing goes
+  the website way, not as the Drive text + photos + videos:
+  1. Find the listing in Drive first (`find_listings` / `get_listing`; look at its photos).
+  2. Find the matching page on realty.alphapremiergroup.com (`/properties?location=…&type=…`) and
+     use that property's own link — send only that link, never a general `/properties` link (the
+     page already has a "more similar listings" button).
+  3. Post the details (size, rate, key highlights, terms) as several short separate messages, each a
+     line or two, then the property's own website link last. Never one long block.
+  4. Never send the internal part of the Drive doc (below the dashed line). No emojis, short casual
+     Taglish with "po" like the Alpha Premier Group / Ma'am Jean chat.
+  If `create_client_gc` already posted the Drive-style listing (text/photos), unsend those messages
+  and resend website style. Confirm availability with the owner too, and send listings only inside
+  client GCs, never in a 1:1 chat. A template without a listing still gets a GC without one.
 - **Then** quote-reply `DONE-<GC NAME>` to the original template in the templates chat.
 - Never create a GC for a template that already has a DONE reply or whose GC already exists, and
   never use a SOLD listing — the tools refuse these and report them.
