@@ -671,19 +671,44 @@ def website_has_listing(folder_id: str) -> bool | None:
     return 200 <= status < 300
 
 
+def already_offered(ref: str, messages: list[dict]) -> bool:
+    """True if any message in `messages` (backread output, either side) already carries the
+    listing's website ref (APR-XXXXXX), i.e. the link was offered in this chat before."""
+    want = ref.casefold()
+    return any(want in (m.get("text") or "").casefold() for m in messages)
+
+
 def send_listing_link(folder_id: str, expect_chat: str = "", dry_run: bool = False,
-                      fallback: bool = True) -> dict:
+                      fallback: bool = True, check_history: bool = True) -> dict:
     """Send a listing to the OPEN chat the website way: ONE message asking the client to click
     the property's own realty website link for the details, with that link in it.
 
     A listing the website doesn't show (not public, not synced yet, or the site can't be reached
     from this PC) is sent the Drive way instead (send_listing: client text + photos + videos)
     when `fallback`, so the client still gets it; otherwise nothing is sent. The result's `way`
-    says which happened."""
+    says which happened.
+
+    Staff rule (2026-11-12): read the chat's history before offering, so a listing is never sent
+    twice. If the link is already in the chat (or the history can't be read) nothing is sent and
+    the result says `already_offered`; `check_history=False` skips the check (a brand-new GC)."""
     import viber_send
 
     viber_send.require_open_chat(expect_chat)
     url = website_url(folder_id)
+    if check_history:
+        import viber_ui
+
+        ref = website_ref(folder_id)
+        try:
+            history = viber_ui.backread(until=ref)["messages"]
+        except Exception as e:  # can't tell: don't risk a duplicate
+            return {"sent": False, "way": None, "url": url, "already_offered": None,
+                    "note": f"Nothing sent: couldn't read the chat's history to check that this "
+                            f"listing wasn't offered before ({e}). Run backread_chat, then call again "
+                            f"with check_history=False if it wasn't."}
+        if already_offered(ref, history):
+            return {"sent": False, "way": None, "url": url, "already_offered": True,
+                    "note": "Nothing sent: this listing's link is already in the chat."}
     on_site = website_has_listing(folder_id)
     if on_site:
         text = listing_link_message(url)
