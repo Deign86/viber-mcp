@@ -1308,7 +1308,7 @@ def _run_gc_with_unknown_client(monkeypatch, fake):
     monkeypatch.setattr(viber_send, "reply", lambda text, expect_chat="": {"sent": True})
     monkeypatch.setattr(viber_send, "require_open_chat", lambda expect: {})
     monkeypatch.setattr(viber_send, "search_and_open", lambda chat: {})
-    monkeypatch.setattr(viber_drive, "send_listing", lambda folder_id, expect_chat="": {"sent": True})
+    monkeypatch.setattr(viber_drive, "send_listing_link", lambda folder_id, expect_chat="": {"sent": True})
     monkeypatch.setattr(viber_drive, "prune_downloads", lambda: {})
     return viber_gc.create_client_gc(1, dry_run=False), done
 
@@ -3302,7 +3302,7 @@ def _gc_flow(monkeypatch, plan=ARCELI, mine=(), create=None, listing=None):
     monkeypatch.setattr(viber_send, "_header_matches", lambda name: True)
     monkeypatch.setattr(viber_send, "reply", lambda text, expect_chat="": acts.append("template") or {"sent": True})
     monkeypatch.setattr(viber_send, "require_open_chat", lambda expect: {})
-    monkeypatch.setattr(viber_drive, "send_listing", listing or (
+    monkeypatch.setattr(viber_drive, "send_listing_link", listing or (
         lambda fid, expect_chat="": acts.append("listing") or {"sent": True}))
     monkeypatch.setattr(viber_ui, "mention", lambda *a, **k: acts.append("mention") or {"mentioned": "Arceli"})
     monkeypatch.setattr(viber_ui, "reply_to_message", lambda n, text, send=True: acts.append("DONE") or {"sent": True})
@@ -3390,7 +3390,7 @@ def test_gc_posts_go_only_into_the_gc_it_made(monkeypatch):
         return run
     monkeypatch.setattr(viber_send, "require_open_chat", require)
     monkeypatch.setattr(viber_send, "reply", post("template"))
-    monkeypatch.setattr(viber_drive, "send_listing", post("listing"))
+    monkeypatch.setattr(viber_drive, "send_listing_link", post("listing"))
     monkeypatch.setattr(viber_ui, "mention", lambda *a, **k: world["posts"].append((world["open"], "mention"))
                         or {"mentioned": "Arceli"})
     with pytest.raises(viber_gc.GCError, match="APR LISTING ONLY"):
@@ -3490,3 +3490,92 @@ def test_deigns_inquiries_end_with_just_the_name_not_an_intern_label():
     assert fields["listing"] == "Quezon City, 270 Banawe"
     assert logic.gc_name(fields)["gc_name"] == "TPEHCARE-WH-(270SQM, QC)"
     assert "Deign" not in logic.client_message(inquiry)
+
+
+# ----------------------------------------------------- listings go to clients the website way
+
+def test_website_ref_is_the_ref_the_realty_site_gives_the_listing():
+    # apg-website's drive-sync.php: 'APR-' . strtoupper(substr(md5($folder_id), 0, 6)). Pairs read
+    # off the live site on 2026-11-12 (the Salcedo inquiry email, Daisy's Cainta, Bibe's Rosario).
+    import viber_drive
+
+    assert viber_drive.website_ref("1Y7eSfONqMssKS5fbOqLtTzVimRl_jMqQ") == "APR-D8296C"
+    assert viber_drive.website_ref("17i9Z1uJ9mUAzzKmuUr4YWYmhk_ZTjJKr") == "APR-C87075"
+    assert viber_drive.website_ref("1ggvWM044uFHm5fw9veRAJJqVh2CeqAFP") == "APR-486708"
+    assert (viber_drive.website_url("17i9Z1uJ9mUAzzKmuUr4YWYmhk_ZTjJKr")
+            == "https://realty.alphapremiergroup.com/properties/APR-C87075")
+
+
+def _link_world(monkeypatch, status):
+    import viber_drive
+    import viber_send
+
+    sent = []
+    monkeypatch.setattr(viber_drive, "_website_status", lambda url, timeout=10.0: status)
+    monkeypatch.setattr(viber_send, "require_open_chat", lambda expect: {})
+    monkeypatch.setattr(viber_send, "reply", lambda text, expect_chat="": sent.append(
+        ("reply", text, expect_chat)) or {"sent": True, "verified": True})
+    monkeypatch.setattr(viber_drive, "send_listing", lambda fid, dry_run=False, expect_chat="": sent.append(
+        ("drive", fid, expect_chat)) or {"sent": True})
+    return sent
+
+
+def test_listing_link_is_one_click_the_link_message(monkeypatch):
+    # 2026-11-12, DAISY-CS: the Cainta listing went out as three detail messages + the link;
+    # staff: "keep only the message with the link and tell her to click the link for the
+    # property details ... from now on u will send listings that way".
+    import viber_drive
+
+    sent = _link_world(monkeypatch, 200)
+    out = viber_drive.send_listing_link("17i9Z1uJ9mUAzzKmuUr4YWYmhk_ZTjJKr", expect_chat="DAISY-CS")
+    assert out["way"] == "website" and out["sent"]
+    assert len(sent) == 1
+    kind, text, chat = sent[0]
+    assert kind == "reply" and chat == "DAISY-CS"
+    assert text.startswith("paki-click na lang po yung link para sa property details")
+    assert text.endswith("https://realty.alphapremiergroup.com/properties/APR-C87075")
+    assert "sqm" not in text and "₱" not in text
+
+
+def test_listing_not_on_the_website_is_sent_the_drive_way(monkeypatch):
+    # Highway Hills (Margaux's townhouse) has no page on the site: a dead link must not be sent.
+    import viber_drive
+
+    for status in (404, None):
+        sent = _link_world(monkeypatch, status)
+        out = viber_drive.send_listing_link("11ywyxLzCp6GjxpETRt_kBqp49mha7xZJ", expect_chat="MARTIN")
+        assert out["way"] == "drive" and sent == [("drive", "11ywyxLzCp6GjxpETRt_kBqp49mha7xZJ", "MARTIN")]
+        sent.clear()
+        out = viber_drive.send_listing_link("11ywyxLzCp6GjxpETRt_kBqp49mha7xZJ", expect_chat="MARTIN",
+                                            fallback=False)
+        assert out["sent"] is False and sent == []
+
+
+def test_listing_link_dry_run_sends_nothing(monkeypatch):
+    import viber_drive
+
+    sent = _link_world(monkeypatch, 200)
+    out = viber_drive.send_listing_link("17i9Z1uJ9mUAzzKmuUr4YWYmhk_ZTjJKr", dry_run=True)
+    assert sent == [] and out["would_send"].endswith("APR-C87075")
+
+
+def test_client_gc_sends_the_listing_the_website_way(monkeypatch):
+    # create_client_gc used to post the Drive text + photos (send_listing) into every new GC.
+    import viber_drive
+    import viber_gc
+    import viber_send
+
+    real_link = viber_drive.send_listing_link
+    acts = _gc_flow(monkeypatch)
+    monkeypatch.setattr(viber_drive, "send_listing_link", real_link)
+    monkeypatch.setattr(viber_drive, "_website_status", lambda url, timeout=10.0: 200)
+    monkeypatch.setattr(viber_drive, "send_listing", lambda *a, **k: pytest.fail("sent the Drive way"))
+    posts = []
+    monkeypatch.setattr(viber_send, "reply", lambda text, expect_chat="": posts.append(
+        (expect_chat, text)) or {"sent": True})
+    out = viber_gc.create_client_gc(1)
+    assert out["done"] and out["steps"]["listing"]["way"] == "website"
+    gc = ARCELI["gc_name"]
+    assert [p for p in posts if p[1].startswith("paki-click")] == [
+        (gc, viber_drive.listing_link_message(viber_drive.website_url(ARCELI["listing"]["folder_id"])))]
+    assert "mention" in acts and acts[-1] == "DONE"

@@ -90,7 +90,7 @@ GC to see every listing already offered (never re-offer one) and their full requ
    if another employee is named as the owner's contact** ("Contacted via viber Ma'am Tel", "Owner's
    contact at APR: Ma'am Bea", their name/initials as the doc's last line), don't contact the owner
    yourself — ask that employee to check with the owner, and wait for their answer.
-3. Only after the owner confirms, send the full listing (`send_listing`). If it's taken, tell the
+3. Only after the owner confirms, send the listing the website way (`send_listing_link`). If it's taken, tell the
    client, move the folder to SOLD (`move_listing_to_sold`), and offer the next option the same way.
 
 **Record every owner answer in Drive, always.** Deign's standing instruction: whenever you read an
@@ -253,8 +253,8 @@ each GC created and each template skipped or failed (with the reason).
   type the client's number in the picker search, tick "Add +63…", tick the staff, Save, rename,
   then post the template, the listing, and "Hello po, @<client>", and reply DONE to the template.
 - **In the new GC only:** the client's template with ONLY the client fields (never the
-  listing/intern/date lines), then the listing (text above the dashed line + photos + videos), then
-  "Hello @client" so the client is notified. A template without a listing gets a GC without one.
+  listing/intern/date lines), then the listing (website way, below), then "Hello @client" so the
+  client is notified. A template without a listing gets a GC without one.
 - **GCs are always website style (standing rule).** Whenever you make a client GC, the listing goes
   the website way, not as the Drive text + photos + videos:
   1. Find the listing in Drive first (`find_listings` / `get_listing`; look at its photos).
@@ -266,9 +266,12 @@ each GC created and each template skipped or failed (with the reason).
      link in that message. No separate detail messages (size, rate, terms).
   4. Never send the internal part of the Drive doc (below the dashed line). No emojis, short casual
      Taglish with "po" like the Alpha Premier Group / Ma'am Jean chat.
-  If `create_client_gc` already posted the Drive-style listing (text/photos), unsend those messages
-  and resend website style. Confirm availability with the owner too, and send listings only inside
-  client GCs, never in a 1:1 chat. A template without a listing still gets a GC without one.
+  `create_client_gc` / `process_client_templates` and `send_listing_link` do this themselves: one
+  message ("paki-click na lang po yung link para sa property details…" + the link; the ref is
+  APR- + md5 of the Drive folder id), checked on the website first. Only a listing the website
+  doesn't show is sent the Drive way (text + photos); the result says way "drive" — tell the
+  staff member. Confirm availability with the owner too, and send listings only inside client
+  GCs, never in a 1:1 chat. A template without a listing still gets a GC without one.
 - **Then** quote-reply `DONE-<GC NAME>` to the original template in the templates chat.
 - Never create a GC for a template that already has a DONE reply or whose GC already exists, and
   never use a SOLD listing — the tools refuse these and report them.

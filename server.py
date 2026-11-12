@@ -403,8 +403,9 @@ def process_client_templates(limit: int = 5, preview: bool = False) -> dict:
     "DONE-..." reply yet.
 
     Runs autonomously (preview=True only lists what it would do). For each: create the group (staff from gc_members.json, then the client's
-    number), post the client's template (client fields only), the listing (text above the dashed
-    line + photos), "Hello @client", then quote-reply DONE-<GC NAME> to the template. Templates
+    number), post the client's template (client fields only), the listing (one message with the
+    property's realty website link; the Drive text + photos only if the website doesn't show it),
+    "Hello @client", then quote-reply DONE-<GC NAME> to the template. Templates
     with an uncertain name, ambiguous/missing/SOLD listing, bad number, an existing chat of that
     name, or any DONE reply after them are skipped — report those.
 
@@ -424,8 +425,8 @@ def create_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str 
 
     Open the templates chat first and pass the template's n from list_messages. dry_run=True
     returns the plan (GC name, members, client number, client message, listing, DONE reply);
-    dry_run=False runs it: create group → client's template → listing (above the dashed line +
-    photos) → "Hello @client" → quote-reply "DONE-<GC NAME>" to the template. Show the plan and
+    dry_run=False runs it: create group → client's template → listing (one "click the link"
+    message with the property's website link) → "Hello @client" → quote-reply "DONE-<GC NAME>" to the template. Show the plan and
     get the staff member's yes before dry_run=False.
 
     Args:
@@ -490,15 +491,31 @@ def view_listing_photos(folder_id: str, max_photos: int = 6) -> list:
 @viber_tool
 def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = True,
                  dry_run: bool = False, expect_chat: str = "") -> dict:
-    """Send a listing to the OPEN Viber chat: the client-facing details text, the photos together
-    in one batch, then the listing's videos (on by default; some listings only have a video).
-    The doc's internal part is never sent.
+    """Send a listing to the OPEN Viber chat the Drive way: the client-facing details text, the
+    photos together in one batch, then the listing's videos (on by default; some listings only
+    have a video). The doc's internal part is never sent. For CLIENTS use send_listing_link (the
+    website way, the staff rule); this is for listings the website doesn't show.
 
     dry_run=True previews exactly what would be sent without sending anything. expect_chat: the
     chat this must go to (the GC/contact name you opened); each step is refused if another chat
     is open — always pass it.
     """
     return viber_drive.send_listing(folder_id, max_photos, include_videos, dry_run, expect_chat)
+
+
+@viber_tool
+def send_listing_link(folder_id: str, expect_chat: str = "", dry_run: bool = False,
+                      fallback: bool = True) -> dict:
+    """Send a listing to a CLIENT the website way (the staff rule): ONE message asking them to
+    click the property's own realty.alphapremiergroup.com link for the details, with that link.
+    No Drive text, photos, or separate detail messages. Use this, not send_listing, for clients.
+
+    The link is the listing's ref (APR- + md5 of the Drive folder id), checked on the website
+    first. A listing the website doesn't show is sent the Drive way (send_listing) when
+    fallback=True, else nothing is sent; `way` in the result says which. dry_run=True previews.
+    expect_chat: the GC this must go to — always pass it.
+    """
+    return viber_drive.send_listing_link(folder_id, expect_chat, dry_run, fallback)
 
 
 @viber_tool
@@ -770,7 +787,7 @@ def unsend(chat: str, message: str) -> str:
 
 @mcp.prompt()
 def property_details(chat: str, property: str) -> str:
-    """Send a property listing (text + photos) from Google Drive to a Viber chat."""
+    """Send a property listing to a Viber chat (its realty website link, the website way)."""
     return (f"Open the Viber chat '{chat}' (search_and_open; if low_confidence or several similar "
             "chats, ask me which) and backread_chat for the client's requirements and line of business "
             "(what the space is for). If the line of business isn't known, ask the client in one short "
@@ -778,10 +795,10 @@ def property_details(chat: str, property: str) -> str:
             "which), read it with get_listing and look at its photos with view_listing_photos to check "
             "it fits their business. If the owner hasn't confirmed availability yet, follow the "
             "guidelines (short teaser, ask the owner, record_availability with the answer) instead of "
-            "sending. Once confirmed, send_listing for that folder_id with expect_chat set to the chat "
-            "name, so it refuses if another chat took over. Never send, quote or summarize the "
-            "internal part of the doc. Report what was sent and whether the text and photos were "
-            "verified.")
+            "sending. Once confirmed, send_listing_link for that folder_id with expect_chat set to the "
+            "chat name (one message with the property's website link; it refuses if another chat "
+            "took over). Never send, quote or summarize the internal part of the doc. Report what "
+            "was sent, which way (website or Drive), and whether it was verified.")
 
 
 @mcp.prompt()

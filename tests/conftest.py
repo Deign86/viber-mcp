@@ -86,3 +86,15 @@ def no_real_update_check(monkeypatch, tmp_path):
     monkeypatch.setattr(viber_update, "_download", _no_fetch)
     monkeypatch.setattr(viber_update, "_restart", _no_restart)
     monkeypatch.setattr(viber_update, "CACHE_FILE", tmp_path / "update_check.json")
+
+
+@pytest.fixture(autouse=True)
+def no_real_website(monkeypatch):
+    """send_listing_link checks the listing's page on the realty website: tests patch
+    viber_drive._website_status (or website_has_listing), never the live site."""
+    import viber_drive
+
+    def _no_site(*_args, **_kwargs):
+        raise AssertionError("A test reached the realty website: patch viber_drive._website_status.")
+
+    monkeypatch.setattr(viber_drive, "_website_status", _no_site)
