@@ -3532,7 +3532,7 @@ def test_listing_link_is_one_click_the_link_message(monkeypatch):
     assert len(sent) == 1
     kind, text, chat = sent[0]
     assert kind == "reply" and chat == "DAISY-CS"
-    assert text.startswith("Good day po! Paki-click na lang po yung link para sa property details")
+    assert text.startswith("hello po, paki-click na lang po yung link para sa property details")
     assert text.endswith("https://realty.alphapremiergroup.com/properties/APR-C87075")
     assert "sqm" not in text and "₱" not in text
 
@@ -3576,6 +3576,6 @@ def test_client_gc_sends_the_listing_the_website_way(monkeypatch):
     out = viber_gc.create_client_gc(1)
     assert out["done"] and out["steps"]["listing"]["way"] == "website"
     gc = ARCELI["gc_name"]
-    assert [p for p in posts if p[1].startswith("Good day po! Paki-click")] == [
+    assert [p for p in posts if p[1].startswith("hello po, paki-click")] == [
         (gc, viber_drive.listing_link_message(viber_drive.website_url(ARCELI["listing"]["folder_id"])))]
     assert "mention" in acts and acts[-1] == "DONE"
