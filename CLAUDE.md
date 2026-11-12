@@ -494,10 +494,14 @@ Status:
   code unless `get_listing(include_internal=True)`. Docs with no dashed line are split by inference
   (`split_listing`: the client part ends with our company contact block, else before the first
   internal-looking line; it refuses if a non-company phone number would be sent).
-  `post_new_listing` still requires the line (`strict=True`). `send_listing` sends the text, then the photos via
+  `post_new_listing` still requires the line (`strict=True`). `send_listing_link` (the client way, staff rule 2026-11-12; also what `create_client_gc` posts) sends ONE
+  message: "paki-click … property details" + the listing's realty website link
+  (`website_ref` = APR- + md5(folder id)[:6], apg-website's drive-sync.php), after checking the page exists
+  (`_website_status`; conftest fails a test that reaches the site); a listing the site doesn't
+  show falls back to `send_listing`. `send_listing` sends the text, then the photos via
   `send_files`, then the folder's videos as a second batch (`include_videos` defaults to True —
   some folders only have a video); never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
-  `send_listing`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`,
+  `send_listing`, `send_listing_link`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`,
   `add_listing_to_drive`, `drive_upload_files`, `update_listing_doc`, `move_listing_to_sold`
   (`sold_target` picks SOLD / SOLD <CATEGORY>; refuses folders already under SOLD — `_property_folders`
   walks SOLD too, as category "SOLD"), `view_listing_photos` (`listing_photos`: downloads through

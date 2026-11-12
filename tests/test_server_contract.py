@@ -67,7 +67,8 @@ def test_expected_prompts_exist():
 def test_open_chat_tools_take_expect_chat():
     # Every tool that acts on "the open chat" can be told which chat that must be.
     by_name = {t.name: t for t in asyncio.run(server.mcp.list_tools())}
-    for name in ("reply", "put_draft", "reply_to_message", "send_files", "send_listing"):
+    for name in ("reply", "put_draft", "reply_to_message", "send_files", "send_listing",
+                 "send_listing_link"):
         assert "expect_chat" in by_name[name].inputSchema["properties"], name
     assert {"current_chat", "rename_group", "groups_in_common", "mark_as_read"} <= set(by_name)
     assert "unread_only" in by_name["list_chats"].inputSchema["properties"]

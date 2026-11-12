@@ -21,9 +21,12 @@ import hashlib
 import io
 import os
 import re
+import ssl
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import date
 from pathlib import Path
 
@@ -601,6 +604,99 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Tr
     return {"sent": True, "doc": listing["doc"], "text_verified": text_result.get("verified"),
             "photos_sent": len(photo_paths), "photos_verified": photos_result.get("verified"),
             "videos_sent": len(video_paths), "videos_verified": videos_result.get("verified")}
+
+
+# ------------------------------------------------------------- the realty website
+
+WEBSITE = "https://realty.alphapremiergroup.com"
+# Staff rule (2026-11-12): a listing goes to a client as ONE message, the property's own website
+# link with a line asking them to click it for the details. No Drive text, photos, or separate
+# detail messages (size, rate, terms) — the page has all of that.
+LINK_MESSAGE = ("paki-click na lang po yung link para sa property details. confirm pa po namin sa "
+                "owner kung available, update po namin kayo.")
+
+
+def website_ref(folder_id: str) -> str:
+    """The listing's ref on the realty website. apg-website's api/cron/drive-sync.php names each
+    public listing folder 'APR-' + the first 6 hex digits of md5(folder id), uppercased."""
+    return "APR-" + hashlib.md5(folder_id.encode()).hexdigest()[:6].upper()
+
+
+def website_url(folder_id: str) -> str:
+    """The listing's own page on the realty website."""
+    return f"{WEBSITE}/properties/{website_ref(folder_id)}"
+
+
+def listing_link_message(url: str) -> str:
+    """The one message that sends a listing to a client: the click-the-link line, then the link."""
+    return f"{LINK_MESSAGE}\n\n{url}"
+
+
+def _ssl_contexts():
+    """The system's certificates (they include an office proxy's), then certifi's."""
+    yield ssl.create_default_context()
+    try:
+        import certifi
+    except ImportError:
+        return
+    yield ssl.create_default_context(cafile=certifi.where())
+
+
+def _website_status(url: str, timeout: float = 10.0) -> int | None:
+    """The HTTP status of `url`, or None when the site can't be reached."""
+    request = urllib.request.Request(url, headers={"User-Agent": "viber-mcp"})
+    for context in _ssl_contexts():
+        try:
+            with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, ssl.SSLCertVerificationError):
+                continue
+            return None
+        except (OSError, ValueError):
+            return None
+    return None
+
+
+def website_has_listing(folder_id: str) -> bool | None:
+    """True if the realty website shows this listing, False if its page doesn't exist (the
+    listing isn't public or isn't synced yet), None if the site couldn't be reached."""
+    status = _website_status(website_url(folder_id))
+    if status is None:
+        return None
+    return 200 <= status < 300
+
+
+def send_listing_link(folder_id: str, expect_chat: str = "", dry_run: bool = False,
+                      fallback: bool = True) -> dict:
+    """Send a listing to the OPEN chat the website way: ONE message asking the client to click
+    the property's own realty website link for the details, with that link in it.
+
+    A listing the website doesn't show (not public, not synced yet, or the site can't be reached
+    from this PC) is sent the Drive way instead (send_listing: client text + photos + videos)
+    when `fallback`, so the client still gets it; otherwise nothing is sent. The result's `way`
+    says which happened."""
+    import viber_send
+
+    viber_send.require_open_chat(expect_chat)
+    url = website_url(folder_id)
+    on_site = website_has_listing(folder_id)
+    if on_site:
+        text = listing_link_message(url)
+        if dry_run:
+            return {"sent": False, "way": "website", "url": url, "would_send": text,
+                    "note": "Nothing sent. Check the chat, then call again without dry_run."}
+        result = viber_send.reply(text, expect_chat=expect_chat)
+        return {"sent": True, "way": "website", "url": url, "verified": result.get("verified")}
+    why = ("its page isn't on the realty website (not public or not synced yet)" if on_site is False
+           else "the realty website couldn't be reached to check its page")
+    if not fallback:
+        return {"sent": False, "way": None, "url": url, "note": f"Nothing sent: {why}."}
+    out = send_listing(folder_id, dry_run=dry_run, expect_chat=expect_chat)
+    out.update(way="drive", url_checked=url, note=f"Sent the Drive way: {why}.")
+    return out
 
 
 # ------------------------------------------------------------- adding new listings
