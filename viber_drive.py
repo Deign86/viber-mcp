@@ -612,8 +612,10 @@ WEBSITE = "https://realty.alphapremiergroup.com"
 # Staff rule (2026-11-12): a listing goes to a client as ONE message, the property's own website
 # link with a line asking them to click it for the details. No Drive text, photos, or separate
 # detail messages (size, rate, terms) — the page has all of that.
-LINK_MESSAGE = ("paki-click na lang po yung link para sa property details. confirm pa po namin sa "
-                "owner kung available, update po namin kayo.")
+# Typed like Ma'am Jean (staff, 2026-11-12): lowercase, plain Taglish, "po", no exclamation marks,
+# no formal greeting or closing. Politeness comes from the "po"s.
+LINK_MESSAGE = ("hello po, paki-click na lang po yung link para sa property details. confirm pa po "
+                "namin sa owner kung available, update po namin kayo")
 
 
 def website_ref(folder_id: str) -> str:

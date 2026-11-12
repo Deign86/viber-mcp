@@ -267,7 +267,7 @@ each GC created and each template skipped or failed (with the reason).
   4. Never send the internal part of the Drive doc (below the dashed line). No emojis, short casual
      Taglish with "po" like the Alpha Premier Group / Ma'am Jean chat.
   `create_client_gc` / `process_client_templates` and `send_listing_link` do this themselves: one
-  message ("paki-click na lang po yung link para sa property details…" + the link; the ref is
+  message ("hello po, paki-click na lang po yung link para sa property details…" + the link, typed like Ma'am Jean: lowercase, no exclamation, no formal greeting/closing; the ref is
   APR- + md5 of the Drive folder id), checked on the website first. Only a listing the website
   doesn't show is sent the Drive way (text + photos); the result says way "drive" — tell the
   staff member. Confirm availability with the owner too, and send listings only inside client

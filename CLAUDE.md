@@ -495,7 +495,7 @@ Status:
   (`split_listing`: the client part ends with our company contact block, else before the first
   internal-looking line; it refuses if a non-company phone number would be sent).
   `post_new_listing` still requires the line (`strict=True`). `send_listing_link` (the client way, staff rule 2026-11-12; also what `create_client_gc` posts) sends ONE
-  message: "paki-click … property details" + the listing's realty website link
+  message: "hello po, paki-click … property details …" (typed like Ma'am Jean: lowercase, no "!") + the listing's realty website link
   (`website_ref` = APR- + md5(folder id)[:6], apg-website's drive-sync.php), after checking the page exists
   (`_website_status`; conftest fails a test that reaches the site); a listing the site doesn't
   show falls back to `send_listing`. `send_listing` sends the text, then the photos via
