@@ -541,6 +541,15 @@ def test_foreign_numbers_with_country_code_are_accepted():
     assert logic.viber_e164("+63 966 665 5551") == "+639666655551"
 
 
+def test_number_with_country_code_but_no_plus_is_accepted():
+    # FAITH-CS-(20-35SQM, ANTIPOLO): "186 237 236 01" was refused; it is +1 862 372 3601.
+    assert logic.viber_e164("186 237 236 01") == "+18623723601"
+    # A mistyped PH number is still refused (it would become a stranger's foreign number).
+    for bad in ("0917 128 766", "917128766", "+63 917 128 766", "12"):
+        with pytest.raises(ValueError):
+            logic.viber_e164(bad)
+
+
 def test_name_not_provided_falls_back_to_company():
     # "Name: Not provided" made the GC "NOT-WH-(270SQM, QC)".
     f = {"name": "Not provided", "company": "TPEHcare", "property_type": "Warehouse",

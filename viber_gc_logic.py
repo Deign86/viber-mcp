@@ -204,9 +204,16 @@ def viber_e164(raw: str) -> str:
         national = digits[1:]
     else:
         national = digits
-    if not re.fullmatch(r"9\d{9}", national):
-        raise ValueError(f"not a valid PH mobile number: {raw!r}")
-    return "+63" + national
+    if re.fullmatch(r"9\d{9}", national):
+        return "+63" + national
+    # Staff rule 2026-11-12: an unusual number is fine as long as it's registered on Viber (the
+    # chat/picker says "isn't on Viber" when it isn't). A number written with its country code
+    # but no "+" ("186 237 236 01" = +1 862 372 3601) goes in as international. Anything that
+    # looks like a mistyped PH number (starts 0, 63 or 9) is still refused: it would turn into
+    # some stranger's foreign number.
+    if not digits[:1] in ("0", "9") and not digits.startswith("63") and 8 <= len(digits) <= 15:
+        return "+" + digits
+    raise ValueError(f"not a valid PH mobile number: {raw!r}")
 
 
 def _type_code(text: str):
