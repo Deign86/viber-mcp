@@ -342,7 +342,7 @@ def _create_client_gc(template_n, gc_name, listing_folder_id, dry_run, members, 
             # Website way (staff rule 2026-11-12): one message with the property's own link;
             # the Drive text + photos only when the website doesn't show the listing.
             steps["listing"] = _in_gc(gc, "the listing", lambda: viber_drive.send_listing_link(
-                plan["listing"]["folder_id"], expect_chat=gc))
+                plan["listing"]["folder_id"], expect_chat=gc, check_history=False))
             _mark(template_text, "listing")
     if viber_ui.is_placeholder_name(client_name):
         client_name = created.get("client_display_name", "")

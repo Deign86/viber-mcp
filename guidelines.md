@@ -270,7 +270,9 @@ each GC created and each template skipped or failed (with the reason).
   message ("paki-click na lang po yung link para sa property details…" + the link; the ref is
   APR- + md5 of the Drive folder id), checked on the website first. Only a listing the website
   doesn't show is sent the Drive way (text + photos); the result says way "drive" — tell the
-  staff member. Confirm availability with the owner too, and send listings only inside client
+  staff member. `send_listing_link` also backreads the chat first and sends nothing when the
+  link is already there (it says already offered; staff rule 2026-11-12: never duplicate an offer).
+  Confirm availability with the owner too, and send listings only inside client
   GCs, never in a 1:1 chat. A template without a listing still gets a GC without one.
 - **Then** quote-reply `DONE-<GC NAME>` to the original template in the templates chat.
 - Never create a GC for a template that already has a DONE reply or whose GC already exists, and

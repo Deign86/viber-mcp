@@ -498,7 +498,10 @@ Status:
   message: "paki-click … property details" + the listing's realty website link
   (`website_ref` = APR- + md5(folder id)[:6], apg-website's drive-sync.php), after checking the page exists
   (`_website_status`; conftest fails a test that reaches the site); a listing the site doesn't
-  show falls back to `send_listing`. `send_listing` sends the text, then the photos via
+  show falls back to `send_listing`. It backreads the chat first (`viber_ui.backread(until=ref)`)
+  and sends nothing if the ref is already in it (result `already_offered`; also nothing if the history
+  can't be read; `check_history=False` for a brand-new GC, which `create_client_gc` uses).
+  `send_listing` sends the text, then the photos via
   `send_files`, then the folder's videos as a second batch (`include_videos` defaults to True —
   some folders only have a video); never the internal part. Tools: `drive_sign_in`, `find_listings`, `get_listing`,
   `send_listing`, `send_listing_link`, `drive_search`, `drive_download`, `post_new_listing`, `confirm_listing_in_drive`,
