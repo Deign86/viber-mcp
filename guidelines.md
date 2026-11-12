@@ -261,8 +261,9 @@ each GC created and each template skipped or failed (with the reason).
   2. Find the matching page on realty.alphapremiergroup.com (`/properties?location=…&type=…`) and
      use that property's own link — send only that link, never a general `/properties` link (the
      page already has a "more similar listings" button).
-  3. Post the details (size, rate, key highlights, terms) as several short separate messages, each a
-     line or two, then the property's own website link last. Never one long block.
+  3. Send ONE message only: tell the client to click the link for the property details, add a short
+     note that availability is being confirmed with the owner, and put the property's own website
+     link in that message. No separate detail messages (size, rate, terms).
   4. Never send the internal part of the Drive doc (below the dashed line). No emojis, short casual
      Taglish with "po" like the Alpha Premier Group / Ma'am Jean chat.
   If `create_client_gc` already posted the Drive-style listing (text/photos), unsend those messages
