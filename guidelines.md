@@ -85,7 +85,7 @@ GC to see every listing already offered (never re-offer one) and their full requ
 1. Give the client only a short teaser, one or two lines (type, sqm, area/city, rate), and say we'll
    confirm availability with the owner first, e.g. "May warehouse po kami sa Silang, 1,890 sqm,
    ₱200/sqm. Confirm lang po namin sa owner kung available pa, update po namin kayo agad."
-2. Actually ask the owner right away ("available pa po ba?"); see "Owners and follow-ups". An owner
+2. Actually ask the owner right away ("available pa po ba?"); see "Owners and follow-ups". **Backread the owner's 1:1 chat first** (`backread_chat`) — Deign's standing rule (2026-11-13): never message an owner (or any listing contact) without reading that chat, so you don't repeat a question already asked or answered and sound redundant; if it was asked and is unanswered, wait or send only a short bump. An owner
    who isn't on Viber goes to the call staff with a script. **First read the doc's internal part:
    if another employee is named as the owner's contact** ("Contacted via viber Ma'am Tel", "Owner's
    contact at APR: Ma'am Bea", their name/initials as the doc's last line), don't contact the owner
