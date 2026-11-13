@@ -68,7 +68,7 @@ into that GC and nowhere else; a rerun continues, never repeats.
 | GroupMade | rename fails / privacy blocked | | Stopped (GCError) | | 311-326 |
 | GroupMade | post template | header is the GC | TemplatePosted | mark template | 333-335 |
 | GroupMade… | post template / listing / mention | header is another chat | Stopped (GCError), nothing posted | | `_in_gc` 386 |
-| TemplatePosted | send_listing_link(expect_chat=GC): website page exists → one "click the link" message; else (404 / unreachable) → send_listing (Drive text + photos), `way` says which | | ListingSent | mark listing | 336-344 |
+| TemplatePosted | send_listing(expect_chat=GC): Drive text + photos (+ videos), no website link (staff rule 2026-11-13; `send_listing_link` is only for a client who asks for more options) | | ListingSent | mark listing | 336-344 |
 | ListingSent | mention | header is the GC | Mentioned | mark mention | 351-362 |
 | Mentioned | DONE quote-reply | | Done | forget progress | 365-374 |
 | any Stopped | rerun | group marked | resumes in `_reopen_gc(name)` | skips marked steps | 228-231 |

@@ -493,8 +493,9 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Tr
                  dry_run: bool = False, expect_chat: str = "") -> dict:
     """Send a listing to the OPEN Viber chat the Drive way: the client-facing details text, the
     photos together in one batch, then the listing's videos (on by default; some listings only
-    have a video). The doc's internal part is never sent. For CLIENTS use send_listing_link (the
-    website way, the staff rule); this is for listings the website doesn't show.
+    have a video). The doc's internal part is never sent. This is the DEFAULT way to send a listing
+    to a client (staff rule 2026-11-13); do not add the realty website link — send_listing_link is
+    only for a client who asks for more options.
 
     dry_run=True previews exactly what would be sent without sending anything. expect_chat: the
     chat this must go to (the GC/contact name you opened); each step is refused if another chat
@@ -506,9 +507,10 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Tr
 @viber_tool
 def send_listing_link(folder_id: str, expect_chat: str = "", dry_run: bool = False,
                       fallback: bool = True, check_history: bool = True) -> dict:
-    """Send a listing to a CLIENT the website way (the staff rule): ONE message asking them to
-    click the property's own realty.alphapremiergroup.com link for the details, with that link.
-    No Drive text, photos, or separate detail messages. Use this, not send_listing, for clients.
+    """Send ONLY the property's own realty.alphapremiergroup.com link (ONE "click the link"
+    message, no Drive text or photos). Use it ONLY when a client wants to see more options (the
+    page has a "more similar listings" button); to offer a listing, use send_listing (staff rule
+    2026-11-13).
 
     The link is the listing's ref (APR- + md5 of the Drive folder id), checked on the website
     first. A listing the website doesn't show is sent the Drive way (send_listing) when
@@ -792,7 +794,7 @@ def unsend(chat: str, message: str) -> str:
 
 @mcp.prompt()
 def property_details(chat: str, property: str) -> str:
-    """Send a property listing to a Viber chat (its realty website link, the website way)."""
+    """Send a property listing to a Viber chat (Drive text + photos; website link only on request)."""
     return (f"Open the Viber chat '{chat}' (search_and_open; if low_confidence or several similar "
             "chats, ask me which) and backread_chat for the client's requirements and line of business "
             "(what the space is for). If the line of business isn't known, ask the client in one short "
@@ -800,10 +802,11 @@ def property_details(chat: str, property: str) -> str:
             "which), read it with get_listing and look at its photos with view_listing_photos to check "
             "it fits their business. If the owner hasn't confirmed availability yet, follow the "
             "guidelines (short teaser, ask the owner, record_availability with the answer) instead of "
-            "sending. Once confirmed, send_listing_link for that folder_id with expect_chat set to the "
-            "chat name (one message with the property's website link; it refuses if another chat "
-            "took over). Never send, quote or summarize the internal part of the doc. Report what "
-            "was sent, which way (website or Drive), and whether it was verified.")
+            "sending. Once confirmed, send_listing for that folder_id with expect_chat set to the "
+            "chat name (the Drive text + photos; it refuses if another chat took over). Do not add "
+            "the realty website link unless the client asks for more options (then "
+            "send_listing_link). Never send, quote or summarize the internal part of the doc. "
+            "Report what was sent and whether it was verified.")
 
 
 @mcp.prompt()
