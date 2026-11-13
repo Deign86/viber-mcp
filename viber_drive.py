@@ -1146,6 +1146,14 @@ def _open_listings_gc() -> None:
 
     opened = viber_send.search_and_open(LISTINGS_GC)
     if not is_listings_gc(opened.get("matched", "")):
+        # The matched text can be the sidebar row ('APR LISTING ONLY w Yesterday'); the chat
+        # pane's header is the proof of what is open (2026-11-13, live).
+        try:
+            title = viber_send.current_chat().get("title", "")
+        except Exception:  # unreadable header = no proof
+            title = ""
+        if is_listings_gc(title):
+            return
         raise DriveError(f"Opened '{opened.get('matched')}' instead of '{LISTINGS_GC}'. Nothing sent.")
 
 

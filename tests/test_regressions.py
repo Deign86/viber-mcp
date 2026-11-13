@@ -3584,3 +3584,19 @@ def test_client_gc_sends_the_listing_the_drive_way_without_the_website_link(monk
     assert out["done"]
     assert sent == [(ARCELI["listing"]["folder_id"], ARCELI["gc_name"])]
     assert "mention" in acts and acts[-1] == "DONE"
+
+
+def test_open_listings_gc_trusts_the_header_when_matched_is_a_sidebar_row(monkeypatch):
+    """Live 2026-11-13: search_and_open matched 'APR LISTING ONLY w Yesterday' (the sidebar row)
+    while the right chat was open, and post_new_listing refused. The header decides."""
+    import viber_drive
+    import viber_send
+
+    monkeypatch.setattr(viber_send, "search_and_open",
+                        lambda q: {"matched": "APR LISTING ONLY w Yesterday"})
+    monkeypatch.setattr(viber_send, "current_chat", lambda: {"title": "APR LISTING ONLY"})
+    viber_drive._open_listings_gc()  # no raise
+
+    monkeypatch.setattr(viber_send, "current_chat", lambda: {"title": "APR LISTINGS ARCHIVE"})
+    with pytest.raises(viber_drive.DriveError):
+        viber_drive._open_listings_gc()
