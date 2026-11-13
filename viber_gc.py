@@ -186,7 +186,8 @@ def plan_client_gc(template_n: int, gc_name: str = "", listing_folder_id: str = 
         "intro_message_first": intro,
         "client_message": logic.client_message(text),
         "listing": listing,
-        # Sent as one "click the link" message (website way); see viber_drive.send_listing_link.
+        # Not sent with the listing (staff rule 2026-11-13): only offered if the client wants more
+        # options (viber_drive.send_listing_link).
         "listing_link": viber_drive.website_url(listing["folder_id"]) if listing else "",
         "listing_candidates": candidates if not listing else [],
         "listing_note": listing_note,
@@ -339,9 +340,10 @@ def _create_client_gc(template_n, gc_name, listing_folder_id, dry_run, members, 
         if done.get("listing"):
             steps["listing"] = {"skipped": "already sent"}
         else:
-            # Website way (staff rule 2026-11-12): one message with the property's own link;
-            # the Drive text + photos only when the website doesn't show the listing.
-            steps["listing"] = _in_gc(gc, "the listing", lambda: viber_drive.send_listing_link(
+            # Drive way (staff rule 2026-11-13, replacing the website-link style of 2026-11-12):
+            # the listing's text + photos (+ videos), no website link; the link is only for a
+            # client who wants more options.
+            steps["listing"] = _in_gc(gc, "the listing", lambda: viber_drive.send_listing(
                 plan["listing"]["folder_id"], expect_chat=gc))
             _mark(template_text, "listing")
     if viber_ui.is_placeholder_name(client_name):

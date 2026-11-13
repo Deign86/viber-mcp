@@ -494,7 +494,8 @@ Status:
   code unless `get_listing(include_internal=True)`. Docs with no dashed line are split by inference
   (`split_listing`: the client part ends with our company contact block, else before the first
   internal-looking line; it refuses if a non-company phone number would be sent).
-  `post_new_listing` still requires the line (`strict=True`). `send_listing_link` (the client way, staff rule 2026-11-12; also what `create_client_gc` posts) sends ONE
+  `post_new_listing` still requires the line (`strict=True`). `send_listing` is the client way (staff rule 2026-11-13: Drive text + photos, NO website link; also
+  what `create_client_gc` posts). `send_listing_link` is only for a client who asks for more options; it sends ONE
   message: "paki-click … property details" + the listing's realty website link
   (`website_ref` = APR- + md5(folder id)[:6], apg-website's drive-sync.php), after checking the page exists
   (`_website_status`; conftest fails a test that reaches the site); a listing the site doesn't
