@@ -506,7 +506,7 @@ def send_listing(folder_id: str, max_photos: int = 20, include_videos: bool = Tr
 
 @viber_tool
 def send_listing_link(folder_id: str, expect_chat: str = "", dry_run: bool = False,
-                      fallback: bool = True) -> dict:
+                      fallback: bool = True, check_history: bool = True) -> dict:
     """Send ONLY the property's own realty.alphapremiergroup.com link (ONE "click the link"
     message, no Drive text or photos). Use it ONLY when a client wants to see more options (the
     page has a "more similar listings" button); to offer a listing, use send_listing (staff rule
@@ -516,8 +516,13 @@ def send_listing_link(folder_id: str, expect_chat: str = "", dry_run: bool = Fal
     first. A listing the website doesn't show is sent the Drive way (send_listing) when
     fallback=True, else nothing is sent; `way` in the result says which. dry_run=True previews.
     expect_chat: the GC this must go to — always pass it.
+
+    It reads the chat's history first (backread) and sends NOTHING if this listing's link is
+    already there (`already_offered: true`), so a listing is never offered twice. If the history
+    can't be read it also sends nothing; run backread_chat, then use check_history=False only
+    if the listing really wasn't offered before.
     """
-    return viber_drive.send_listing_link(folder_id, expect_chat, dry_run, fallback)
+    return viber_drive.send_listing_link(folder_id, expect_chat, dry_run, fallback, check_history)
 
 
 @viber_tool

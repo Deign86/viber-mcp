@@ -3354,7 +3354,7 @@ def test_rerun_resumes_in_the_gc_an_earlier_run_made(monkeypatch):
     import pytest
     import viber_gc
 
-    def upload_fails(fid, expect_chat=""):
+    def upload_fails(fid, expect_chat="", **k):
         raise RuntimeError("upload timed out")
     acts = _gc_flow(monkeypatch, listing=upload_fails)
     with pytest.raises(RuntimeError):
@@ -3515,13 +3515,15 @@ def test_website_ref_is_the_ref_the_realty_site_gives_the_listing():
             == "https://realty.alphapremiergroup.com/properties/APR-C87075")
 
 
-def _link_world(monkeypatch, status):
+def _link_world(monkeypatch, status, history=()):
     import viber_drive
     import viber_send
 
     sent = []
     monkeypatch.setattr(viber_drive, "_website_status", lambda url, timeout=10.0: status)
     monkeypatch.setattr(viber_send, "require_open_chat", lambda expect: {})
+    import viber_ui
+    monkeypatch.setattr(viber_ui, "backread", lambda screens=40, until="": {"messages": history})
     monkeypatch.setattr(viber_send, "reply", lambda text, expect_chat="": sent.append(
         ("reply", text, expect_chat)) or {"sent": True, "verified": True})
     monkeypatch.setattr(viber_drive, "send_listing", lambda fid, dry_run=False, expect_chat="": sent.append(
@@ -3541,7 +3543,7 @@ def test_listing_link_is_one_click_the_link_message(monkeypatch):
     assert len(sent) == 1
     kind, text, chat = sent[0]
     assert kind == "reply" and chat == "DAISY-CS"
-    assert text.startswith("paki-click na lang po yung link para sa property details")
+    assert text.startswith("hello po, paki-click na lang po yung link para sa property details")
     assert text.endswith("https://realty.alphapremiergroup.com/properties/APR-C87075")
     assert "sqm" not in text and "₱" not in text
 
@@ -3558,6 +3560,38 @@ def test_listing_not_on_the_website_is_sent_the_drive_way(monkeypatch):
         out = viber_drive.send_listing_link("11ywyxLzCp6GjxpETRt_kBqp49mha7xZJ", expect_chat="MARTIN",
                                             fallback=False)
         assert out["sent"] is False and sent == []
+
+
+def test_listing_already_in_the_chat_is_not_offered_again(monkeypatch):
+    # 2026-11-12, MARTIN-HOUSE: the Bamboo Grove townhouse was sent again though it had been
+    # offered before; staff: "always br convos before offering listings so we don't duplicate".
+    import viber_drive
+
+    fid = "1MzY3VFxZv_fTnJS8QzdZv8hzmHKcwTQP"
+    offered = [{"from": "me", "kind": "text",
+                "text": "hello po\n\u2068" + viber_drive.website_url(fid) + "\u2069"}]
+    sent = _link_world(monkeypatch, 200, history=offered)
+    out = viber_drive.send_listing_link(fid, expect_chat="MARTIN-HOUSE")
+    assert out["sent"] is False and out["already_offered"] is True and sent == []
+    # a different listing in the same chat is fine, and the check can be skipped (new GC)
+    sent = _link_world(monkeypatch, 200, history=offered)
+    assert viber_drive.send_listing_link("17i9Z1uJ9mUAzzKmuUr4YWYmhk_ZTjJKr")["sent"]
+    sent = _link_world(monkeypatch, 200, history=offered)
+    assert viber_drive.send_listing_link(fid, check_history=False)["sent"]
+
+
+def test_unreadable_history_sends_nothing(monkeypatch):
+    import viber_drive
+    import viber_ui
+
+    sent = _link_world(monkeypatch, 200)
+
+    def boom(screens=40, until=""):
+        raise RuntimeError("tree stuck")
+
+    monkeypatch.setattr(viber_ui, "backread", boom)
+    out = viber_drive.send_listing_link("17i9Z1uJ9mUAzzKmuUr4YWYmhk_ZTjJKr")
+    assert out["sent"] is False and out["already_offered"] is None and sent == []
 
 
 def test_listing_link_dry_run_sends_nothing(monkeypatch):
