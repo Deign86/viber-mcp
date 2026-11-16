@@ -430,8 +430,9 @@ each GC created and each template skipped or failed (with the reason).
 - **Internal details may go to coworkers** (owner name/number, commission, terms) in staff 1:1s or
   staff groups when asked; never into a client GC.
 - **Messaging an owner:** check the chat history first (`open_and_read` the number). Introduce
-  yourself as the staff member's name (if you know it) or "the admin from Alpha Premier Realty",
-  name the property (building/area, sqm), then ask the client's open questions as a short numbered
+  yourself as "the admin from Alpha Premier Realty" (Deign's standing rule, 2026-11-16: whenever
+  interacting with owners, say you're the admin from Alpha Premier Realty; add the staff member's
+  name only as "<name> po, admin from Alpha Premier Realty"), name the property (building/area, sqm), then ask the client's open questions as a short numbered
   list. Share only the client's company/need — never the client's name or number.
 - **Relaying the owner's answer to the client:** only what the client asked about, as a
   quote-reply to their question. Keep owner contacts, commission and internal notes out. If the
