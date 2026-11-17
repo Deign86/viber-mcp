@@ -223,6 +223,13 @@ each GC created and each template skipped or failed (with the reason).
   the listing's rent/price (e.g. `💰 Preferred Budget: ₱55,000/month`). Do it before making the GC
   so the GC gets the filled template. Fields the listing can't answer (company name, line of
   business) stay `~` until the client says.
+- **"Unknown" becomes the client's real name.** When the client's Viber name isn't known yet, the
+  GC and templates say `UNKNOWN` / `Name: Unknown` (an `@Unknown` mention if needed). As soon as
+  they reply and a name shows (their Viber name in the GC or 1:1 chat), replace it everywhere:
+  rename the GC (`rename_group`, e.g. `UNKNOWN-OS-(987SQM, BACOLOD)` → `JOKO-OS-(987SQM, BACOLOD)`),
+  edit the template in APG CLIENTS and the template message inside the GC (`edit_message`, your
+  own posts) so `Name:` has the real name, and use the real name for the DONE reply and any
+  @mention from then on. Always do this — don't leave `Unknown` once the name is visible.
 - **Filling in a `~` later:** once a listing is suggested in a `~` GC and the client likes it,
   rename the GC with that listing's SQM (and its city if the location was vague), e.g.
   `JANE-WH-(~, LAS PINAS)` → `JANE-WH-(240SQM, LAS PINAS)`. Find the listing by backreading the GC
