@@ -424,6 +424,32 @@ each GC created and each template skipped or failed (with the reason).
 - **Fix name typos everywhere.** If a client's name was misspelled, `edit_message` every one of
   your messages that has it, not just the latest.
 
+## Ocular forms (site visits)
+- Use Max Alpha's **bold** OCULAR FORM format (APG OCULAR GC, 2026-11-17) whenever you send or
+  post an ocular form: the client-facing blank form in a client GC, and the filled copy the
+  staff posts in APG OCULAR. Same fields, same order, labels in bold, values plain text:
+
+  ```
+  *OCULAR FORM*
+  *Name:* <client name>
+  *GC name:* <the client's GC name, e.g. BIBE-CS-(25SQM, PASIG)>
+  *Company/Business name:* <company>
+  *Line of business* (what food po): <what they do>
+  *Contact number:* <client Viber number>
+  *Date of ocular:* Nov 17 (Tue)
+  *Time of ocular:* 1:00 PM
+  *Number of people attending:* 2
+  *Viewing site:* <listing folder name, e.g. Pasig, 25 Rosario>
+  ```
+- Viber turns `*text*` into bold. After sending, look at the message (screenshot): the labels
+  must show bold, not literal asterisks. Don't bold the values, and keep the "(what … po)" hint
+  plain.
+- For a client, leave the fields they must answer blank (name, company, line of business,
+  contact, number attending) and prefill the date, time and viewing site. Don't put the owner's
+  name, number or address in the client's copy. The internal copy may add them as plain extra
+  lines (Contact: owner; Assigned:).
+- Don't promise a viewing time the owner hasn't confirmed: say "pending owner confirmation".
+
 ## Owners and follow-ups
 - Owner/agent contacts are in the listing's INTERNAL part (`get_listing(include_internal=True)`).
   Use them to message owners when the staff member asks — never send them to clients.
