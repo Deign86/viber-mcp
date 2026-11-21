@@ -398,6 +398,11 @@ each GC created and each template skipped or failed (with the reason).
 - **Location:** when a client asks, send it right away — street + barangay/area + city, WITHOUT
   the house/unit number. Never tell the client they must schedule a site visit before getting the
   address. Never send the owner's contact or commission from the internal part.
+  **Always add the map pin** whenever you send a location (to a client, with ocular details, or
+  in a GC): a `Map pin: <Google Maps link>` line right under the address. Use the listing doc's
+  `Map:` link if it has one; otherwise build it from the address as
+  `https://www.google.com/maps/search/?api=1&query=<building+street+barangay+city>` (no unit
+  number). If you already sent a location without it, edit that message to add the pin.
 - After sending, check `verified` (true = your text showed up as a new message of yours in the
   chat); if it's false or null, `list_messages` or a screenshot to confirm before reporting it as sent.
 - **Answer a client's question as a quote-reply** to that question (`reply_to_message(n, …)`), not
